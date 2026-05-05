@@ -165,6 +165,7 @@ function makePool(overrides: Partial<RuntimePool> = {}): RuntimePool {
   return {
     hasTask: vi.fn().mockReturnValue(false),
     activeCount: 0,
+    activeCountForRuntime: vi.fn().mockReturnValue(0),
     getActiveTaskIds: vi.fn().mockReturnValue([]),
     spawnAgent: vi.fn().mockResolvedValue(undefined),
     killAll: vi.fn().mockResolvedValue(undefined),
@@ -520,13 +521,12 @@ describe("review watcher — task 404 during review", () => {
 // ════════════════════════════════════════════════════════════════════════════
 
 describe("review watcher — maxConcurrent gate", () => {
-  it("skips processing when pool.activeCount >= maxConcurrent", async () => {
+  it("skips processing when session runtime is at maxConcurrent", async () => {
     const sessionId = randomUUID();
     const taskId = `task-${randomUUID()}`;
     await sm.create(makeWorkerFile(sessionId, { taskId, status: "in_review" }));
 
-    // Pool at max capacity
-    const pool = makePool({ hasTask: vi.fn().mockReturnValue(false), activeCount: 5 } as any);
+    const pool = makePool({ hasTask: vi.fn().mockReturnValue(false), activeCountForRuntime: vi.fn().mockReturnValue(5) } as any);
     const client = makeApiClient({
       getTask: vi.fn().mockResolvedValue({ status: "in_progress" }),
     });

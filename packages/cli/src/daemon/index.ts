@@ -17,6 +17,7 @@ import { auditOrphanedTasks, cleanupLeaderSessions, cleanupStaleSessions } from 
 import { DaemonLoop } from "./loop.js";
 import { PrMonitor } from "./prMonitor.js";
 import { RateLimiter } from "./rateLimiter.js";
+import { isRuntimeLimitIgnored } from "./runtimeOverrides.js";
 import { RuntimePool } from "./runtimePool.js";
 import { TunnelClient } from "./tunnel.js";
 import { UsageCollector } from "./usageCollector.js";
@@ -176,6 +177,9 @@ async function buildRuntimeStates(providers: AgentProvider[], rateLimiter: RateL
   const checked_at = new Date().toISOString();
   return Promise.all(
     providers.map(async (provider) => {
+      if (isRuntimeLimitIgnored(provider.name)) {
+        return { name: provider.name, status: "ready", detail: "runtime limit ignored by AK_IGNORE_RUNTIME_LIMITS", checked_at };
+      }
       const reset_at = rateLimiter.pauseResetAt(provider.name);
       if (reset_at) {
         return { name: provider.name, status: "limited", detail: "runtime paused by rate limiter", reset_at, checked_at };

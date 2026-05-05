@@ -14,6 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { createInterface } from "node:readline/promises";
 import type { Command } from "commander";
 import { getCredentials, saveCredentials, setCurrent } from "../config.js";
 import { assertDaemonDependencies } from "../daemon/preflight.js";
@@ -89,6 +90,34 @@ function countActiveSessions(): number {
   // Count worker sessions that are still doing work. "closed" sessions stay
   // on disk for history lookup but are no longer active.
   return listSessions({ type: "worker" }).filter((s) => s.status !== "closed").length;
+}
+
+export function listRunningTaskSessions(): { sessionId: string; taskId: string }[] {
+  return listSessions({ type: "worker", status: "active" })
+    .filter((s) => Boolean(s.taskId))
+    .map((s) => ({ sessionId: s.sessionId, taskId: s.taskId! }));
+}
+
+export async function confirmDaemonShutdown(action: "stop" | "restart", yes: boolean): Promise<void> {
+  const running = listRunningTaskSessions();
+  if (running.length === 0 || yes) return;
+
+  const taskList = running.map((s) => `  - ${s.taskId} (session ${s.sessionId.slice(0, 8)})`).join("\n");
+  const message = `${action === "stop" ? "Stopping" : "Restarting"} the daemon will release ${running.length} active task(s) back to todo:\n${taskList}`;
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.error(`${message}\nRe-run with -y/--yes to confirm.`);
+    process.exit(1);
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await rl.question(`${message}\nContinue? [y/N] `);
+  rl.close();
+
+  if (!["y", "yes"].includes(answer.trim().toLowerCase())) {
+    console.log("Cancelled");
+    process.exit(1);
+  }
 }
 
 function formatProviders(all: string[]): string {
@@ -214,12 +243,15 @@ export function registerStopCommand(program: Command) {
   program
     .command("stop")
     .description("Stop the Machine daemon")
-    .action(async () => {
+    .option("-y, --yes", "Confirm stopping active tasks without prompting")
+    .action(async (opts) => {
       const pid = readDaemonPid();
       if (!pid) {
         console.log("○ Daemon is not running");
         return;
       }
+
+      await confirmDaemonShutdown("stop", Boolean(opts.yes));
 
       let uptimeStr = "";
       const state = readDaemonState();
@@ -307,12 +339,14 @@ export function registerRestartCommand(program: Command) {
     .option("--max-concurrent <n>", "Max concurrent agents")
     .option("--poll-interval <ms>", "Poll interval in ms")
     .option("--task-timeout <ms>", "Task timeout in ms (0 to disable)")
+    .option("-y, --yes", "Confirm stopping active tasks without prompting")
     .action(async (opts) => {
       assertDaemonDependencies();
 
       // Stop existing daemon if running
       const pid = readDaemonPid();
       if (pid) {
+        await confirmDaemonShutdown("restart", Boolean(opts.yes));
         process.kill(pid, "SIGTERM");
 
         const deadline = Date.now() + 10_000;

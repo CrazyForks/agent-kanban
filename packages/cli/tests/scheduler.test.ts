@@ -132,6 +132,7 @@ function makeStubs(tasks: Record<string, unknown>[] = []) {
   };
   const pool = {
     activeCount: 0,
+    activeCountForRuntime: vi.fn().mockReturnValue(0),
     getActiveTaskIds: vi.fn().mockReturnValue([]),
     hasTask: vi.fn().mockReturnValue(false),
     killTask: vi.fn().mockResolvedValue(undefined),
@@ -488,7 +489,7 @@ describe("DaemonLoop tick — resumeBackoffSessions: expired backoff triggers re
     expect(mockResumeOneSession).not.toHaveBeenCalled();
   });
 
-  it("skips resumeBackoffSessions when pool is at max capacity", async () => {
+  it("skips resumeBackoffSessions when the session runtime is at max capacity", async () => {
     writeSession(
       makeWorkerSession("sess-backoff-max", "task-backoff-max", "rate_limited", {
         resumeAfter: Date.now() - 1000,
@@ -497,8 +498,8 @@ describe("DaemonLoop tick — resumeBackoffSessions: expired backoff triggers re
     );
 
     const stubs = makeStubs();
-    // Fill pool to max
     stubs.pool.activeCount = 5;
+    stubs.pool.activeCountForRuntime = vi.fn().mockReturnValue(5);
     const { loop } = makeLoop(stubs);
 
     loop.start();

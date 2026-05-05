@@ -221,9 +221,10 @@ describe("dispatchTasks — scheduled_at filter", () => {
     };
   }
 
-  function makePool(spawnSpy: ReturnType<typeof vi.fn>) {
+  function makePool(spawnSpy: ReturnType<typeof vi.fn>, activeCountForRuntime: (runtime: string) => number = () => 0) {
     return {
       activeCount: 0,
+      activeCountForRuntime,
       getActiveTaskIds: () => [] as string[],
       hasTask: (_id: string) => false,
       killTask: async () => {},
@@ -431,6 +432,48 @@ describe("dispatchTasks — scheduled_at filter", () => {
     rl.stop();
   });
 
+  it("does not dispatch when the assigned runtime is at its per-runtime concurrency limit", async () => {
+    const { dispatchTasks } = await import("../packages/cli/src/daemon/dispatcher");
+    const spawnSpy = vi.fn().mockResolvedValue(undefined);
+    const task = makeTask({ id: "task-runtime-full", assigned_to: "agent-full" });
+    const client = makeClient([task]);
+    const pool = makePool(spawnSpy, (runtime) => (runtime === "claude" ? 5 : 0));
+    const rl = makeRateLimiter();
+
+    const result = await dispatchTasks(client as any, pool as any, rl, prMonitor, opts);
+
+    expect(result).toBe(false);
+    expect(spawnSpy).not.toHaveBeenCalled();
+    rl.stop();
+  });
+
+  it("dispatches another runtime even when a different runtime is at its per-runtime limit", async () => {
+    const { dispatchTasks } = await import("../packages/cli/src/daemon/dispatcher");
+    const spawnSpy = vi.fn().mockResolvedValue(undefined);
+    const fullCodexTask = makeTask({ id: "task-codex-full", assigned_to: "agent-codex" });
+    const availableClaudeTask = makeTask({ id: "task-claude-open", assigned_to: "agent-claude" });
+    const client = {
+      ...makeClient([fullCodexTask, availableClaudeTask]),
+      getAgent: async (id: string) => ({
+        runtime: id === "agent-codex" ? "codex" : "claude",
+        runtime_available: true,
+        name: "Agent",
+        model: null,
+        skills: [],
+        gpg_subkey_id: null,
+        username: id,
+      }),
+    };
+    const pool = makePool(spawnSpy, (runtime) => (runtime === "codex" ? 5 : 0));
+    const rl = makeRateLimiter();
+
+    const result = await dispatchTasks(client as any, pool as any, rl, prMonitor, opts);
+
+    expect(result).toBe(true);
+    expect(spawnSpy).toHaveBeenCalledWith(expect.objectContaining({ taskId: "task-claude-open" }));
+    rl.stop();
+  });
+
   it("does not dispatch an assigned todo task when the agent runtime is unavailable", async () => {
     const { dispatchTasks } = await import("../packages/cli/src/daemon/dispatcher");
     const spawnSpy = vi.fn().mockResolvedValue(undefined);
@@ -583,6 +626,7 @@ describe("DaemonLoop + RateLimiter — loop behavior", () => {
   function makePool() {
     return {
       activeCount: 0,
+      activeCountForRuntime: () => 0,
       getActiveTaskIds: () => [] as string[],
       hasTask: (_id: string) => false,
       killTask: async () => {},

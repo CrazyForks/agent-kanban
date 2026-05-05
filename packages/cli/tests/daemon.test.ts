@@ -75,6 +75,7 @@ function makeMachineClient(agentId: string, sessionId: string) {
     listAgents: vi.fn().mockResolvedValue([{ id: agentId }]),
     listSessions: vi.fn().mockResolvedValue([{ id: sessionId, status: "active", machine_id: MACHINE_ID }]),
     closeSession: vi.fn().mockResolvedValue(undefined),
+    releaseTask: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -149,6 +150,19 @@ describe("cleanupStaleSessions — active session with dead pid IS removed", () 
     await cleanupStaleSessions(client, MACHINE_ID);
 
     expect(client.closeSession).toHaveBeenCalledWith(session.agentId, session.sessionId);
+  });
+
+  it("releases the associated task before removing an active worker session", async () => {
+    if (typeof cleanupStaleSessions !== "function") return;
+
+    const session = makeWorkerSession({ pid: DEAD_PID, status: "active", taskId: "task-stale" });
+    writeSession(session);
+
+    const client = makeMachineClient(session.agentId, session.sessionId);
+    await cleanupStaleSessions(client, MACHINE_ID);
+
+    expect(client.releaseTask).toHaveBeenCalledWith("task-stale");
+    expect(readSession(session.sessionId)).toBeNull();
   });
 });
 

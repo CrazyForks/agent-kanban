@@ -84,9 +84,12 @@ function makeRateLimitedSession(runtime: string, taskId = "task-1"): SessionFile
   };
 }
 
-function makePool(overrides: Partial<{ activeCount: number; hasTask: (id: string) => boolean }> = {}) {
+function makePool(
+  overrides: Partial<{ activeCount: number; activeCountForRuntime: (runtime: string) => number; hasTask: (id: string) => boolean }> = {},
+) {
   return {
     activeCount: overrides.activeCount ?? 0,
+    activeCountForRuntime: overrides.activeCountForRuntime ?? ((_runtime: string) => overrides.activeCount ?? 0),
     hasTask: overrides.hasTask ?? ((_id: string) => false),
     getActiveTaskIds: () => [],
   } as any;
@@ -278,6 +281,7 @@ describe("DaemonLoop — RATE_LIMIT_RESUME_PROMPT is non-empty", () => {
 
       const pool = {
         activeCount: 0,
+        activeCountForRuntime: (_runtime: string) => 0,
         hasTask: (_id: string) => false,
         getActiveTaskIds: () => [],
       } as any;
@@ -321,6 +325,7 @@ describe("DaemonLoop — RATE_LIMIT_RESUME_PROMPT is non-empty", () => {
 
       const pool = {
         activeCount: 0,
+        activeCountForRuntime: (_runtime: string) => 0,
         hasTask: (_id: string) => false,
         getActiveTaskIds: () => [],
       } as any;

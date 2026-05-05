@@ -78,6 +78,7 @@ const mockPool = {
   spawnAgent: mockSpawnAgent,
   hasTask: vi.fn().mockReturnValue(false),
   activeCount: 0,
+  activeCountForRuntime: vi.fn().mockReturnValue(0),
   getActiveTaskIds: vi.fn().mockReturnValue([]),
   killTask: vi.fn().mockResolvedValue(undefined),
   killAll: vi.fn().mockResolvedValue(undefined),

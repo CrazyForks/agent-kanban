@@ -106,6 +106,14 @@ export class RuntimePool {
     return this.agents.size;
   }
 
+  activeCountForRuntime(runtime: string): number {
+    let count = 0;
+    for (const agent of this.agents.values()) {
+      if (agent.providerName === runtime) count++;
+    }
+    return count;
+  }
+
   hasTask(taskId: string): boolean {
     return this.agents.has(taskId);
   }
@@ -189,16 +197,10 @@ export class RuntimePool {
       logger.info(`Killing agent for task ${taskId}`);
       this.agents.delete(taskId);
       await agent.handle.abort().catch((e) => logger.warn(`Abort failed: ${errMessage(e)}`));
-      apiFireAndForget(
-        "closeSession",
-        () => this.client.closeSession(agent.agentClient.getAgentId(), agent.agentClient.getSessionId()),
-        (msg) => logger.warn(`Failed to close session ${agent.sessionId}: ${msg}`),
-      );
-      apiFireAndForget(
-        "releaseTask",
-        () => this.client.releaseTask(taskId),
-        (msg) => logger.warn(`Failed to release task ${taskId}: ${msg}`),
-      );
+      await this.client
+        .closeSession(agent.agentClient.getAgentId(), agent.agentClient.getSessionId())
+        .catch((e) => logger.warn(`Failed to close session ${agent.sessionId}: ${errMessage(e)}`));
+      await this.client.releaseTask(taskId).catch((e) => logger.warn(`Failed to release task ${taskId}: ${errMessage(e)}`));
     }
   }
 

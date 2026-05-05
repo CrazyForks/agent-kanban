@@ -94,12 +94,14 @@ function makeRateLimitedSession(resumeAfter?: number): SessionFile {
 function makePool(
   overrides: Partial<{
     activeCount: number;
+    activeCountForRuntime: (runtime: string) => number;
     hasTask: (id: string) => boolean;
     getActiveTaskIds: () => string[];
   }> = {},
 ) {
   return {
     activeCount: overrides.activeCount ?? 0,
+    activeCountForRuntime: overrides.activeCountForRuntime ?? ((_runtime: string) => overrides.activeCount ?? 0),
     hasTask: overrides.hasTask ?? ((_id: string) => false),
     getActiveTaskIds: overrides.getActiveTaskIds ?? (() => []),
     killTask: vi.fn().mockResolvedValue(undefined),
@@ -119,6 +121,7 @@ function makeLoop(
     sessions?: SessionFile[];
     poolOverrides?: Partial<{
       activeCount: number;
+      activeCountForRuntime: (runtime: string) => number;
       hasTask: (id: string) => boolean;
       getActiveTaskIds: () => string[];
     }>;
@@ -315,9 +318,9 @@ describe("DaemonLoop idle exponential backoff", () => {
     expect(getIdleBackoff(loop)).toBe(POLL_INTERVAL);
   });
 
-  // --- pool saturation path leaves idleBackoffMs untouched ---
+  // --- global pool saturation does not block per-runtime dispatch ---
 
-  it("when pool is saturated, idleBackoffMs is not changed by the tick", async () => {
+  it("when global pool is saturated, idleBackoffMs still advances if no runtime dispatches", async () => {
     const { loop } = makeLoop({
       poolOverrides: { activeCount: 4 },
       maxConcurrent: 4,
@@ -330,11 +333,10 @@ describe("DaemonLoop idle exponential backoff", () => {
 
     await (loop as any).tick();
 
-    // Pool saturated — early return — idleBackoffMs must not be touched
-    expect(getIdleBackoff(loop)).toBe(inflated);
+    expect(getIdleBackoff(loop)).toBe(Math.min(inflated * 1.5, MAX_IDLE_BACKOFF_MS));
   });
 
-  it("when pool is saturated, dispatchTasks is never called", async () => {
+  it("when global pool is saturated, dispatchTasks still decides per-runtime capacity", async () => {
     const { loop } = makeLoop({
       poolOverrides: { activeCount: 4 },
       maxConcurrent: 4,
@@ -343,7 +345,7 @@ describe("DaemonLoop idle exponential backoff", () => {
     (loop as any).schedulePoll = vi.fn();
     await (loop as any).tick();
 
-    expect(dispatchTasksMock).not.toHaveBeenCalled();
+    expect(dispatchTasksMock).toHaveBeenCalledOnce();
   });
 
   // --- nextPollDelay clamps against rate-limit resume time ---

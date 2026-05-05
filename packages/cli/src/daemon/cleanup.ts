@@ -57,6 +57,11 @@ export async function cleanupStaleSessions(client: MachineClient, machineId: str
           if (isPidAlive(local.pid)) continue;
         }
 
+        if (local?.type === "worker" && local.taskId) {
+          await client.releaseTask(local.taskId).catch((err: any) => {
+            logger.warn(`Failed to release stale task ${local.taskId}: ${err.message}`);
+          });
+        }
         await client.closeSession(agent.id, session.id).catch(() => {});
         if (local) {
           logger.info(`Closing stale session ${session.id.slice(0, 8)} for agent ${agent.id.slice(0, 8)}`);

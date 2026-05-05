@@ -46,8 +46,6 @@ dataset = "agent_kanban_metrics"
 [[send_email]]
 name = "EMAIL"
 allowed_sender_addresses = ["noreply@agent-kanban.dev"]
-remote = true
-
 [[d1_databases]]
 binding = "DB"
 database_name = "agent-kanban-db"

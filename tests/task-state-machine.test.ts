@@ -600,6 +600,9 @@ describe("task lifecycle HTTP permissions", () => {
   let agentId: string;
   let sessionId: string;
   let sessionPrivateKey: CryptoKey;
+  let leaderAgentId: string;
+  let leaderSessionId: string;
+  let leaderSessionPrivateKey: CryptoKey;
   let boardId: string;
 
   async function apiRequest(method: string, path: string, body?: any, token?: string) {
@@ -617,6 +620,14 @@ describe("task lifecycle HTTP permissions", () => {
       .setIssuedAt()
       .setExpirationTime("60s")
       .sign(sessionPrivateKey);
+  }
+
+  async function signLeaderSessionJWT(): Promise<string> {
+    return new SignJWT({ sub: leaderSessionId, aid: leaderAgentId, jti: randomUUID(), aud: BETTER_AUTH_URL })
+      .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
+      .setIssuedAt()
+      .setExpirationTime("60s")
+      .sign(leaderSessionPrivateKey);
   }
 
   async function createTestTask() {
@@ -668,6 +679,28 @@ describe("task lifecycle HTTP permissions", () => {
       apiKey,
     );
 
+    const leaderAgent = await createTestAgent(env.DB, userId, {
+      name: "SM HTTP Leader",
+      username: "sm-http-leader",
+      runtime: "codex",
+      kind: "leader",
+    });
+    leaderAgentId = leaderAgent.id;
+
+    leaderSessionId = randomUUID();
+    const leaderKeypair = await crypto.subtle.generateKey({ name: "Ed25519" } as any, true, ["sign", "verify"]);
+    leaderSessionPrivateKey = (leaderKeypair as any).privateKey;
+    const leaderPubJwk = await crypto.subtle.exportKey("jwk", (leaderKeypair as any).publicKey);
+    await apiRequest(
+      "POST",
+      `/api/agents/${leaderAgentId}/sessions`,
+      {
+        session_id: leaderSessionId,
+        session_public_key: leaderPubJwk.x!,
+      },
+      apiKey,
+    );
+
     // Create board
     const { createBoard } = await import("../apps/web/server/boardRepo");
     const board = await createBoard(env.DB, userId, "sm-http-board", "ops");
@@ -698,12 +731,22 @@ describe("task lifecycle HTTP permissions", () => {
     expect(res.status).toBe(403);
   });
 
-  it("agent cannot release a task (403)", async () => {
+  it("worker agent cannot release a task (403)", async () => {
     const task = await createTestTask();
     await forceStatus(task.id, "in_progress");
     const jwt = await signSessionJWT();
     const res = await apiRequest("POST", `/api/tasks/${task.id}/release`, {}, jwt);
     expect(res.status).toBe(403);
+  });
+
+  it("leader agent can release a task (200)", async () => {
+    const task = await createTestTask();
+    await forceStatus(task.id, "in_progress");
+    const jwt = await signLeaderSessionJWT();
+    const res = await apiRequest("POST", `/api/tasks/${task.id}/release`, {}, jwt);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.status).toBe("todo");
   });
 
   it("machine can release a task (200)", async () => {

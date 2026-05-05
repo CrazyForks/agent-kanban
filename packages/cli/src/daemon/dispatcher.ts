@@ -26,6 +26,7 @@ import { createRepoWorkspace, createTempWorkspace } from "../workspace/workspace
 import { apiCallIdempotent, apiCallOptional, cryptoBoundary, execBoundary, fsSync } from "./boundaries.js";
 import type { PrMonitor } from "./prMonitor.js";
 import type { RateLimiter } from "./rateLimiter.js";
+import { isRuntimeLimitIgnored } from "./runtimeOverrides.js";
 import type { RuntimePool } from "./runtimePool.js";
 
 const logger = createLogger("dispatcher");
@@ -161,13 +162,16 @@ export async function dispatchTasks(
         agentCache.set(t.assigned_to, { runtime: null, available: false });
         continue;
       }
-      agentState = { runtime: normalizeRuntime(agent.runtime ?? "claude"), available: agent.runtime_available !== false };
+      const runtime = normalizeRuntime(agent.runtime ?? "claude");
+      agentState = { runtime, available: agent.runtime_available !== false || isRuntimeLimitIgnored(runtime) };
       agentCache.set(t.assigned_to, agentState);
     }
     if (!agentState.runtime || !agentState.available || !localRuntimes.has(agentState.runtime)) continue;
-    const localAvailability = await getProvider(agentState.runtime).checkAvailability?.();
+    if (pool.activeCountForRuntime(agentState.runtime) >= opts.maxConcurrent) continue;
+    const ignoreRuntimeLimit = isRuntimeLimitIgnored(agentState.runtime);
+    const localAvailability = ignoreRuntimeLimit ? null : await getProvider(agentState.runtime).checkAvailability?.();
     if (localAvailability && localAvailability.status !== "ready") continue;
-    if (!rateLimiter.isRuntimePaused(agentState.runtime)) {
+    if (ignoreRuntimeLimit || !rateLimiter.isRuntimePaused(agentState.runtime)) {
       task = t;
       break;
     }

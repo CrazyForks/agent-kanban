@@ -812,6 +812,17 @@ describe("routes", () => {
     expect(res.status).toBe(200);
   });
 
+  it("POST /api/tasks/:id/release allows leader agents", async () => {
+    const { createTask } = await import("../apps/web/server/taskRepo");
+    const task = await createTask(env.DB, userId, { title: "Leader Release Task", board_id: boardId });
+    await env.DB.prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ?").bind(task.id).run();
+    const leaderJwt = await signLeaderSessionJWT();
+    const res = await apiRequest("POST", `/api/tasks/${task.id}/release`, {}, leaderJwt);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.status).toBe("todo");
+  });
+
   it("POST /api/tasks/:id/cancel cancels a task", async () => {
     const { createTask } = await import("../apps/web/server/taskRepo");
     const task = await createTask(env.DB, userId, { title: "Cancel Task", board_id: boardId });

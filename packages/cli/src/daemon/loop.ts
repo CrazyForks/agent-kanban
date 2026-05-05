@@ -84,8 +84,8 @@ export class DaemonLoop {
     if (!this.running) return;
     const now = Date.now();
     for (const s of this.sessions.list({ type: "worker", status: "rate_limited" })) {
-      if (this.pool.activeCount >= this.opts.maxConcurrent) return;
       if (s.runtime !== runtime) continue;
+      if (this.pool.activeCountForRuntime(s.runtime) >= this.opts.maxConcurrent) return;
       if (!s.taskId || this.pool.hasTask(s.taskId)) continue;
       if (s.resumeAfter && s.resumeAfter > now) continue;
       await resumeOneSession(s, RATE_LIMIT_RESUME_PROMPT, this.client, this.pool);
@@ -109,7 +109,7 @@ export class DaemonLoop {
   private async resumeBackoffSessions(): Promise<void> {
     const now = Date.now();
     for (const s of this.sessions.list({ type: "worker", status: "rate_limited" })) {
-      if (this.pool.activeCount >= this.opts.maxConcurrent) return;
+      if (this.pool.activeCountForRuntime(s.runtime) >= this.opts.maxConcurrent) continue;
       if (!s.taskId || this.pool.hasTask(s.taskId)) continue;
       if (!s.resumeAfter || s.resumeAfter > now) continue;
       await resumeOneSession(s, RATE_LIMIT_RESUME_PROMPT, this.client, this.pool);
@@ -155,14 +155,6 @@ export class DaemonLoop {
     await this.resumeBackoffSessions();
 
     const reapedOrResumed = this.pool.activeCount !== activeBefore;
-
-    if (this.pool.activeCount >= this.opts.maxConcurrent) {
-      // Pool saturated — wait for onSlotFreed. Don't touch idle backoff; this
-      // is "no capacity," not "nothing to do," so accelerating would just
-      // burn requests on a server that keeps saying 409.
-      this.schedulePoll(this.nextPollDelay());
-      return;
-    }
 
     const dispatched = await dispatchTasks(this.client, this.pool, this.rateLimiter, this.prMonitor, {
       maxConcurrent: this.opts.maxConcurrent,
@@ -297,7 +289,7 @@ export async function checkRejectedReviews(
 ): Promise<void> {
   const now = Date.now();
   for (const s of sessions.list({ type: "worker", status: "in_review" })) {
-    if (pool.activeCount >= maxConcurrent) return;
+    if (pool.activeCountForRuntime(s.runtime) >= maxConcurrent) continue;
     if (!s.taskId || pool.hasTask(s.taskId)) continue;
     if (s.resumeAfter && s.resumeAfter > now) continue;
 
