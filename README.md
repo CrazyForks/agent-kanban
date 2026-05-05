@@ -129,6 +129,8 @@ After that, `ak` reuses that leader identity across sessions for the same runtim
 - **`/ak-plan v1.0 <goals>`** — analyze the codebase, create a board with tasks and dependencies, assign to agents
 - **`/ak-task fix the login redirect bug`** — create a single task, assign it, monitor → review → merge
 
+Codex is the exception: use `$ak-plan` and `$ak-task` there instead of slash commands.
+
 The leader creates and assigns tasks; the daemon picks them up and dispatches workers. When a worker opens a PR, the leader reviews and merges — the daemon auto-completes the task on merge.
 
 ## Agent Identity

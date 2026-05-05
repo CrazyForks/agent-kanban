@@ -11,6 +11,8 @@
     "format": "biome format --write .",
     "check": "biome check .",
     "check:fix": "biome check --fix .",
+    "skills:sync": "bash scripts/sync-skill-references.sh",
+    "skills:check": "bash scripts/sync-skill-references.sh --check",
     "prepare": "lefthook install",
     "install:cli": "bash scripts/install-cli.sh"
   },

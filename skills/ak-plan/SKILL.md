@@ -3,8 +3,8 @@ name: ak-plan
 description: |
   Plan and execute a project — either a new version of an existing project, or a
   brand new product from scratch. Analyzes gaps, creates board with tasks and
-  dependencies, assigns to agents. Use when asked to "plan a version", "plan v1.4",
-  "build a product", "create a project", "规划版本", or "/ak-plan <version> <goals>".
+  dependencies, assigns to agents. Use when asked to plan a version, build a
+  product, create a project, or 规划版本.
 argument-hint: "<version-or-name> [goals]"
 disable-model-invocation: true
 allowed-tools:
@@ -21,6 +21,15 @@ allowed-tools:
 # ak-plan — Project Planning
 
 Plan and create a board with tasks — for a new version release or a new product from scratch.
+
+## Unattended Execution Contract
+
+Assume this workflow runs in two explicit modes:
+
+- **Before task creation: human-in-the-loop.** Ask the user only during the initial planning, ambiguity resolution, and task-plan preview phase before task creation is confirmed.
+- **After task creation: human-not-in-the-loop.** Once the user confirms the plan and tasks are created, do not stop to ask for permission, confirmation, or next steps unless the user interrupts you. Continue through the full work cycle: create, assign, monitor, review, reject or merge, and report the final outcome.
+
+If execution hits a blocker after confirmation, use the available tools and repository context to resolve it. If the blocker cannot be resolved without external authorization or production mutation, fail fast with the exact blocker and the next required action instead of waiting in the middle of the workflow.
 
 ## Identity
 
@@ -39,6 +48,39 @@ The leader chooses its own username and optional full name.
 Parse the user's input:
 - **Name** — version (e.g. "v1.4") or product name (e.g. "my-api"). If the user provides a patch version such as `v1.4.0`, normalize task labels to `v1.4`.
 - **Goals** — what to achieve (if not provided, ask)
+
+## Workflow Checklist
+
+Immediately after this skill is invoked, create and maintain an explicit task
+plan/checklist in the agent UI. This checklist is a guardrail against attention
+drift during long human-in-the-loop planning discussions.
+
+The checklist must include the full lifecycle, not just planning:
+
+1. Detect project mode and repo/board context.
+2. Understand current state and constraints.
+3. Analyze gaps and draft task plan.
+4. Preview task plan and get human confirmation.
+5. Create or verify labels, workers, and tasks.
+6. Switch to human-not-in-the-loop execution.
+7. Monitor tasks until PRs reach review.
+8. Review each PR: CI, code, functional acceptance, notes.
+9. Reject or merge each PR according to gates.
+10. Continue until all planned tasks are done.
+11. Report final summary.
+
+Keep this checklist current:
+
+- Mark exactly one active step as in progress.
+- Update statuses at every phase transition.
+- After task creation, explicitly mark the planning/creation steps complete and
+  mark monitoring/review as in progress before doing any final user-facing
+  summary.
+- Do not send a final answer while any post-creation execution step remains
+  pending, unless the user explicitly says to stop, cancel, abort, or only
+  create tasks.
+- If context becomes long or the user interrupts, re-read the checklist before
+  deciding the next action.
 
 ## Phase 0: Detect Mode
 
@@ -114,6 +156,36 @@ Use `AskUserQuestion` to interactively confirm the plan with the user. For each 
 - **Runtime choice** — when multiple schedulable runtimes are reasonable, ask which runtime to use for new workers
 
 Keep iterating until all uncertainties are resolved.
+
+### Structured Questions in Codex
+
+Use the runtime's structured question tool during the pre-task-creation phase:
+
+- In Claude-style runtimes, use `AskUserQuestion`.
+- In Codex, use `request_user_input`.
+
+For Codex Default mode, verify the feature flag before relying on interactive prompts:
+
+```bash
+codex features list | rg default_mode_request_user_input
+```
+
+Expected:
+
+```text
+default_mode_request_user_input     under development  true
+```
+
+If it is not enabled, tell the user to enable the feature flag themselves and
+restart Codex before continuing:
+
+```bash
+codex features enable default_mode_request_user_input
+```
+
+Do not run this command for the user. The current Codex session will not gain the
+tool after an automatic config change; the user must enable it and reopen Codex.
+Do not switch Codex into Plan mode as a workaround. Plan mode injects Codex-native planning behavior and conflicts with this leader workflow.
 
 Before creating any tasks, show the user a **task summary table** using `AskUserQuestion`:
 
@@ -308,7 +380,10 @@ If CI is pending or failed, reject immediately — worker must wait for CI to pa
 ak task reject <task-id> --reason "CI not green — wait for CI to pass before submitting for review"
 ```
 
-Two gates — both must pass before merging. Reject as soon as either fails.
+Three gates — code review, functional acceptance, and agent notes review — must
+pass before merging. Follow the shared verification policy in
+`references/leader-verification.md`, including waiver evidence and
+verification infrastructure learning.
 
 **Gate 1: Code Review**
 
@@ -328,13 +403,11 @@ Check:
 **Fails → reject immediately**, don't proceed to Gate 2.
 
 **Gate 2: Functional Acceptance**
-- Passing tests, CI, and code review is not completion. Validate the feature from the product/user perspective before accepting it.
-- Re-read the target repo's CONTRIBUTING.md before testing — don't rely on memory from Phase 1
-- Walk through every item in the task's `## Checks` section — each must pass
-- Visit preview/staging deployment and verify end-to-end
-- Check for regressions in related features
-- If an acceptance specialist is attached to the reviewing agent, use it for product-level E2E or manual acceptance checks, then independently judge whether its findings are sufficient.
-- **Fails → reject with specific repro steps**
+
+Apply `references/leader-verification.md`. Passing tests, CI, and code review
+is not completion. Validate every task check from the product/user perspective.
+If verification cannot be completed, follow the shared attempt budget, waiver,
+and verification infrastructure learning rules.
 
 **Gate 3: Agent Notes Review**
 
@@ -353,31 +426,17 @@ If the completion summary is missing or unclear, reject and ask the worker to ad
 
 If no proposal is present, continue. If a proposal is present, review it using `references/runtime-delegation.md`. Apply it only when the proposal is durable, role-appropriate, and not task-specific.
 
-**Any gate fails → Reject.** List all issues in the reason.
+**Any gate fails or is blocked → Reject.** List all issues in the reason.
 ```bash
 ak task reject <task-id> --reason "<all issues, specific and actionable>"
 ```
 
-**Both gates pass → Post verification comment, then merge.**
+**All gates pass, or Gate 2 is explicitly waived after the required attempt
+budget → Post verification comment, then merge.**
 
-Post evidence on the PR before merging:
-```bash
-gh pr comment <pr-number> --repo <owner>/<repo> --body "$(cat <<'EOF'
-## Verification
-
-### Functional Test
-- Visited: <staging/preview URL tested>
-- Golden path: <what was tested and result>
-- Edge cases: <what was tested and result>
-
-### Test Suite
-<test commands run and pass/fail summary>
-
-### Conclusion
-All checks pass — merging.
-EOF
-)"
-```
+Post evidence on the PR before merging using the verification comment template in
+`references/leader-verification.md`. Before running `gh pr merge`, re-read
+the comment and confirm it satisfies the shared policy.
 
 If the PR has merge conflicts, reject instead of merging — the worker agent will rebase, fix, and resubmit:
 ```bash
@@ -399,14 +458,21 @@ rm -rf /tmp/ak-review-* playwright-report/ test-results/
 ### Completion:
 When all tasks are done, report the final summary to the user.
 
-## AK Command or Product Issues
+## AK Command, Product, or Skill Issues
 
-If the blocker appears to be an `ak` bug, missing capability, confusing UX, or documentation gap, file an issue in the official repo after collecting a minimal reproduction:
+If the blocker appears to be an `ak` bug, missing capability, confusing UX, documentation gap, or skill workflow problem, file an issue in the official repo after collecting a minimal reproduction.
+
+If the leader agent makes a process error, violates this skill, merges/rejects incorrectly, skips a required gate, misinterprets conflicting skill instructions, or has to be corrected by the user about expected skill behavior, do not stop at a chat apology or "next time" promise. Summarize the failure as a durable skill-improvement issue so future agents and external projects can benefit from the lesson. Include:
+
+- What the agent did wrong.
+- Which skill text was unclear, incomplete, contradictory, or too weak to prevent the error.
+- The exact rule or wording that should be added or changed.
+- Any local skill edits already made during the incident.
 
 ```bash
 gh issue create \
   --repo saltbo/agent-kanban \
-  --title "ak: <short problem summary>" \
+  --title "ak-plan: <short process or skill problem summary>" \
   --body "$(cat <<'EOF'
 ## Summary
 <what failed or what capability is missing>
@@ -430,6 +496,9 @@ ak <command and flags>
 ## Reproduction
 1. <step>
 2. <step>
+
+## Proposed Skill Change
+<specific wording or rule that would prevent recurrence>
 EOF
 )"
 ```
@@ -438,7 +507,12 @@ Never include API keys, session tokens, private keys, `.env` contents, or privat
 
 ## Rules
 
-- **Workflow completion is mandatory** — once this skill is invoked, the full lifecycle (plan → create → assign → monitor → review → merge all) MUST run to completion. If you are interrupted mid-workflow (user asks a side question, chat drifts to another topic, tool fails, etc.), handle the interruption and then **immediately resume the workflow from where you left off**. Never ask "should I continue monitoring?" or "do you want me to keep going?" — the answer is always yes. The only way to exit the workflow early is if the user explicitly says to stop, cancel, or abort.
+- **Workflow completion is mandatory** — once this skill is invoked, the full lifecycle (plan → create → assign → monitor → review → merge all) MUST run to completion.
+  - **Before task creation: human-in-the-loop.** Discuss scope, resolve ambiguity, preview the task plan, and get explicit user confirmation before creating tasks.
+  - **After task creation: human-not-in-the-loop.** The user is no longer part of execution control unless they explicitly interrupt with a new instruction. The leader owns execution and must continue monitoring, reviewing, rejecting, merging, and iterating until the whole work cycle completes.
+  - After `ak create task`, continue immediately into monitoring/review work (`ak wait board ...`) in the same turn whenever possible. Do not send a final answer merely reporting that tasks were created unless the user explicitly says to stop, cancel, abort, or only create tasks.
+  - If execution hits a blocker after task creation, solve it autonomously: inspect state, fix environment issues, reject blocked PRs with actionable reasons, create follow-up issues when the platform/skill is at fault, or wait for the next task/PR. Do not stop and hand the blocker back to the user unless the user is the only possible source of required information or explicitly pauses the workflow.
+  - If you are interrupted mid-workflow (user asks a side question, chat drifts to another topic, tool fails, etc.), handle the interruption and then **immediately resume the workflow from where you left off**. Never ask "should I continue monitoring?" or "do you want me to keep going?" — the answer is always yes. The only way to exit the workflow early is if the user explicitly says to stop, cancel, or abort.
 - **Follow CONTRIBUTING.md** — read the target repo's CONTRIBUTING.md before creating tasks; check PR compliance during review
 - **Prefer text output** — only use `-o json | jq` when extracting fields into variables (e.g. task IDs for `--depends-on`). For display, use default text output.
 - **Always get repo URL from `git remote get-url origin`** — never guess, never improvise. If there is no remote, stop and ask the user to push the repo first (see Phase 0). `file://`, local paths, and placeholder URLs will be rejected by the server with 400.
@@ -449,3 +523,4 @@ Never include API keys, session tokens, private keys, `.env` contents, or privat
 - **Pre-install shared dependencies in scaffold** — avoid parallel install conflicts
 - **Tasks with high context overlap must be sequential or merged** (depends-on)
 - **Tasks can be parallel only when their feature/module context, files, data model, and API contracts are independent**
+- **File skill-improvement issues for agent process failures** — if you violate this skill or the user has to correct your workflow, create a GitHub issue in `saltbo/agent-kanban` documenting the failure and proposed skill change. Do this in addition to any immediate local skill edit; do not replace it with an apology or private note.
