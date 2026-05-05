@@ -1,6 +1,6 @@
 import { CheckCircle2, CircleAlert } from "lucide-react";
 import type React from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Navigate, NavLink, Route, Routes } from "react-router-dom";
 import { toast } from "sonner";
 import { Header } from "../components/Header";
@@ -29,20 +29,16 @@ function ProfileSettingsPage() {
   const { data: session, refetch } = useSession();
   const user = session?.user as SettingsUser | undefined;
   const [name, setName] = useState(user?.name ?? "");
-  const [image, setImage] = useState(user?.image ?? "");
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     setName(user?.name ?? "");
-    setImage(user?.image ?? "");
-  }, [user?.name, user?.image]);
+  }, [user?.name]);
 
   const trimmedName = name.trim();
-  const trimmedImage = image.trim();
-  const imageError = useMemo(() => imageValidationError(trimmedImage), [trimmedImage]);
-  const isDirty = trimmedName !== (user?.name ?? "") || trimmedImage !== (user?.image ?? "");
-  const canSave = isDirty && trimmedName.length > 0 && !imageError && !isSaving;
+  const isDirty = trimmedName !== (user?.name ?? "");
+  const canSave = isDirty && trimmedName.length > 0 && !isSaving;
   const fallback = profileInitial(trimmedName || user?.email || "?");
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -53,8 +49,7 @@ function ProfileSettingsPage() {
     setIsSaving(true);
     const { error } = await authClient.updateUser({
       name: trimmedName,
-      image: trimmedImage || null,
-    } as any);
+    });
     setIsSaving(false);
 
     if (error) {
@@ -80,7 +75,7 @@ function ProfileSettingsPage() {
             <div>
               <Label className="mb-2 text-xs uppercase tracking-[0.06em] text-content-tertiary">Preview</Label>
               <Avatar size="lg" className="size-14">
-                {trimmedImage && !imageError && <AvatarImage src={trimmedImage} alt="" />}
+                {user?.image && <AvatarImage src={user.image} alt="" />}
                 <AvatarFallback className="text-base font-semibold">{fallback}</AvatarFallback>
               </Avatar>
             </div>
@@ -95,18 +90,6 @@ function ProfileSettingsPage() {
                   autoComplete="name"
                 />
                 {trimmedName.length === 0 && <p className="text-xs text-error">Display name is required.</p>}
-              </Field>
-
-              <Field label="Image URL" htmlFor="profile-image">
-                <Input
-                  id="profile-image"
-                  value={image}
-                  onChange={(event) => setImage(event.target.value)}
-                  aria-invalid={!!imageError}
-                  autoComplete="url"
-                  placeholder="https://example.com/avatar.png"
-                />
-                {imageError && <p className="text-xs text-error">{imageError}</p>}
               </Field>
             </div>
           </div>
@@ -167,17 +150,6 @@ function EmailVerificationBadge({ verified }: { verified: boolean }) {
       Unverified
     </Badge>
   );
-}
-
-function imageValidationError(value: string): string | null {
-  if (!value) return null;
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return "Image URL must use http or https.";
-    return null;
-  } catch {
-    return "Image URL must be a valid URL.";
-  }
 }
 
 function profileInitial(value: string) {

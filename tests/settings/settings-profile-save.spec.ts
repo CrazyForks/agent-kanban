@@ -9,10 +9,12 @@ test.describe("Settings Profile", () => {
     await signUpAndGetBoard(page, `settings_profile_save_${Date.now()}@example.com`, "Original User");
     await page.goto("/settings/profile");
     let savedName = "Original User";
+    let updateUserBody: Record<string, unknown> | undefined;
 
     await page.route("**/api/auth/update-user", async (route) => {
-      const body = JSON.parse(route.request().postData() || "{}") as { name: string };
-      savedName = body.name;
+      const body = JSON.parse(route.request().postData() || "{}") as Record<string, unknown>;
+      updateUserBody = body;
+      savedName = body.name as string;
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({}) });
     });
     await page.route("**/api/auth/get-session", async (route) => {
@@ -37,6 +39,8 @@ test.describe("Settings Profile", () => {
     await expect(page.getByText("Profile saved")).toBeVisible();
     await expect(page.getByRole("button", { name: "Save profile" })).toBeDisabled();
     await expect.poll(() => page.evaluate(() => (window as typeof window & { profileSaveMarker?: string }).profileSaveMarker)).toBe("still-here");
+    expect(updateUserBody).toEqual({ name: "Updated Profile User" });
+    expect(updateUserBody).not.toHaveProperty("image");
 
     const header = page.locator("header");
     await header.locator("button.rounded-full").click();
