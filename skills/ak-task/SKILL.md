@@ -4,14 +4,6 @@ description: |
   Full task lifecycle: create → assign → monitor → review → reject/complete.
   Use when asked to add a feature, fix a bug, create a task, 加个功能, or 修个 bug.
 argument-hint: "<feature or bug description>"
-disable-model-invocation: true
-allowed-tools:
-  - Bash
-  - Read
-  - Grep
-  - Glob
-  - Agent
-  - AskUserQuestion
 ---
 
 # ak-task — Task Lifecycle
@@ -383,10 +375,11 @@ gh pr merge <pr-number> --repo <owner>/<repo> --squash --delete-branch
 The daemon's PR Monitor will mark the task done — do NOT manually `ak task complete`.
 
 #### Cleanup after merge
-Remove local review artifacts from the repo root:
-```bash
-rm -rf /tmp/ak-review-* playwright-report/ test-results/
-```
+Remove local review artifacts from the repo root after verifying each path belongs to this workflow:
+
+- temporary review worktrees under `/tmp/ak-review-*`
+- `playwright-report/`
+- `test-results/`
 
 ## Phase 3: Exception Handling
 

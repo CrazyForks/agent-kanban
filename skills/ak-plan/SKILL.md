@@ -6,16 +6,6 @@ description: |
   dependencies, assigns to agents. Use when asked to plan a version, build a
   product, create a project, or 规划版本.
 argument-hint: "<version-or-name> [goals]"
-disable-model-invocation: true
-allowed-tools:
-  - Bash
-  - Read
-  - Write
-  - Edit
-  - Grep
-  - Glob
-  - Agent
-  - AskUserQuestion
 ---
 
 # ak-plan — Project Planning
@@ -450,10 +440,11 @@ gh pr merge <pr-number> --repo <owner>/<repo> --squash --delete-branch
 The daemon's PR Monitor will automatically complete the task — do NOT manually `ak task complete`.
 
 #### Cleanup after merge
-Remove local review artifacts from the repo root:
-```bash
-rm -rf /tmp/ak-review-* playwright-report/ test-results/
-```
+Remove local review artifacts from the repo root after verifying each path belongs to this workflow:
+
+- temporary review worktrees under `/tmp/ak-review-*`
+- `playwright-report/`
+- `test-results/`
 
 ### Completion:
 When all tasks are done, report the final summary to the user.
