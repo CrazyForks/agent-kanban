@@ -122,7 +122,7 @@ ak get repo                    # registered repos
 git remote -v                  # repo URL (use this, never guess)
 ```
 
-Read CLAUDE.md, CONTRIBUTING.md, and recent git history to understand:
+Read project instruction files, CONTRIBUTING.md, and recent git history to understand:
 - What was shipped recently
 - What patterns/conventions exist
 - What the project architecture looks like
@@ -134,7 +134,7 @@ Use Explore agents to thoroughly scan the codebase for gaps related to the goals
 - Missing features vs stated goals
 - Backend gaps (API, data model)
 - CLI gaps (missing commands)
-- Frontend gaps (if applicable, respect UI Principles in CLAUDE.md)
+- Frontend gaps (if applicable, respect the project's UI principles)
 - Test coverage gaps
 
 Use `AskUserQuestion` to interactively confirm the plan with the user. For each ambiguous point, present options:
@@ -510,7 +510,7 @@ Never include API keys, session tokens, private keys, `.env` contents, or privat
 - **Discuss the plan with the user before creating tasks** — don't just start creating
 - **Set depends-on at creation time** — don't leave deps for later
 - **Space API calls** — avoid triggering rate limits during batch creation
-- **Respect CLAUDE.md** — follow all project conventions and UI principles
+- **Respect project instructions** — follow all project conventions and UI principles
 - **Pre-install shared dependencies in scaffold** — avoid parallel install conflicts
 - **Tasks with high context overlap must be sequential or merged** (depends-on)
 - **Tasks can be parallel only when their feature/module context, files, data model, and API contracts are independent**
