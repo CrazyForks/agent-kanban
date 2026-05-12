@@ -515,6 +515,27 @@ describe("createClient — explicit identity required", () => {
     }
   });
 
+  it("getIdentity restores identity from the server when local identity is missing", async () => {
+    const { getIdentity } = await freshClient();
+    const restored = { id: randomUUID(), name: "Hermes Leader", fingerprint: "fp-hermes", runtime: "hermes", kind: "leader" };
+    mockLoadIdentity.mockReturnValue(null);
+
+    const mockFetch = makeMockFetch([restored]);
+    vi.stubGlobal("fetch", mockFetch);
+
+    try {
+      const identity = await getIdentity("hermes");
+      expect(identity).toEqual({
+        agent_id: restored.id,
+        name: restored.name,
+        fingerprint: restored.fingerprint,
+      });
+      expect(mockSaveIdentity).toHaveBeenCalledWith("hermes", identity);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("throws when daemon is alive and neither local nor server identity exists", async () => {
     const { createClient } = await freshClient();
     mockDetectRuntime.mockReturnValue("claude");

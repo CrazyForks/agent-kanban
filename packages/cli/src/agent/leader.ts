@@ -49,6 +49,12 @@ async function restoreIdentity(runtime: AgentRuntime, client: MachineClient): Pr
   return identity;
 }
 
+export async function getIdentity(runtime: AgentRuntime): Promise<StoredIdentity | null> {
+  const local = loadIdentity(runtime);
+  if (local) return local;
+  return restoreIdentity(runtime, new MachineClient());
+}
+
 export async function createIdentity(input: { runtime: AgentRuntime; username: string; name?: string }): Promise<StoredIdentity> {
   const existing = loadIdentity(input.runtime);
   if (existing) {
@@ -103,11 +109,8 @@ export async function createClient(): Promise<ApiClient> {
     return cachedLeaderClient;
   }
 
-  let identity = loadIdentity(runtime);
   const machineClient = new MachineClient();
-  if (!identity) {
-    identity = await restoreIdentity(runtime, machineClient);
-  }
+  const identity = loadIdentity(runtime) ?? (await restoreIdentity(runtime, machineClient));
   if (!identity) {
     throw new Error(missingIdentityMessage(runtime));
   }

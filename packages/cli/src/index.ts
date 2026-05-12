@@ -1,7 +1,6 @@
 import type { AgentRuntime } from "@agent-kanban/shared";
 import { Command } from "commander";
-import { loadIdentity } from "./agent/identity.js";
-import { createClient, createIdentity } from "./agent/leader.js";
+import { createClient, createIdentity, getIdentity } from "./agent/leader.js";
 import { detectRuntime } from "./agent/runtime.js";
 import { registerAgentCommand } from "./commands/agent.js";
 import { registerApplyCommand } from "./commands/apply.js";
@@ -234,13 +233,13 @@ identityCmd
 program
   .command("whoami")
   .description("Show agent identity for the current runtime")
-  .action(() => {
+  .action(async () => {
     const runtime = detectRuntime();
     if (!runtime) {
       console.error("No supported agent runtime found. Run this command from inside an agent runtime.");
       process.exit(1);
     }
-    const identity = loadIdentity(runtime);
+    const identity = await getIdentity(runtime as AgentRuntime);
     if (!identity) {
       console.error(
         [
