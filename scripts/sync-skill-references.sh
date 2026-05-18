@@ -14,6 +14,7 @@ REFERENCES=(
   "leader-verification.md"
   "runtime-delegation.md"
   "specialist-profiles.md"
+  "wait-monitoring.md"
 )
 
 mode="${1:-sync}"

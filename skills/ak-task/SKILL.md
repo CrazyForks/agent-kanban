@@ -285,6 +285,10 @@ esac
 
 Run `ak wait task --help` for the full flag list.
 
+Before starting or recovering any wait, follow
+`references/wait-monitoring.md`. The same wait policy applies to task waits and
+board waits.
+
 **On timeout (124) or if you suspect the agent is stuck, investigate immediately — don't just re-wait:**
 1. Check daemon logs: `ak logs --lines 20`
 2. Check if agent process is alive: `ps aux | grep "claude.*session"`
@@ -372,7 +376,9 @@ Then merge:
 ```bash
 gh pr merge <pr-number> --repo <owner>/<repo> --squash --delete-branch
 ```
-The daemon's PR Monitor will mark the task done — do NOT manually `ak task complete`.
+The daemon's PR Monitor will mark the task done. Do not manually run
+`ak task complete` unless the PR Monitor lag rule in
+`references/wait-monitoring.md` applies.
 
 #### Cleanup after merge
 Remove local review artifacts from the repo root after verifying each path belongs to this workflow:

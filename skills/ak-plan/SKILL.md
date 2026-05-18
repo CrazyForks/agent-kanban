@@ -359,6 +359,10 @@ ak wait board <board-id> --until all-done --timeout 0
 
 Run `ak wait board --help` for the full flag list.
 
+Before starting or recovering any wait, follow
+`references/wait-monitoring.md`. The same wait policy applies to board waits
+and task waits.
+
 ### When a task reaches `in_review` with a PR:
 
 **Pre-check: CI status.** Before reviewing, verify CI has passed on the PR:
@@ -437,7 +441,9 @@ Then merge:
 ```bash
 gh pr merge <pr-number> --repo <owner>/<repo> --squash --delete-branch
 ```
-The daemon's PR Monitor will automatically complete the task — do NOT manually `ak task complete`.
+The daemon's PR Monitor will automatically complete the task. Do not manually
+run `ak task complete` unless the PR Monitor lag rule in
+`references/wait-monitoring.md` applies.
 
 #### Cleanup after merge
 Remove local review artifacts from the repo root after verifying each path belongs to this workflow:
