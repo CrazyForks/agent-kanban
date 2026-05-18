@@ -45,6 +45,31 @@ function agentBody(spec: Record<string, unknown>, metadata: Record<string, unkno
   };
 }
 
+function subagentBody(spec: Record<string, unknown>, metadata: Record<string, unknown> | undefined): Record<string, unknown> {
+  if ("username" in spec || "name" in spec) {
+    console.error("Subagent identity belongs in metadata.name and metadata.annotations, not spec.");
+    process.exit(1);
+  }
+  const annotations = metadata?.annotations as Record<string, unknown> | undefined;
+  const name = annotations?.["agent-kanban.dev/nickname"];
+  return {
+    ...spec,
+    ...(typeof name === "string" && name.length > 0 ? { name } : {}),
+  };
+}
+
+function subagentCreateBody(spec: Record<string, unknown>, metadata: Record<string, unknown> | undefined): Record<string, unknown> {
+  const username = metadata?.name;
+  if (typeof username !== "string" || username.length === 0) {
+    console.error("Subagent resources require metadata.name.");
+    process.exit(1);
+  }
+  return {
+    ...subagentBody(spec, metadata),
+    username,
+  };
+}
+
 export async function applyResource(
   client: ApiClient,
   kind: string,
@@ -90,13 +115,24 @@ export async function applyResource(
       }
       break;
     }
+    case "subagent": {
+      if (id) {
+        const { id: _, ...updates } = subagentBody(spec, metadata);
+        const subagent = (await client.updateSubagent(id, updates)) as any;
+        output(subagent, fmt, (a) => `Updated subagent ${a.id}: ${a.name}`, { kind: "subagent" });
+      } else {
+        const subagent = (await client.createSubagent(subagentCreateBody(spec, metadata) as any)) as any;
+        output(subagent, fmt, (a) => `Created subagent ${a.id}: ${a.name} (${a.role || "no role"})`, { kind: "subagent" });
+      }
+      break;
+    }
     case "repo": {
       const repo = (await client.createRepository(spec as any)) as any;
       output(repo, fmt, (r) => `Added repository ${r.id}: ${r.name}`, { kind: "repo" });
       break;
     }
     default:
-      console.error(`Unknown kind: ${kind}. Supported: Task, Board, Agent, Repo`);
+      console.error(`Unknown kind: ${kind}. Supported: Task, Board, Agent, Subagent, Repo`);
       process.exit(1);
   }
 }

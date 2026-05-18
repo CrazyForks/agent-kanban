@@ -1,13 +1,11 @@
-# Specialist Agent Profiles
+# Specialist Subagent Profiles
 
 Use these examples only when a primary worker will repeatedly benefit from a stable specialist context. Do not create every specialist by default.
 
-Before creating a specialist, check existing workers:
+Before creating a specialist, check existing subagent definitions:
 
 ```bash
-ak get agent --role test-specialist --available -o json
-ak get agent --role review-specialist --available -o json
-ak get agent --role acceptance-specialist --available -o json
+ak get subagent -o json
 ```
 
 If multiple runtimes are available and the user has not expressed a preference, ask which runtime to use.
@@ -17,14 +15,14 @@ Before setting a concrete `model`, run `ak get model --runtime <runtime> -o json
 ## Test Specialist
 
 ```yaml
-kind: Agent
+kind: Subagent
 metadata:
   name: maya-lin
   annotations:
     agent-kanban.dev/nickname: "Maya Lin"
 spec:
-  runtime: codex
-  model: <provider-reported-model-id>
+  models:
+    codex: <provider-reported-model-id>
   role: test-specialist
   bio: Test specialist focused on focused coverage, relevant checks, and test failure diagnosis.
   soul: |
@@ -40,14 +38,14 @@ spec:
 ## Review Specialist
 
 ```yaml
-kind: Agent
+kind: Subagent
 metadata:
   name: noah-kim
   annotations:
     agent-kanban.dev/nickname: "Noah Kim"
 spec:
-  runtime: codex
-  model: <provider-reported-model-id>
+  models:
+    codex: <provider-reported-model-id>
   role: review-specialist
   bio: Review specialist focused on correctness, maintainability, security, performance, and architecture.
   soul: |
@@ -63,14 +61,14 @@ spec:
 ## Acceptance Specialist
 
 ```yaml
-kind: Agent
+kind: Subagent
 metadata:
   name: iris-zhao
   annotations:
     agent-kanban.dev/nickname: "Iris Zhao"
 spec:
-  runtime: codex
-  model: <provider-reported-model-id>
+  models:
+    codex: <provider-reported-model-id>
   role: acceptance-specialist
   bio: Acceptance specialist focused on product-level validation after implementation review, tests, and CI pass.
   soul: |
@@ -83,4 +81,4 @@ spec:
     - microsoft/playwright-cli@playwright-cli
 ```
 
-After applying a specialist YAML, use its returned agent ID in the primary worker's `spec.subagents` only when the primary worker's `soul` defines how to collaborate with that specialist.
+After applying a specialist YAML, use the returned subagent ID in the primary worker's `spec.subagents` only when the primary worker's `soul` defines how to collaborate with that specialist.

@@ -17,6 +17,8 @@ function client() {
   return {
     createAgent: vi.fn(async (body) => ({ id: "agent-1", ...body })),
     updateAgent: vi.fn(async (id, body) => ({ id, ...body })),
+    createSubagent: vi.fn(async (body) => ({ id: "subagent-1", ...body })),
+    updateSubagent: vi.fn(async (id, body) => ({ id, ...body })),
   };
 }
 
@@ -123,6 +125,116 @@ describe("apply agent resources", () => {
             role: "tester",
             runtime: "codex",
             handoff_to: ["reviewer"],
+          },
+        },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("creates subagents from metadata identity", async () => {
+    const api = client();
+
+    await applyResource(
+      api as any,
+      "Subagent",
+      {
+        role: "test-specialist",
+        bio: "Focused tests",
+        soul: "Write focused tests and report evidence.",
+        models: { codex: "gpt-5.3-codex" },
+        skills: ["org/repo@test-skill"],
+      },
+      "json",
+      {
+        name: "test-specialist",
+        annotations: {
+          "agent-kanban.dev/nickname": "Test Specialist",
+        },
+      },
+    );
+
+    expect(api.createSubagent).toHaveBeenCalledWith({
+      username: "test-specialist",
+      name: "Test Specialist",
+      role: "test-specialist",
+      bio: "Focused tests",
+      soul: "Write focused tests and report evidence.",
+      models: { codex: "gpt-5.3-codex" },
+      skills: ["org/repo@test-skill"],
+    });
+    expect(output).toHaveBeenCalledWith(expect.objectContaining({ id: "subagent-1" }), "json", expect.any(Function), {
+      kind: "subagent",
+    });
+  });
+
+  it("updates subagents without sending immutable metadata identity", async () => {
+    const api = client();
+
+    await applyResource(api as any, "SubAgent", { id: "subagent-1", role: "review-specialist" }, "json", {
+      name: "ignored-username",
+      annotations: {
+        "agent-kanban.dev/nickname": "Review Specialist",
+      },
+    });
+
+    expect(api.updateSubagent).toHaveBeenCalledWith("subagent-1", {
+      name: "Review Specialist",
+      role: "review-specialist",
+    });
+  });
+
+  it.each([
+    ["spec.username", { username: "legacy-subagent" }],
+    ["spec.name", { name: "Legacy Subagent" }],
+  ])("rejects subagent %s", async (_field, spec) => {
+    const api = client();
+
+    await expect(applyResource(api as any, "Subagent", spec, "json", { name: "subagent" })).rejects.toThrow("process.exit");
+
+    expect(api.createSubagent).not.toHaveBeenCalled();
+    expect(api.updateSubagent).not.toHaveBeenCalled();
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("parses subagent metadata from apply files", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ak-apply-subagent-"));
+    const file = join(dir, "subagent.yaml");
+
+    try {
+      writeFileSync(
+        file,
+        [
+          "kind: Subagent",
+          "metadata:",
+          "  name: test-specialist",
+          "  annotations:",
+          "    agent-kanban.dev/nickname: Test Specialist",
+          "spec:",
+          "  role: test-specialist",
+          "  models:",
+          "    codex: gpt-5.3-codex",
+          "  skills:",
+          "    - org/repo@test-skill",
+        ].join("\n"),
+      );
+
+      expect(parseResourceDocs(file)).toEqual([
+        {
+          kind: "Subagent",
+          metadata: {
+            name: "test-specialist",
+            annotations: {
+              "agent-kanban.dev/nickname": "Test Specialist",
+            },
+          },
+          spec: {
+            role: "test-specialist",
+            models: {
+              codex: "gpt-5.3-codex",
+            },
+            skills: ["org/repo@test-skill"],
           },
         },
       ]);

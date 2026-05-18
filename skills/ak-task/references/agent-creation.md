@@ -77,7 +77,7 @@ Never silently omit `model`, `skills`, or `subagents`. If a field is intentional
 
 ## Field Rules
 
-- `runtime`: required. It must be schedulable before creating or assigning the worker.
+- `runtime`: required when creating a worker. It must be schedulable before creating or assigning the worker. Treat it as immutable after creation; changing runtime means creating a replacement worker.
 - `model`: required as an explicit decision. Query `ak get model --runtime <runtime> -o json` before choosing a concrete model. Use `default` only with a reason, or when model listing is unsupported and the task does not require a named senior model.
 - `role`: required. Use kebab-case and match durable responsibility, not one temporary task.
 - `bio`: required. State the worker's durable responsibility in one concise sentence.
@@ -111,14 +111,25 @@ If a carried subagent owns a narrow responsibility, put the specialist skill on 
 
 ## Subagents
 
-Subagents are existing worker agents, not inline definitions.
+Subagents are task-local specialist definitions, not inline prompt blocks.
 
 For implementation workers, prefer attaching both standard harness subagents:
 
 - A `test-specialist`.
 - A `review-specialist`.
 
-Create or reuse specialists before creating the primary worker, then put their agent IDs in `spec.subagents`.
+Create or reuse specialists before creating the primary worker, then put their subagent IDs in `spec.subagents`.
+
+Use `ak apply -f` for subagent definitions when a suitable specialist does not already exist. The direct CRUD commands are also available:
+
+```bash
+ak apply -f subagent.yaml
+ak get subagent
+ak get subagent <id>
+ak create subagent --username maya-lin --name "Maya Lin" --role test-specialist --bio "Focused test specialist." --soul "Write focused tests, run relevant checks, diagnose failures, and report concrete evidence." --models codex=gpt-5.3-codex
+ak update subagent <id> --models codex=gpt-5.3-codex --skills <source>@<skill>
+ak delete subagent <id>
+```
 
 When `spec.subagents` is non-empty, the primary worker's `soul` must say:
 
@@ -162,8 +173,8 @@ spec:
   handoff_to:
     - <role>
   subagents:
-    - <test-specialist-agent-id>
-    - <review-specialist-agent-id>
+    - <test-specialist-subagent-id>
+    - <review-specialist-subagent-id>
 ```
 
 Then apply and verify:

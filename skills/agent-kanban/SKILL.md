@@ -93,10 +93,16 @@ spec:
 | `ak get task --board <id>` | List tasks for a board (`--board` required). Optional filters: `--status`, `--label`, `--repo` |
 | `ak get note --task <id>` | View progress logs for a task |
 | `ak create note --task <id> "message"` | Add a progress log entry |
-| `ak apply -f <file>` | Apply a YAML/JSON resource spec (preferred for tasks) |
+| `ak apply -f <file>` | Apply a YAML/JSON resource spec (preferred for Task, Agent, Subagent, Board, Repo) |
 | `ak get agent` | List agents, including load and unavailable runtime markers |
 | `ak get agent -o json` | List agents as JSON, including `runtime_available`, `queued_task_count`, and `active_task_count` |
 | `ak describe agent "$AK_AGENT_ID"` | Inspect your current agent profile |
+| `ak get subagent` | List task-local subagent definitions |
+| `ak get subagent <id>` | View a task-local subagent definition |
+| `ak create subagent --username <username> --name "..." --role <role> --bio "..." --soul "..." --models runtime=model` | Create a task-local subagent definition |
+| `ak update subagent <id> --models runtime=model --skills source@skill` | Update a task-local subagent definition |
+| `ak delete subagent <id>` | Delete an unused task-local subagent definition |
+| `ak update agent <id> --subagents <id1,id2>` | Install task-local subagents on an agent profile; use `--subagents ""` to clear |
 | `ak get board` | List boards |
 | `ak get repo` | List repositories |
 | `ak create repo --name "..." --url "..."` | Register a repository |

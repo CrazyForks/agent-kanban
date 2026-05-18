@@ -64,7 +64,7 @@ Do not create duplicate workers for hypothetical future work. When creation is n
 
 For complex but coherent work, prefer one primary worker carrying focused task-local subagents over splitting the same outcome across multiple role-based workers. The primary worker owns the task, implementation direction, final integration, and review submission. Subagents handle independent, narrow work that would otherwise bloat the primary worker's context and cause attention drift.
 
-Subagents are existing worker agents, not inline definitions. Create or reuse the specialist workers first, then put their agent IDs in the primary worker's `spec.subagents`.
+Subagents are task-local specialist definitions, not inline prompt blocks. Create or reuse the specialist definition first, then put its ID in the primary worker's `spec.subagents`.
 
 Good reusable subagent profiles:
 
@@ -74,14 +74,25 @@ Good reusable subagent profiles:
 
 Do not create all of these by default. Create or attach only the specialist subagents that the primary worker will repeatedly use. Do not split one stable specialist context into separate action agents such as writer, runner, fixer, or reviewer phases. Split specialists only when the work needs different durable domain context, review bar, or runtime.
 
-For concrete specialist worker YAML examples, read `references/specialist-profiles.md`.
+For concrete specialist Subagent YAML examples, read `references/specialist-profiles.md`.
 
 Creation order:
 
-1. Create or reuse specialist worker agents with their own `role`, `bio`, `soul`, `runtime`, `model`, and `skills`.
-2. Run `ak get agent -o json` and collect their agent IDs.
+1. Create or reuse specialist subagent definitions with their own `role`, `bio`, `soul`, runtime model mappings, and `skills`.
+2. Run `ak get subagent -o json` and collect their subagent IDs.
 3. Create or update the primary worker with those IDs in `spec.subagents`.
 4. In the primary worker's `soul`, define the collaboration contract: when each subagent should be called, what output is expected, which decisions stay with the primary worker, and how findings are verified before being acted on.
+
+Subagent apply and CRUD:
+
+```bash
+ak apply -f subagent.yaml
+ak get subagent
+ak get subagent <id>
+ak create subagent --username maya-lin --name "Maya Lin" --role test-specialist --bio "Focused test specialist." --soul "Write focused tests, run relevant checks, diagnose failures, and report concrete evidence." --models codex=gpt-5.3-codex
+ak update subagent <id> --models codex=gpt-5.3-codex --skills <source>@<skill>
+ak delete subagent <id>
+```
 
 ## Subagents vs Handoff
 
@@ -120,9 +131,9 @@ spec:
   handoff_to:
     - <role>
   subagents:
-    - <test-specialist-agent-id>
-    - <review-specialist-agent-id>
-    - <acceptance-specialist-agent-id>
+    - <test-specialist-subagent-id>
+    - <review-specialist-subagent-id>
+    - <acceptance-specialist-subagent-id>
 ```
 
 ```bash
@@ -142,7 +153,7 @@ Agent creation rules:
 - `spec.soul` is the worker's durable behavior policy: principles and decision rules that should affect future tasks for this agent.
 - `skills` must be installable skill refs in `<source>@<skill>` format, matching what `npx skills add <source> --skill <skill>` can install.
 - `handoff_to` should list kebab-case roles this agent may hand off newly discovered independent work to, not concrete agent IDs. At handoff time, the worker resolves the role to an available worker with `ak get agent -o json`.
-- `subagents` should list existing worker agent IDs to install as task-local subagents for this agent. They must be created or discovered before applying the primary worker YAML.
+- `subagents` should list existing subagent IDs to install as task-local subagents for this agent. They must be created or discovered before applying the primary worker YAML.
 - If `subagents` is non-empty, `soul` must say how this agent collaborates with those subagents: when to call them, what they own, and how their output is reviewed or integrated.
 - Agent YAML updates the current `latest` profile for `metadata.name`. If the profile changed, AK keeps the previous `latest` as a hash-version snapshot.
 - Use `ak get agent <username>` to list snapshots and `ak describe agent <username> --version latest` to inspect the current approved profile.
@@ -187,7 +198,38 @@ When a worker proposes a candidate:
 
 Do not apply changes that store one-off task context, project facts, temporary user preferences, or fixes that belong in source code or task descriptions.
 
-If no proposal is present, no agent version action is needed.
+If no proposal is present, no agent version action is needed unless the leader observed a durable behavior problem directly.
+
+## Leader-Driven Profile Iteration
+
+The leader may update a worker profile even when the worker did not propose a change. Use this when the worker's process or output shows a durable mismatch with the role, such as using the wrong review bar, ignoring required verification, choosing an unsuitable model for the task class, misusing or failing to use attached subagents, repeatedly misunderstanding task boundaries, or producing work that is far from the expected capability level.
+
+Profile updates do not affect the currently running agent session. They prevent the same mistake on later tasks. Handle the current task through review actions only: reject with concrete instructions when the current attempt can be corrected, or close the PR and cancel the task when the attempt should be abandoned.
+
+Never change an existing agent's `runtime` during profile iteration. Runtime is chosen when the agent is created and is treated as immutable. If the same capability is needed on a different runtime, create a replacement worker with a new profile on that runtime.
+
+Do not use profile iteration for one-off task facts, temporary user preferences, missing task context, or source bugs that should be fixed in the current PR. Put those in the task rejection reason or follow-up task description instead.
+
+When profile iteration is needed:
+
+1. During `in_review`, decide the current task outcome first.
+2. If the current attempt is recoverable, reject with specific instructions. This is the only way to send correction back into the active session.
+3. If the current attempt is badly off-course, close the PR if one exists and cancel the active task. Recreate the task only after deciding what feedback belongs in the new task description.
+4. After the current task is completed, cancelled, or otherwise no longer being worked, identify the durable profile cause: `soul`, `bio`, `skills`, `subagents`, handoff targets, or `model`.
+5. Write an updated `Agent` YAML using the same `metadata.name` username. Do not include or change `runtime`.
+6. Apply it with `ak apply -f <file>`; this updates `latest` for future task sessions and snapshots the previous profile when changed.
+7. Verify with `ak describe agent <username> --version latest` and `ak get agent <username>`.
+8. If the task was cancelled and still needs to be done, recreate it with the original goal plus the review findings, and assign it to the updated worker.
+
+Use cancel-and-recreate instead of repeated rejection when the current task has accumulated the wrong branch direction, wrong architecture, wrong model behavior, or review feedback so broad that continuing the same attempt would preserve bad context. Update the profile after ending the current attempt, then use the updated profile for the next task session.
+
+```bash
+gh pr close <pr-number> --repo <owner>/<repo> --delete-branch
+ak task cancel <task-id>
+ak apply -f agent.yaml
+ak describe agent <username> --version latest
+ak create task --board <board-id> --title "..." --description "..." --repo <repo-id> --assign-to <agent-id>
+```
 
 ## Runtime Failure Handling
 

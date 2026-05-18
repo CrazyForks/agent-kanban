@@ -358,7 +358,7 @@ If no proposal is present, continue. If a proposal is present, review it using `
 ```bash
 ak task reject <task-id> --reason "<all issues, specific and actionable>"
 ```
-After reject, go back to Step 5 and keep monitoring.
+After reject, go back to Step 5 and keep monitoring. If the failure reveals a durable worker behavior problem, apply `references/runtime-delegation.md#leader-driven-profile-iteration`: use reject to correct the current active session, or close/cancel the task if it is too far off-course; update the worker profile only after the current task is no longer being worked, and never change the agent runtime.
 
 **All gates pass, or Gate 2 is explicitly waived after the required attempt
 budget → Post verification comment, then merge.**
