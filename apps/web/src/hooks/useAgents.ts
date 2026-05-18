@@ -15,6 +15,20 @@ export function useAgents() {
   return { agents, loading, refresh: refetch };
 }
 
+export function useSubagents() {
+  const {
+    data: subagents = [],
+    isLoading: loading,
+    refetch,
+  } = useQuery({
+    queryKey: ["subagents"],
+    queryFn: () => api.subagents.list(),
+    refetchInterval: 15_000,
+  });
+
+  return { subagents, loading, refresh: refetch };
+}
+
 export function useAgent(id: string | undefined) {
   const {
     data: agent = null,
@@ -82,6 +96,40 @@ export function useDeleteAgent() {
     mutationFn: (id: string) => api.agents.delete(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+  });
+}
+
+export function useCreateSubagent() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: api.subagents.create,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["subagents"] });
+    },
+  });
+}
+
+export function useUpdateSubagent() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: Parameters<typeof api.subagents.update>[1] }) => api.subagents.update(id, body),
+    onSuccess: (_data, { id }) => {
+      queryClient.invalidateQueries({ queryKey: ["subagents"] });
+      queryClient.invalidateQueries({ queryKey: ["subagent", id] });
+    },
+  });
+}
+
+export function useDeleteSubagent() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: string) => api.subagents.delete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["subagents"] });
     },
   });
 }

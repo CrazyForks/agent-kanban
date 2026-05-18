@@ -1,4 +1,4 @@
-import type { AgentRuntime } from "@agent-kanban/shared";
+import type { AgentRuntime, CreateSubagentInput } from "@agent-kanban/shared";
 import { getAuthToken, refreshAuthToken } from "./auth-client";
 
 const API_BASE = "/api";
@@ -92,6 +92,13 @@ export const api = {
     sessions: (agentId: string) => request<any[]>("GET", `/agents/${agentId}/sessions`),
     inbox: (agentId: string) => request<{ emails: any[] }>("GET", `/agents/${agentId}/inbox`),
     inboxEmail: (agentId: string, emailId: string) => request<any>("GET", `/agents/${agentId}/inbox/${emailId}`),
+  },
+  subagents: {
+    list: () => request<any[]>("GET", "/subagents"),
+    get: (id: string) => request<any>("GET", `/subagents/${id}`),
+    create: (input: CreateSubagentInput) => request<any>("POST", "/subagents", input),
+    update: (id: string, body: Partial<CreateSubagentInput>) => request<any>("PATCH", `/subagents/${id}`, body),
+    delete: (id: string) => request<void>("DELETE", `/subagents/${id}`),
   },
   machines: {
     list: () => request<any[]>("GET", "/machines"),

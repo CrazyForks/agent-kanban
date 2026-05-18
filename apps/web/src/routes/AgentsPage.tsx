@@ -1,9 +1,21 @@
+import { type AgentRuntime, type AgentWithActivity, RUNTIME_LABELS, type Subagent } from "@agent-kanban/shared";
+import { Bot, Code2, Github, type LucideIcon, Sparkles, Terminal } from "lucide-react";
 import { Link } from "react-router-dom";
 import { AgentIdenticon } from "../components/AgentIdenticon";
 import { Header } from "../components/Header";
 import { formatRelative } from "../components/TaskDetailFields";
-import { useAgents } from "../hooks/useAgents";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { useAgents, useSubagents } from "../hooks/useAgents";
 import { agentColor, agentColorRgb, agentFingerprint } from "../lib/agentIdentity";
+import { cn } from "../lib/utils";
+
+const runtimeMeta: Record<AgentRuntime, { icon: LucideIcon; tone: string }> = {
+  claude: { icon: Bot, tone: "text-content-secondary" },
+  codex: { icon: Terminal, tone: "text-accent" },
+  gemini: { icon: Sparkles, tone: "text-warning" },
+  copilot: { icon: Github, tone: "text-success" },
+  hermes: { icon: Code2, tone: "text-content-tertiary" },
+};
 
 function formatTokens(n: number): string {
   if (!n) return "0";
@@ -18,127 +30,239 @@ function formatCost(microUsd: number): string {
 }
 
 export function AgentsPage() {
-  const { agents, loading } = useAgents();
-  const online = agents.filter((a) => a.status === "online").length;
+  const { agents, loading: agentsLoading } = useAgents();
+  const { subagents, loading: subagentsLoading } = useSubagents();
+  const latestAgents = (agents as AgentWithActivity[]).filter((agent) => agent.version === "latest");
+  const online = latestAgents.filter((agent) => agent.status === "online").length;
 
   return (
     <div className="min-h-screen bg-surface-primary">
       <Header />
-      <div className="max-w-5xl mx-auto px-8 py-10">
-        <div className="flex items-center justify-between mb-8">
-          <div className="flex items-baseline gap-4">
-            <h1 className="text-2xl font-bold text-content-primary" style={{ letterSpacing: "-0.02em" }}>
-              Agents
-            </h1>
-            {agents.length > 0 && (
-              <span className="text-xs font-mono text-content-tertiary">
-                {online}/{agents.length} online
+      <div className="mx-auto max-w-6xl px-6 py-8 sm:px-8 sm:py-10">
+        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-1">
+            <h1 className="text-2xl font-bold text-content-primary">Agents</h1>
+            <div className="flex flex-wrap items-center gap-3 font-mono text-xs text-content-tertiary">
+              <span>
+                {online}/{latestAgents.length} online
               </span>
-            )}
+              <span>{subagents.length} sub-agents</span>
+            </div>
           </div>
           <Link
             to="/agents/new"
-            className="px-3.5 py-1.5 bg-accent text-surface-primary rounded-md text-sm font-medium hover:opacity-90 transition-opacity"
+            className="inline-flex h-8 items-center rounded-md bg-accent px-3.5 text-sm font-medium text-surface-primary transition-opacity hover:opacity-90"
           >
             New agent
           </Link>
         </div>
 
-        {loading ? (
-          <div className="grid grid-cols-3 gap-4">
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="h-64 bg-surface-secondary rounded-lg animate-pulse" />
-            ))}
-          </div>
-        ) : agents.length === 0 ? (
-          <div className="text-center py-24">
-            <p className="text-content-tertiary text-sm">No agents yet.</p>
-            <Link to="/agents/new" className="mt-2 text-sm text-accent hover:underline inline-block">
-              Create your first agent
-            </Link>
-          </div>
-        ) : (
-          <div className="grid grid-cols-3 gap-4">
-            {agents.map((agent) => (
-              <AgentCard key={agent.id} agent={agent} />
-            ))}
-          </div>
-        )}
+        <Tabs defaultValue="agents" className="gap-5">
+          <TabsList variant="line" aria-label="Agent lists" className="border-b border-border">
+            <TabsTrigger value="agents" className="px-3 font-mono text-xs">
+              Agents
+              <span className="text-content-tertiary">{latestAgents.length}</span>
+            </TabsTrigger>
+            <TabsTrigger value="subagents" className="px-3 font-mono text-xs">
+              Sub-agents
+              <span className="text-content-tertiary">{subagents.length}</span>
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="agents">
+            {agentsLoading ? (
+              <AgentGridSkeleton />
+            ) : latestAgents.length === 0 ? (
+              <EmptyState label="No latest agents yet." action="Create your first agent" href="/agents/new" />
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {latestAgents.map((agent) => (
+                  <AgentCard key={agent.id} agent={agent} />
+                ))}
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="subagents">
+            {subagentsLoading ? (
+              <AgentGridSkeleton />
+            ) : subagents.length === 0 ? (
+              <EmptyState label="No sub-agents registered." />
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {(subagents as Subagent[]).map((subagent) => (
+                  <SubagentCard key={subagent.id} subagent={subagent} />
+                ))}
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );
 }
 
-function AgentCard({ agent }: { agent: any }) {
+function AgentGridSkeleton() {
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="h-56 animate-pulse rounded-lg border border-border bg-surface-secondary" />
+      ))}
+    </div>
+  );
+}
+
+function EmptyState({ label, action, href }: { label: string; action?: string; href?: string }) {
+  return (
+    <div className="py-20 text-center">
+      <p className="text-sm text-content-tertiary">{label}</p>
+      {action && href && (
+        <Link to={href} className="mt-2 inline-block text-sm text-accent hover:underline">
+          {action}
+        </Link>
+      )}
+    </div>
+  );
+}
+
+function RuntimeMeta({ runtime, model, available }: { runtime: AgentRuntime; model: string | null; available?: boolean }) {
+  const meta = runtimeMeta[runtime];
+  const Icon = meta.icon;
+
+  return (
+    <span className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-surface-primary/70 px-2.5 py-1 font-mono text-[10px] text-content-tertiary">
+      <Icon className={cn("size-3 shrink-0", meta.tone)} />
+      <span className="shrink-0 text-content-primary">{RUNTIME_LABELS[runtime]}</span>
+      <span className="text-content-tertiary/70">·</span>
+      <span className="truncate">{model || "default"}</span>
+      {available !== undefined && (
+        <span
+          title={available ? "Runtime available" : "Runtime unavailable"}
+          className={cn("ml-0.5 size-1.5 shrink-0 rounded-full", available ? "bg-success" : "bg-warning")}
+        />
+      )}
+    </span>
+  );
+}
+
+function RuntimeChip({ runtime, model }: { runtime: AgentRuntime; model: string }) {
+  const meta = runtimeMeta[runtime];
+  const Icon = meta.icon;
+
+  return (
+    <span className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-surface-primary/70 px-2 py-0.5 font-mono text-[10px] text-content-tertiary">
+      <Icon className={cn("size-3 shrink-0", meta.tone)} />
+      <span className="shrink-0 text-content-secondary">{RUNTIME_LABELS[runtime]}</span>
+      <span className="truncate">{model}</span>
+    </span>
+  );
+}
+
+function AgentCard({ agent }: { agent: AgentWithActivity }) {
   const isOnline = agent.status === "online";
   const color = agent.public_key ? agentColor(agent.public_key) : "#22D3EE";
   const rgb = agent.public_key ? agentColorRgb(agent.public_key) : "34, 211, 238";
   const fp = agent.fingerprint ? agentFingerprint(agent.fingerprint) : "";
+  const tokenCount = (agent.input_tokens || 0) + (agent.output_tokens || 0);
 
   return (
     <Link
       to={`/agents/${agent.id}`}
-      className="group block rounded-lg overflow-hidden transition-all hover:translate-y-[-2px]"
+      className="group relative block overflow-hidden rounded-lg border border-border bg-surface-secondary transition-all hover:-translate-y-px hover:border-accent/35"
       style={{
-        background: "var(--bg-secondary)",
-        boxShadow: isOnline ? `0 4px 24px rgba(${rgb}, 0.15), 0 0 0 1px rgba(${rgb}, 0.1)` : "0 0 0 1px var(--border)",
+        boxShadow: isOnline ? `0 4px 20px rgba(${rgb}, 0.12)` : undefined,
       }}
     >
-      {/* Top edge — agent color */}
       <div className="h-[3px]" style={{ background: color }} />
+      <div
+        title={agent.last_active_at ? `Last active ${formatRelative(agent.last_active_at)}` : undefined}
+        className="absolute right-3 top-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-primary/80 px-2 py-0.5"
+      >
+        <span className={cn("size-1.5 rounded-full", isOnline ? "bg-success" : "bg-content-tertiary")} />
+        <span className="font-mono text-[10px] text-content-tertiary">{isOnline ? "Online" : "Offline"}</span>
+      </div>
 
-      {/* Identity — vertical, centered */}
-      <div className="flex flex-col items-center pt-6 pb-4 px-5">
-        <AgentIdenticon publicKey={agent.public_key} size={64} glow={isOnline} leader={agent.kind === "leader"} />
+      <div className="flex flex-col items-center px-5 pb-4 pt-7 text-center">
+        <AgentIdenticon publicKey={agent.public_key} size={60} glow={isOnline} leader={agent.kind === "leader"} />
 
-        <div className="mt-3 flex items-center gap-1.5">
-          <h2 className="font-mono text-base font-bold tracking-tight text-content-primary">{agent.name}</h2>
+        <div className="mt-3 flex max-w-full items-center gap-1.5">
+          <h2 className="truncate font-mono text-base font-bold text-content-primary">{agent.name}</h2>
           {agent.builtin ? (
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              className="text-content-tertiary shrink-0"
-            >
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-            </svg>
+            <span className="shrink-0 rounded border border-border px-1.5 py-0.5 font-mono text-[9px] text-content-tertiary">built-in</span>
           ) : null}
         </div>
 
-        <span className="mt-0.5 font-mono text-[10px] text-content-tertiary">@{agent.username}</span>
+        <span className="mt-0.5 max-w-full truncate font-mono text-[10px] text-content-tertiary">@{agent.username}</span>
 
-        {/* Fingerprint badge */}
-        <div className="mt-1.5 inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5" style={{ background: "var(--bg-secondary)" }}>
-          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" className="opacity-50">
-            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-          </svg>
-          <span className="font-mono text-[10px] tracking-[0.12em] text-content-secondary">{fp}</span>
+        {agent.role && (
+          <div className="mt-2 flex max-w-full flex-wrap justify-center gap-1.5">
+            {agent.role && (
+              <span className="max-w-full truncate rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-content-tertiary">
+                {agent.role}
+              </span>
+            )}
+          </div>
+        )}
+
+        <div className="mt-4 flex h-5 max-w-full items-center justify-center">
+          {fp && (
+            <div className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-surface-primary/60 px-2 py-0.5">
+              <span className="size-1 rounded-full" style={{ backgroundColor: color }} />
+              <span className="truncate font-mono text-[10px] tracking-[0.12em] text-content-tertiary">{fp}</span>
+            </div>
+          )}
         </div>
 
-        {/* Status */}
-        <div className="mt-2 flex items-center gap-1.5">
-          <span
-            className={`w-[6px] h-[6px] rounded-full ${isOnline ? "animate-pulse-glow" : ""}`}
-            style={{ backgroundColor: isOnline ? color : "#3f3f46" }}
-          />
-          <span className="text-[11px] text-content-tertiary">
-            {isOnline ? "Online" : agent.last_active_at ? formatRelative(agent.last_active_at) : "Offline"}
-          </span>
+        <div className="mt-2 flex max-w-full justify-center">
+          <RuntimeMeta runtime={agent.runtime} model={agent.model} available={agent.runtime_available} />
         </div>
       </div>
-
-      {/* Stats strip */}
-      <div className="border-t border-border/50 px-5 py-3 flex items-center justify-between text-[10px] font-mono text-content-tertiary">
-        <span>{agent.task_count || 0} tasks</span>
-        <span>{formatTokens((agent.input_tokens || 0) + (agent.output_tokens || 0))} tok</span>
+      <div className="flex items-center justify-between gap-2 border-t border-border/60 px-4 py-3 font-mono text-[10px] text-content-tertiary">
+        <span>{agent.active_task_count || 0} active</span>
+        <span>{agent.queued_task_count || 0} queued</span>
+        <span>{formatTokens(tokenCount)} tok</span>
         <span>{formatCost(agent.cost_micro_usd)}</span>
       </div>
     </Link>
+  );
+}
+
+function SubagentCard({ subagent }: { subagent: Subagent }) {
+  const models = Object.entries(subagent.models ?? {}) as [AgentRuntime, string][];
+
+  return (
+    <article className="overflow-hidden rounded-lg border border-border bg-surface-secondary">
+      <div className="h-[3px] bg-accent/40" />
+      <div className="flex flex-col items-center px-5 pb-4 pt-5 text-center">
+        <span className="flex size-[60px] shrink-0 items-center justify-center rounded-lg border border-border bg-surface-primary">
+          <Bot className="size-6 text-content-secondary" />
+        </span>
+
+        <h2 className="mt-3 max-w-full truncate font-mono text-base font-bold text-content-primary">{subagent.name}</h2>
+        <div className="mt-0.5 max-w-full truncate font-mono text-[10px] text-content-tertiary">@{subagent.username}</div>
+
+        <div className="mt-2 flex max-w-full flex-wrap justify-center gap-1.5">
+          <span className="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-content-secondary">sub-agent</span>
+          {subagent.role && (
+            <span className="max-w-full truncate rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-content-tertiary">
+              {subagent.role}
+            </span>
+          )}
+        </div>
+
+        {subagent.bio && <p className="mt-3 line-clamp-2 text-xs leading-5 text-content-secondary">{subagent.bio}</p>}
+
+        <div className="mt-3 flex max-w-full flex-wrap justify-center gap-1.5">
+          {models.length > 0 ? (
+            models.map(([runtime, model]) => <RuntimeChip key={runtime} runtime={runtime} model={model} />)
+          ) : (
+            <span className="font-mono text-[10px] text-content-tertiary">No models configured</span>
+          )}
+        </div>
+      </div>
+      <div className="border-t border-border/60 px-4 py-3 text-center font-mono text-[10px] text-content-tertiary">
+        {(subagent.skills?.length ?? 0) > 0 ? `${subagent.skills!.length} skills` : "No skills"}
+      </div>
+    </article>
   );
 }
