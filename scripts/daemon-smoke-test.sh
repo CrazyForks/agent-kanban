@@ -64,6 +64,9 @@ cleanup() {
   for agent_id in "${CREATED_AGENT_IDS[@]}"; do
     ak delete agent "$agent_id" >/dev/null 2>&1 || true
   done
+  if [ -n "$SUBAGENT_ID" ]; then
+    ak delete subagent "$SUBAGENT_ID" >/dev/null 2>&1 || true
+  fi
 }
 
 trap cleanup EXIT
@@ -79,8 +82,7 @@ create_task() {
     --title "$title" \
     --description "$desc" \
     --repo "$REPO_ID" \
-    --assign-to "$AGENT_ID" \
-    --priority low 2>&1 | sed -n 's/Created task \([^: ]*\).*/\1/p')
+    --assign-to "$AGENT_ID" 2>&1 | sed -n 's/Created task \([^: ]*\).*/\1/p')
   if [ -z "$id" ]; then
     echo "  FATAL: failed to create task"
     exit 1
@@ -179,6 +181,14 @@ create_agent() {
   echo "$id"
 }
 
+runtime_model() {
+  local runtime="$1"
+  case "$runtime" in
+    codex) ak get model --runtime "$runtime" -o json | json_query "data.find((m) => m.id === 'gpt-5.3-codex-spark')?.id || data[0]?.id" ;;
+    *) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id" ;;
+  esac
+}
+
 agent_field() {
   local agent_id="$1" field="$2"
   ak get agent "$agent_id" -o json | json_query "data['$field']"
@@ -187,15 +197,16 @@ agent_field() {
 ensure_smoke_subagent() {
   local runtime="$1"
   local username="smoke-subagent-$runtime-$TIMESTAMP"
-  SUBAGENT_ID=$(ak create agent \
+  local model
+  model="$(runtime_model "$runtime")"
+  SUBAGENT_ID=$(ak create subagent \
     --name "Smoke Subagent $runtime $TIMESTAMP" \
     --username "$username" \
-    --runtime "$runtime" \
     --role "smoke-subagent" \
     --bio "Registered worker used by daemon smoke tests to verify task-local subagent installation" \
     --soul "I am a smoke-test helper subagent. Keep answers short and verify delegated work precisely." \
+    --models "$runtime=$model" \
     -o json | json_query "data.id")
-  CREATED_AGENT_IDS+=("$SUBAGENT_ID")
   SUBAGENT_USERNAME="$username"
 }
 
