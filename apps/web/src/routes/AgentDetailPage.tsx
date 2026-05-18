@@ -1,6 +1,9 @@
 import DOMPurify from "dompurify";
 import { useEffect, useState } from "react";
+import ReactMarkdown from "react-markdown";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import rehypeHighlight from "rehype-highlight";
+import remarkGfm from "remark-gfm";
 import { AgentIdenticon } from "../components/AgentIdenticon";
 import { Header } from "../components/Header";
 import { formatRelative } from "../components/TaskDetailFields";
@@ -302,7 +305,11 @@ export function AgentDetailPage() {
         {agent.soul && (
           <div className="mt-6 bg-surface-secondary rounded-lg px-5 py-4" style={{ boxShadow: "0 0 0 1px var(--border)" }}>
             <div className="text-[9px] font-mono text-content-tertiary uppercase tracking-wider mb-2">Soul</div>
-            <p className="font-mono text-xs text-content-secondary leading-relaxed whitespace-pre-wrap">{agent.soul}</p>
+            <div className="font-mono text-xs text-content-secondary leading-relaxed [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_h1]:text-base [&_h1]:font-semibold [&_h1]:text-content-primary [&_h1]:mb-2 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-content-primary [&_h2]:mb-2 [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:text-content-primary [&_h3]:mb-1.5 [&_p]:mb-2 [&_ul]:mb-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:mb-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:mb-1 [&_a]:text-accent [&_a]:underline [&_a]:underline-offset-2 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:border [&_pre]:border-border [&_pre]:bg-surface-primary [&_pre]:p-3 [&_code]:rounded [&_code]:bg-surface-primary [&_code]:px-1 [&_code]:text-accent [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-content-secondary [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-content-tertiary [&_table]:w-full [&_table]:border-collapse [&_th]:border-b [&_th]:border-border [&_th]:pb-1 [&_th]:text-left [&_td]:border-b [&_td]:border-border [&_td]:py-1 [&_td]:pr-3">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                {agent.soul}
+              </ReactMarkdown>
+            </div>
           </div>
         )}
 
