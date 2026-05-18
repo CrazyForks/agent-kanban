@@ -42,6 +42,7 @@ async function applyMigrations(db: D1Database) {
     "0017_unique_leader_per_runtime.sql",
     "0018_agent_subagents.sql",
     "0019_agent_versions.sql",
+    "0021_subagents.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
@@ -533,13 +534,13 @@ describe("task lifecycle repo functions", () => {
     it("rejects assign to leader agent", async () => {
       const { assignTask } = await import("../apps/web/server/taskRepo");
       const task = await createTestTask();
-      await expect(assignTask(env.DB, task.id, leaderAgentId, "machine", "system")).rejects.toThrow("Cannot assign tasks to leader agents");
+      await expect(assignTask(env.DB, task.id, leaderAgentId, "machine", "system")).rejects.toThrow("Tasks can only be assigned to worker agents");
     });
 
     it("rejects createTask with assigned_to leader agent", async () => {
       const { createTask } = await import("../apps/web/server/taskRepo");
       await expect(createTask(env.DB, userId, { title: "Leader Task", board_id: boardId, assigned_to: leaderAgentId })).rejects.toThrow(
-        "Cannot assign tasks to leader agents",
+        "Tasks can only be assigned to worker agents",
       );
     });
   });

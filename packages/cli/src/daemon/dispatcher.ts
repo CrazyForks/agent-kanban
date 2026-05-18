@@ -19,7 +19,7 @@ import { createLogger } from "../logger.js";
 import { getAvailableProviders, getProvider, normalizeRuntime } from "../providers/registry.js";
 import { getSessionManager } from "../session/manager.js";
 import type { SessionFile } from "../session/types.js";
-import { ensureSubagents } from "../workspace/agents.js";
+import { ensureSubagents, type SubagentDefinition } from "../workspace/agents.js";
 import { ensureCloned, prepareRepo, repoDir } from "../workspace/repoOps.js";
 import { ensureSkills } from "../workspace/skills.js";
 import { createRepoWorkspace, createTempWorkspace } from "../workspace/workspace.js";
@@ -31,10 +31,10 @@ import type { RuntimePool } from "./runtimePool.js";
 
 const logger = createLogger("dispatcher");
 
-async function getSubagentDetails(client: ApiClient, subagentIds: string[]): Promise<AgentInfo[] | null> {
-  const subagents: AgentInfo[] = [];
+async function getSubagentDetails(client: ApiClient, subagentIds: string[]): Promise<SubagentDefinition[] | null> {
+  const subagents: SubagentDefinition[] = [];
   for (const id of subagentIds) {
-    const agent = (await apiCallOptional("getSubagent", () => client.getAgent(id))) as AgentInfo | null;
+    const agent = (await apiCallOptional("getSubagent", () => client.getSubagent(id))) as SubagentDefinition | null;
     if (!agent) return null;
     subagents.push(agent);
   }
@@ -162,7 +162,12 @@ export async function dispatchTasks(
         agentCache.set(t.assigned_to, { runtime: null, available: false });
         continue;
       }
-      const runtime = normalizeRuntime(agent.runtime ?? "claude");
+      if (!agent.runtime) {
+        logger.warn(`Agent ${t.assigned_to} has no runtime, skipping task ${t.id}`);
+        agentCache.set(t.assigned_to, { runtime: null, available: false });
+        continue;
+      }
+      const runtime = normalizeRuntime(agent.runtime);
       agentState = { runtime, available: agent.runtime_available !== false || isRuntimeLimitIgnored(runtime) };
       agentCache.set(t.assigned_to, agentState);
     }

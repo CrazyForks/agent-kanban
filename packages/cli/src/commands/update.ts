@@ -3,6 +3,20 @@ import { createClient } from "../agent/leader.js";
 import type { ApiClient } from "../client/index.js";
 import { getOutputFormat, output } from "../output.js";
 
+function parseModels(value: string): Record<string, string> {
+  const entries = value.split(",").map((entry) => entry.trim());
+  const models: Record<string, string> = {};
+  for (const entry of entries) {
+    const index = entry.indexOf("=");
+    if (index <= 0 || index === entry.length - 1) {
+      console.error("--models must use runtime=model pairs, e.g. claude=sonnet,codex=gpt-5.1-codex");
+      process.exit(1);
+    }
+    models[entry.slice(0, index).trim()] = entry.slice(index + 1).trim();
+  }
+  return models;
+}
+
 async function resolveRepoId(client: ApiClient, repoRef: string): Promise<string> {
   if (!repoRef.includes("://") && !repoRef.startsWith("git@")) return repoRef;
   const repos = await client.listRepositories({ url: repoRef });
@@ -127,7 +141,7 @@ export function registerUpdateCommand(program: Command) {
     .option("--model <model>", "Agent model")
     .option("--handoff-to <roles>", "Comma-separated agent roles this agent may hand off to")
     .option("--skills <skills>", "Comma-separated installable skill refs (<source>@<skill>)")
-    .option("--subagents <ids>", "Comma-separated worker agent IDs to install as task-local subagents")
+    .option("--subagents <ids>", "Comma-separated subagent IDs to install as task-local subagents")
     .option("-o, --output <format>", "Output format (json, yaml, text)")
     .action(async (id: string, opts) => {
       const client = await createClient();
@@ -140,7 +154,7 @@ export function registerUpdateCommand(program: Command) {
       if (opts.model) body.model = opts.model;
       if (opts.handoffTo) body.handoff_to = opts.handoffTo.split(",").map((s: string) => s.trim());
       if (opts.skills) body.skills = opts.skills.split(",").map((s: string) => s.trim());
-      if (opts.subagents) body.subagents = opts.subagents.split(",").map((s: string) => s.trim());
+      if (opts.subagents !== undefined) body.subagents = opts.subagents === "" ? [] : opts.subagents.split(",").map((s: string) => s.trim());
       if (Object.keys(body).length === 0) {
         console.error(
           "Nothing to update. Provide at least one option (--name, --bio, --role, --runtime, --model, --handoff-to, --skills, --subagents).",
@@ -150,5 +164,33 @@ export function registerUpdateCommand(program: Command) {
       const agent = await client.updateAgent(id, body);
       const fmt = getOutputFormat(opts.output);
       output(agent, fmt, (a) => `Updated agent ${a.id}: ${a.name}`);
+    });
+
+  updateCmd
+    .command("subagent <id>")
+    .description("Update a task-local subagent definition")
+    .option("--name <name>", "Subagent display name")
+    .option("--bio <bio>", "Subagent bio")
+    .option("--soul <soul>", "Subagent soul — persistent behavior instructions")
+    .option("--role <role>", "Subagent role")
+    .option("--models <pairs>", "Comma-separated runtime=model pairs")
+    .option("--skills <skills>", "Comma-separated installable skill refs (<source>@<skill>)")
+    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .action(async (id: string, opts) => {
+      const client = await createClient();
+      const body: Record<string, unknown> = {};
+      if (opts.name) body.name = opts.name;
+      if (opts.bio) body.bio = opts.bio;
+      if (opts.soul) body.soul = opts.soul;
+      if (opts.role) body.role = opts.role;
+      if (opts.models) body.models = parseModels(opts.models);
+      if (opts.skills) body.skills = opts.skills.split(",").map((s: string) => s.trim());
+      if (Object.keys(body).length === 0) {
+        console.error("Nothing to update. Provide at least one option (--name, --bio, --role, --models, --skills).");
+        process.exit(1);
+      }
+      const subagent = await client.updateSubagent(id, body);
+      const fmt = getOutputFormat(opts.output);
+      output(subagent, fmt, (a) => `Updated subagent ${a.id}: ${a.name}`);
     });
 }

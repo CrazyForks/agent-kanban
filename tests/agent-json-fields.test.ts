@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createTestAgent } from "./helpers/db";
+import { createTestAgent, createTestSubagent } from "./helpers/db";
 
 const MIGRATIONS_DIR = join(__dirname, "../apps/web/migrations");
 
@@ -30,6 +30,7 @@ async function applyMigrations(db: D1Database) {
     "0017_unique_leader_per_runtime.sql",
     "0018_agent_subagents.sql",
     "0019_agent_versions.sql",
+    "0021_subagents.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
@@ -62,10 +63,9 @@ describe("agent JSON field parsing (skills, handoff_to, subagents)", () => {
   let subagentId: string;
 
   it("createAgent returns skills, handoff_to, and subagents as arrays", async () => {
-    const subagent = await createTestAgent(db, ownerId, {
+    const subagent = await createTestSubagent(db, ownerId, {
       name: "JSON Subagent",
       username: "json-subagent",
-      runtime: "claude",
     });
     subagentId = subagent.id;
 

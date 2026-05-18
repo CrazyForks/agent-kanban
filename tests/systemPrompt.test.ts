@@ -205,7 +205,7 @@ describe("generateSystemPrompt — subagent section", () => {
 
   it("only injects subagent environment facts", () => {
     const prompt = generateSystemPrompt(makeAgent(), "dev", [makeAgent({ id: "subagent-1", name: "Reviewer", username: "reviewer" })]);
-    expect(prompt).toContain("The following registered worker agents are installed as task-local subagents: @reviewer");
+    expect(prompt).toContain("The following task-local subagents are installed: @reviewer");
     expect(prompt).not.toContain("template");
     expect(prompt).not.toContain("when to use");
     expect(prompt).not.toContain("how to use");

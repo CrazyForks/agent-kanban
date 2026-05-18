@@ -2,11 +2,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const createAgent = vi.fn();
+const createSubagent = vi.fn();
 const output = vi.fn();
 
 vi.mock("../packages/cli/src/agent/leader.js", () => ({
   createClient: vi.fn(async () => ({
     createAgent,
+    createSubagent,
   })),
 }));
 
@@ -22,7 +24,7 @@ type CapturedCommand = {
   options: string[];
 };
 
-function buildProgram(captureAgent: (command: CapturedCommand) => void): any {
+function buildProgram(captureCommand: (name: string, command: CapturedCommand) => void): any {
   const makeCommand = (name?: string): any => {
     const captured: CapturedCommand = { options: [] };
     const command = {
@@ -37,7 +39,7 @@ function buildProgram(captureAgent: (command: CapturedCommand) => void): any {
       },
       action: (action: CommandAction) => {
         captured.action = action;
-        if (name === "agent") captureAgent(captured);
+        if (name) captureCommand(name, captured);
         return command;
       },
       command: (childName: string) => makeCommand(childName),
@@ -52,14 +54,22 @@ function buildProgram(captureAgent: (command: CapturedCommand) => void): any {
 
 async function registerCreateAgent(): Promise<CapturedCommand> {
   const { registerCreateCommand } = await import("../packages/cli/src/commands/create.js");
-  let agentCommand!: CapturedCommand;
-  registerCreateCommand(buildProgram((command) => (agentCommand = command)));
-  return agentCommand;
+  const commands = new Map<string, CapturedCommand>();
+  registerCreateCommand(buildProgram((name, command) => commands.set(name, command)));
+  return commands.get("agent")!;
+}
+
+async function registerCreateSubagent(): Promise<CapturedCommand> {
+  const { registerCreateCommand } = await import("../packages/cli/src/commands/create.js");
+  const commands = new Map<string, CapturedCommand>();
+  registerCreateCommand(buildProgram((name, command) => commands.set(name, command)));
+  return commands.get("subagent")!;
 }
 
 describe("registerCreateCommand agent", () => {
   beforeEach(() => {
     createAgent.mockReset();
+    createSubagent.mockReset();
     output.mockReset();
   });
 
@@ -101,11 +111,37 @@ describe("registerCreateCommand agent", () => {
       role: "build",
       runtime: "codex",
       model: "gpt-5",
-      kind: "worker",
       handoff_to: ["qa", "devops"],
       skills: ["saltbo/agent-kanban@agent-kanban", "trailofbits/skills@differential-review"],
       subagents: ["worker-1"],
     });
     expect(output).toHaveBeenCalledWith({ id: "agent-1", name: "Worker Agent", role: "build" }, "json", expect.any(Function));
+  });
+
+  it("creates a subagent with model mappings", async () => {
+    const command = await registerCreateSubagent();
+    createSubagent.mockResolvedValue({ id: "subagent-1", name: "Test Writer", role: "test-writer" });
+
+    await command.action!({
+      username: "test-writer",
+      name: "Test Writer",
+      bio: "Writes focused tests",
+      soul: "Cover behavior",
+      role: "test-writer",
+      models: "claude=sonnet,codex=gpt-5.1-codex",
+      skills: "saltbo/agent-kanban@agent-kanban",
+      output: "json",
+    });
+
+    expect(createSubagent).toHaveBeenCalledWith({
+      username: "test-writer",
+      name: "Test Writer",
+      bio: "Writes focused tests",
+      soul: "Cover behavior",
+      role: "test-writer",
+      models: { claude: "sonnet", codex: "gpt-5.1-codex" },
+      skills: ["saltbo/agent-kanban@agent-kanban"],
+    });
+    expect(output).toHaveBeenCalledWith({ id: "subagent-1", name: "Test Writer", role: "test-writer" }, "json", expect.any(Function));
   });
 });

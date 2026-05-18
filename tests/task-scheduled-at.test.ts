@@ -534,22 +534,18 @@ describe("dispatchTasks — scheduled_at filter", () => {
     };
     const workerAgent = {
       id: "worker-1",
-      runtime: "claude",
-      runtime_available: true,
       name: "Test Writer",
       username: "test-writer",
       bio: "Writes tests for changed code.",
       role: "testing",
       soul: null,
-      handoff_to: null,
       skills: [],
-      subagents: null,
-      model: null,
-      gpg_subkey_id: null,
+      models: { claude: "claude-opus-4-6" },
     };
     const client = {
       ...makeClient([task]),
       getAgent: vi.fn(async (id: string) => (id === "worker-1" ? workerAgent : leadAgent)),
+      getSubagent: vi.fn(async (id: string) => (id === "worker-1" ? workerAgent : null)),
     };
     const pool = makePool(spawnSpy);
     const rl = makeRateLimiter();

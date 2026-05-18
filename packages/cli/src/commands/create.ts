@@ -3,19 +3,23 @@ import type { Command } from "commander";
 import { createClient } from "../agent/leader.js";
 import type { ApiClient } from "../client/index.js";
 import { getOutputFormat, output } from "../output.js";
-import { getAvailableProviders } from "../providers/registry.js";
-
-function detectRuntime(): string {
-  const available = getAvailableProviders();
-  if (available.length === 0) {
-    console.error("No supported agent runtime found. Install a supported agent runtime, or pass --runtime explicitly.");
-    process.exit(1);
-  }
-  return available[0].name;
-}
 
 function isUrl(value: string): boolean {
   return value.includes("://") || value.startsWith("git@");
+}
+
+function parseModels(value: string): Record<string, string> {
+  const entries = value.split(",").map((entry) => entry.trim());
+  const models: Record<string, string> = {};
+  for (const entry of entries) {
+    const index = entry.indexOf("=");
+    if (index <= 0 || index === entry.length - 1) {
+      console.error("--models must use runtime=model pairs, e.g. claude=sonnet,codex=gpt-5.1-codex");
+      process.exit(1);
+    }
+    models[entry.slice(0, index).trim()] = entry.slice(index + 1).trim();
+  }
+  return models;
 }
 
 async function resolveRepoId(client: ApiClient, repoRef: string): Promise<string> {
@@ -128,7 +132,7 @@ export function registerCreateCommand(program: Command) {
     .option("--model <model>", "Model to use")
     .option("--handoff-to <roles>", "Comma-separated agent roles this agent may hand off to")
     .option("--skills <skills>", "Comma-separated installable skill refs (<source>@<skill>)")
-    .option("--subagents <ids>", "Comma-separated worker agent IDs to install as task-local subagents")
+    .option("--subagents <ids>", "Comma-separated subagent IDs to install as task-local subagents")
     .option("-o, --output <format>", "Output format (json, yaml, text)")
     .action(async (opts) => {
       const client = await createClient();
@@ -136,12 +140,14 @@ export function registerCreateCommand(program: Command) {
         console.error("--username is required");
         process.exit(1);
       }
-      const runtime = opts.runtime || detectRuntime();
-      const body: Record<string, unknown> = { name: opts.name || opts.username, username: opts.username, runtime };
+      if (!opts.runtime) {
+        console.error("--runtime is required");
+        process.exit(1);
+      }
+      const body: Record<string, unknown> = { name: opts.name || opts.username, username: opts.username, runtime: opts.runtime };
       if (opts.bio) body.bio = opts.bio;
       if (opts.soul) body.soul = opts.soul;
       if (opts.role) body.role = opts.role;
-      body.kind = "worker";
       if (opts.handoffTo) body.handoff_to = opts.handoffTo.split(",").map((s: string) => s.trim());
       if (opts.model) body.model = opts.model;
       if (opts.skills) body.skills = opts.skills.split(",").map((s: string) => s.trim());
@@ -150,6 +156,35 @@ export function registerCreateCommand(program: Command) {
       const agent = await client.createAgent(body as any);
       const fmt = getOutputFormat(opts.output);
       output(agent, fmt, (a) => `Created agent ${a.id}: ${a.name} (${a.role || "no role"})`);
+    });
+
+  createCmd
+    .command("subagent")
+    .description("Create a task-local subagent definition")
+    .option("--name <name>", "Subagent display name")
+    .option("--username <username>", "Subagent username")
+    .option("--bio <bio>", "Subagent bio")
+    .option("--soul <soul>", "Subagent soul — persistent behavior instructions")
+    .option("--role <role>", "Subagent role")
+    .option("--models <pairs>", "Comma-separated runtime=model pairs")
+    .option("--skills <skills>", "Comma-separated installable skill refs (<source>@<skill>)")
+    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .action(async (opts) => {
+      const client = await createClient();
+      if (!opts.username) {
+        console.error("--username is required");
+        process.exit(1);
+      }
+      const body: Record<string, unknown> = { name: opts.name || opts.username, username: opts.username };
+      if (opts.bio) body.bio = opts.bio;
+      if (opts.soul) body.soul = opts.soul;
+      if (opts.role) body.role = opts.role;
+      if (opts.models) body.models = parseModels(opts.models);
+      if (opts.skills) body.skills = opts.skills.split(",").map((s: string) => s.trim());
+
+      const subagent = await client.createSubagent(body as any);
+      const fmt = getOutputFormat(opts.output);
+      output(subagent, fmt, (a) => `Created subagent ${a.id}: ${a.name} (${a.role || "no role"})`);
     });
 
   createCmd

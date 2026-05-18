@@ -120,6 +120,16 @@ export abstract class ApiClient {
     return this.request("DELETE", `/api/agents/${agentId}`);
   }
 
+  getSubagent(subagentId: string) {
+    return this.request("GET", `/api/subagents/${subagentId}`);
+  }
+  updateSubagent(subagentId: string, body: Record<string, unknown>) {
+    return this.request("PATCH", `/api/subagents/${subagentId}`, body);
+  }
+  deleteSubagent(subagentId: string) {
+    return this.request("DELETE", `/api/subagents/${subagentId}`);
+  }
+
   // Machines
   registerMachine(info: { name: string; os: string; version: string; runtimes: MachineRuntime[]; device_id: string }) {
     return this.request<{ id: string; name: string }>("POST", "/api/machines", info);
@@ -159,8 +169,20 @@ export abstract class ApiClient {
     runtime: import("@agent-kanban/shared").AgentRuntime;
     model?: string;
     skills?: string[];
+    subagents?: string[];
   }) {
     return this.request("POST", "/api/agents", input);
+  }
+  createSubagent(input: {
+    name?: string;
+    username: string;
+    bio?: string;
+    soul?: string;
+    role?: string;
+    models?: Partial<Record<import("@agent-kanban/shared").AgentRuntime, string>>;
+    skills?: string[];
+  }) {
+    return this.request("POST", "/api/subagents", input);
   }
 
   // Boards

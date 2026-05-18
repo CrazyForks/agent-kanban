@@ -10,14 +10,18 @@ export interface AgentInfo {
   bio: string | null;
   role: string | null;
   soul: string | null;
-  handoff_to: string[] | null;
+  handoff_to?: string[] | null;
   skills: string[] | null;
-  subagents: string[] | null;
+  subagents?: string[] | null;
   runtime: AgentRuntime;
   model: string | null;
 }
 
-export function generateSystemPrompt(agent: AgentInfo, boardType: BoardType, subagents: AgentInfo[] = []): string {
+interface SubagentPromptInfo {
+  username: string;
+}
+
+export function generateSystemPrompt(agent: AgentInfo, boardType: BoardType, subagents: SubagentPromptInfo[] = []): string {
   const environment = boardType === "dev" ? DEV_ENVIRONMENT : OPS_ENVIRONMENT;
   const rules = boardType === "dev" ? DEV_RULES : OPS_RULES;
   const subagentSection = buildSubagentSection(subagents);
@@ -89,7 +93,7 @@ const OPS_RULES = `\
 - Log progress frequently — humans monitor the board.
 - If a task is too large, break it into subtasks via \`ak create task --parent <task-id>\`.`;
 
-function buildSubagentSection(subagents: AgentInfo[]): string {
+function buildSubagentSection(subagents: SubagentPromptInfo[]): string {
   if (subagents.length === 0) return "";
 
   const mentions = subagents.map((agent) => `@${agent.username}`).join(", ");
@@ -97,7 +101,7 @@ function buildSubagentSection(subagents: AgentInfo[]): string {
   return `
 ## Available Subagents
 
-The following registered worker agents are installed as task-local subagents: ${mentions}
+The following task-local subagents are installed: ${mentions}
 `;
 }
 

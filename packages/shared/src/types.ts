@@ -108,7 +108,7 @@ export interface BoardLabel {
 export type MachineStatus = "online" | "offline";
 
 export interface UsageWindow {
-  runtime: AgentRuntime;
+  runtime: AgentRuntime | null;
   label: string;
   /** Utilized quota percentage, 0-100. */
   utilization: number;
@@ -242,6 +242,20 @@ export interface AgentWithActivity extends Agent {
   cache_read_tokens: number;
   cache_creation_tokens: number;
   cost_micro_usd: number;
+}
+
+export interface Subagent {
+  id: string;
+  owner_id: string;
+  name: string;
+  username: string;
+  bio: string | null;
+  soul: string | null;
+  role: string | null;
+  models: Partial<Record<AgentRuntime, string>> | null;
+  skills: string[] | null;
+  created_at: string;
+  updated_at: string;
 }
 
 // ─── Agent Session ───
@@ -387,6 +401,16 @@ export interface CreateAgentInput {
   model?: string;
   skills?: string[];
   subagents?: string[];
+}
+
+export interface CreateSubagentInput {
+  name?: string;
+  username: string;
+  bio?: string;
+  soul?: string;
+  role?: string;
+  models?: Partial<Record<AgentRuntime, string>>;
+  skills?: string[];
 }
 
 export interface CreateSessionInput {

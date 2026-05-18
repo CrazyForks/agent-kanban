@@ -15,8 +15,7 @@ export interface SubagentDefinition {
   bio: string | null;
   soul: string | null;
   role: string | null;
-  runtime: AgentRuntime;
-  model: string | null;
+  models: Partial<Record<AgentRuntime, string>> | null;
 }
 
 function agentName(agent: SubagentDefinition): string {
@@ -32,8 +31,12 @@ function promptFor(agent: SubagentDefinition): string {
   return sections.filter(Boolean).join("\n\n");
 }
 
+function modelForRuntime(runtime: AgentRuntime, agent: SubagentDefinition): string | null {
+  return agent.models?.[runtime] ?? null;
+}
+
 function markdownModel(runtime: AgentRuntime, agent: SubagentDefinition): string | null {
-  return runtime === "claude" && agent.runtime === "claude" && agent.model ? agent.model : null;
+  return runtime === "claude" ? modelForRuntime(runtime, agent) : null;
 }
 
 function renderMarkdownAgent(runtime: AgentRuntime, agent: SubagentDefinition): string {
@@ -54,17 +57,13 @@ function tomlBlock(value: string): string {
   return `"""\n${value.replace(/"""/g, '\\"\\"\\"')}\n"""`;
 }
 
-function codexModel(agent: SubagentDefinition): string | null {
-  return agent.runtime === "codex" && agent.model ? agent.model : null;
-}
-
 function renderCodexAgent(agent: SubagentDefinition): string {
   const lines = [
     `name = ${tomlString(agentName(agent))}`,
     `description = ${tomlString(descriptionFor(agent))}`,
     `developer_instructions = ${tomlBlock(promptFor(agent))}`,
   ];
-  const model = codexModel(agent);
+  const model = modelForRuntime("codex", agent);
   if (model) lines.splice(2, 0, `model = ${tomlString(model)}`);
   return `${lines.join("\n")}\n`;
 }

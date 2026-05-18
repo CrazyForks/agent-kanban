@@ -25,6 +25,11 @@ const ROUTE_RULES: { method: string; pattern: RegExp; rule: RouteRule }[] = [
   { method: "PATCH", pattern: /^\/api\/agents\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
   { method: "DELETE", pattern: /^\/api\/agents\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
 
+  // Subagents — configuration only, no cryptographic identity
+  { method: "POST", pattern: /^\/api\/subagents$/, rule: { allow: ["user", "machine", "agent:leader"] } },
+  { method: "PATCH", pattern: /^\/api\/subagents\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
+  { method: "DELETE", pattern: /^\/api\/subagents\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
+
   // Agent Sessions — machine creates/closes, agent reports usage
   { method: "POST", pattern: /^\/api\/agents\/[^/]+\/sessions$/, rule: { allow: ["machine"] } },
   { method: "DELETE", pattern: /^\/api\/agents\/[^/]+\/sessions\/[^/]+$/, rule: { allow: ["machine"] } },

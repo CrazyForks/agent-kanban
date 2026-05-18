@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { CreateAgentInput } from "@agent-kanban/shared";
+import type { CreateAgentInput, CreateSubagentInput } from "@agent-kanban/shared";
 import { Miniflare } from "miniflare";
 
 const MIGRATIONS_DIR = join(__dirname, "../../apps/web/migrations");
@@ -40,6 +40,7 @@ export async function applyMigrations(db: D1Database) {
     "0018_agent_subagents.sql",
     "0019_agent_versions.sql",
     "0020_board_labels.sql",
+    "0021_subagents.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
@@ -93,4 +94,12 @@ export async function createTestAgent(db: D1Database, ownerId: string, input: Cr
   const { createAgent, createAgentIdentity } = await import("../../apps/web/server/agentRepo");
   const identity = await createAgentIdentity(db, ownerId, `${input.username}@mails.agent-kanban.dev`);
   return createAgent(db, ownerId, input, identity, builtin);
+}
+
+export async function createTestSubagent(db: D1Database, ownerId: string, input: CreateSubagentInput) {
+  const existing = await db.prepare("SELECT 1 FROM user WHERE id = ?").bind(ownerId).first();
+  if (!existing) await seedUser(db, ownerId, `${ownerId}@test.local`);
+
+  const { createSubagent } = await import("../../apps/web/server/subagentRepo");
+  return createSubagent(db, ownerId, input);
 }

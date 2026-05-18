@@ -294,7 +294,7 @@ export async function updateAgent(
 
 type AgentSnapshot = Agent & { private_key: string; mailbox_token: string | null };
 
-function jsonOrNull(value: unknown[] | null): string | null {
+function jsonOrNull(value: unknown | null): string | null {
   return value ? JSON.stringify(value) : null;
 }
 

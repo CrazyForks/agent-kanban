@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { SignJWT } from "jose";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createTestAgent, createTestEnv, seedUser, setupMiniflare, signUpVerifiedUser } from "./helpers/db";
+import { createTestAgent, createTestEnv, createTestSubagent, seedUser, setupMiniflare, signUpVerifiedUser } from "./helpers/db";
 
 const BETTER_AUTH_URL = "http://localhost:8788";
 const env = createTestEnv();
@@ -488,11 +488,30 @@ describe("routes", () => {
     expect(body.error.message).toContain('Invalid skill "agent-kanban"');
   });
 
-  it("POST /api/agents stores registered worker subagent IDs", async () => {
-    const subagent = await createTestAgent(env.DB, userId, {
+  it("POST /api/subagents creates subagent profiles with model mappings and no identity", async () => {
+    const res = await apiRequest(
+      "POST",
+      "/api/subagents",
+      {
+        name: "Reusable Test Writer",
+        username: "reusable-test-writer",
+        role: "test-writer",
+        models: { claude: "sonnet", codex: "gpt-5.1-codex" },
+      },
+      apiKey,
+    );
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.models).toEqual({ claude: "sonnet", codex: "gpt-5.1-codex" });
+    expect(body).not.toHaveProperty("public_key");
+    expect(body).not.toHaveProperty("fingerprint");
+  });
+
+  it("POST /api/agents stores registered subagent IDs", async () => {
+    const subagent = await createTestSubagent(env.DB, userId, {
       name: "Create Route Subagent",
       username: "create-route-subagent",
-      runtime: "claude",
     });
     const res = await apiRequest(
       "POST",
@@ -511,10 +530,9 @@ describe("routes", () => {
   });
 
   it.each(["gemini", "copilot"] as const)("POST /api/agents allows %s agents with subagents", async (runtime) => {
-    const subagent = await createTestAgent(env.DB, userId, {
+    const subagent = await createTestSubagent(env.DB, userId, {
       name: `Create ${runtime} Route Subagent`,
       username: `create-${runtime}-route-subagent`,
-      runtime: "claude",
     });
     const res = await apiRequest(
       "POST",
@@ -530,6 +548,24 @@ describe("routes", () => {
     expect(res.status).toBe(201);
     const body = (await res.json()) as any;
     expect(body.subagents).toEqual([subagent.id]);
+  });
+
+  it("POST /api/agents rejects worker agent IDs as subagents", async () => {
+    const worker = await createTestAgent(env.DB, userId, {
+      name: "Worker Used As Subagent",
+      username: "worker-used-as-subagent",
+      runtime: "codex",
+    });
+    const res = await apiRequest(
+      "POST",
+      "/api/agents",
+      { name: "Worker Subagent Parent", username: "worker-subagent-parent", runtime: "claude", subagents: [worker.id] },
+      apiKey,
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.error.message).toContain("is not registered");
   });
 
   it("POST /api/agents rejects nonexistent subagent IDs", async () => {
@@ -553,7 +589,7 @@ describe("routes", () => {
     );
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
-    expect(body.error.message).toContain("must be a worker agent");
+    expect(body.error.message).toContain("is not registered");
   });
 
   it("POST /api/agents rejects cross-owner subagent IDs", async () => {
@@ -574,10 +610,9 @@ describe("routes", () => {
   });
 
   it("POST /api/agents rejects unsupported runtimes with subagents", async () => {
-    const subagent = await createTestAgent(env.DB, userId, {
+    const subagent = await createTestSubagent(env.DB, userId, {
       name: "Unsupported Runtime Subagent",
       username: "unsupported-runtime-subagent",
-      runtime: "claude",
     });
     const res = await apiRequest(
       "POST",
@@ -615,12 +650,11 @@ describe("routes", () => {
     expect(payload.error.message).toBe("agent update must be a JSON object");
   });
 
-  it("PATCH /api/agents/:id stores registered worker subagent IDs", async () => {
+  it("PATCH /api/agents/:id stores registered subagent IDs", async () => {
     const jwt = await signLeaderSessionJWT();
-    const subagent = await createTestAgent(env.DB, userId, {
+    const subagent = await createTestSubagent(env.DB, userId, {
       name: "Patch Route Subagent",
       username: "patch-route-subagent",
-      runtime: "claude",
     });
     const res = await apiRequest("PATCH", `/api/agents/${agentId}`, { subagents: [subagent.id] }, jwt);
     expect(res.status).toBe(200);
@@ -665,19 +699,32 @@ describe("routes", () => {
     const agent = await createTestAgent(env.DB, userId, {
       name: `Patch ${runtime} Route Agent`,
       username: `patch-${runtime}-route-agent`,
-      runtime: "claude",
+      runtime,
     });
-    const subagent = await createTestAgent(env.DB, userId, {
+    const subagent = await createTestSubagent(env.DB, userId, {
       name: `Patch ${runtime} Route Subagent`,
       username: `patch-${runtime}-route-subagent`,
-      runtime: "claude",
     });
-    const res = await apiRequest("PATCH", `/api/agents/${agent.id}`, { runtime, subagents: [subagent.id] }, jwt);
+    const res = await apiRequest("PATCH", `/api/agents/${agent.id}`, { subagents: [subagent.id] }, jwt);
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.runtime).toBe(runtime);
     expect(body.subagents).toEqual([subagent.id]);
+  });
+
+  it("PATCH /api/agents/:id rejects worker agent IDs as subagents", async () => {
+    const jwt = await signLeaderSessionJWT();
+    const worker = await createTestAgent(env.DB, userId, {
+      name: "Patch Worker Used As Subagent",
+      username: "patch-worker-used-as-subagent",
+      runtime: "codex",
+    });
+    const res = await apiRequest("PATCH", `/api/agents/${agentId}`, { subagents: [worker.id] }, jwt);
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.error.message).toContain("is not registered");
   });
 
   it("PATCH /api/agents/:id rejects self-reference as a subagent", async () => {
@@ -1262,11 +1309,10 @@ describe("routes", () => {
     expect(body.error.message).toContain("snapshots cannot be deleted directly");
   });
 
-  it("DELETE /api/agents/:id rejects agents referenced as subagents", async () => {
-    const referenced = await createTestAgent(env.DB, userTokenOwnerId, {
+  it("DELETE /api/subagents/:id rejects referenced subagents", async () => {
+    const referenced = await createTestSubagent(env.DB, userTokenOwnerId, {
       name: "Referenced Delete Subagent",
       username: "referenced-delete-subagent",
-      runtime: "claude",
     });
     await createTestAgent(env.DB, userTokenOwnerId, {
       name: "Referencing Delete Agent",
@@ -1275,10 +1321,10 @@ describe("routes", () => {
       subagents: [referenced.id],
     });
 
-    const res = await apiRequest("DELETE", `/api/agents/${referenced.id}`, undefined, userToken);
+    const res = await apiRequest("DELETE", `/api/subagents/${referenced.id}`, undefined, userToken);
     expect(res.status).toBe(409);
     const body = (await res.json()) as any;
-    expect(body.error.message).toContain("referenced as a subagent");
+    expect(body.error.message).toContain("referenced by agent");
   });
 
   // ─── Task claim forbidden for machine identity ───

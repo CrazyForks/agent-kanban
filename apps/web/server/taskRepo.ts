@@ -31,7 +31,7 @@ async function assertAssignableWorkerAgent(db: D1, ownerId: string, agentId: str
     .bind(agentId, ownerId)
     .first<{ kind: string; runtime: string }>();
   if (!agent) throw new HTTPException(missingStatus, { message: "Agent not found" });
-  if (agent.kind === "leader") throw new HTTPException(400, { message: "Cannot assign tasks to leader agents" });
+  if (agent.kind !== "worker") throw new HTTPException(400, { message: "Tasks can only be assigned to worker agents" });
   if (!(await isRuntimeAvailable(db, ownerId, agent.runtime))) {
     throw new HTTPException(409, {
       message: `Runtime "${agent.runtime}" is not available on any online machine. Choose or create a worker that uses an available runtime.`,
