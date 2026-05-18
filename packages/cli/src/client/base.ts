@@ -123,6 +123,9 @@ export abstract class ApiClient {
   getSubagent(subagentId: string) {
     return this.request("GET", `/api/subagents/${subagentId}`);
   }
+  listSubagents() {
+    return this.request("GET", "/api/subagents");
+  }
   updateSubagent(subagentId: string, body: Record<string, unknown>) {
     return this.request("PATCH", `/api/subagents/${subagentId}`, body);
   }

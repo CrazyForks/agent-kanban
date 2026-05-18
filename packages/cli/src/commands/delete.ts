@@ -3,7 +3,7 @@ import { createClient } from "../agent/leader.js";
 import { getOutputFormat, output } from "../output.js";
 
 export function registerDeleteCommand(program: Command) {
-  const deleteCmd = program.command("delete").description("Delete a resource (board, task, agent, repo)");
+  const deleteCmd = program.command("delete").description("Delete a resource (board, task, agent, subagent, repo)");
 
   deleteCmd
     .command("label")
@@ -53,6 +53,17 @@ export function registerDeleteCommand(program: Command) {
       const fmt = getOutputFormat(opts.output);
       const agent = await client.deleteAgent(id);
       output(agent, fmt, () => `Deleted agent ${id}`);
+    });
+
+  deleteCmd
+    .command("subagent <id>")
+    .description("Delete a task-local subagent")
+    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .action(async (id: string, opts) => {
+      const client = await createClient();
+      const fmt = getOutputFormat(opts.output);
+      const subagent = await client.deleteSubagent(id);
+      output(subagent, fmt, () => `Deleted subagent ${id}`);
     });
 
   deleteCmd

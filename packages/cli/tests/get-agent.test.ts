@@ -15,7 +15,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockGetAgent = vi.fn();
 const mockListAgents = vi.fn();
-const mockClient = { getAgent: mockGetAgent, listAgents: mockListAgents };
+const mockGetSubagent = vi.fn();
+const mockListSubagents = vi.fn();
+const mockClient = { getAgent: mockGetAgent, listAgents: mockListAgents, getSubagent: mockGetSubagent, listSubagents: mockListSubagents };
 const mockCreateClient = vi.fn(() => Promise.resolve(mockClient));
 
 vi.mock("../src/agent/leader.js", () => ({
@@ -32,6 +34,8 @@ vi.mock("../src/output.js", () => ({
   formatBoardList: vi.fn(),
   formatAgent: vi.fn(),
   formatAgentList: vi.fn(),
+  formatSubagent: vi.fn(),
+  formatSubagentList: vi.fn(),
   formatRepository: vi.fn(),
   formatRepositoryList: vi.fn(),
   formatTaskNotes: vi.fn(),
@@ -198,6 +202,44 @@ describe("get agent — username version list", () => {
       "text",
       expect.any(Function),
       { kind: "agent" },
+    );
+  });
+});
+
+describe("get subagent", () => {
+  it("lists subagents when no id is provided", async () => {
+    mockListSubagents.mockResolvedValue([
+      { id: "subagent-1", name: "Reviewer", username: "reviewer" },
+      { id: "subagent-2", name: "Test Writer", username: "test-writer" },
+    ]);
+
+    await makeProgram().parseAsync(["get", "subagent"], { from: "user" });
+
+    expect(mockListSubagents).toHaveBeenCalledOnce();
+    expect(mockGetSubagent).not.toHaveBeenCalled();
+    expect(vi.mocked(outputModule.output)).toHaveBeenCalledWith(
+      [
+        { id: "subagent-1", name: "Reviewer", username: "reviewer" },
+        { id: "subagent-2", name: "Test Writer", username: "test-writer" },
+      ],
+      "text",
+      vi.mocked(outputModule.formatSubagentList),
+      { kind: "subagent" },
+    );
+  });
+
+  it("gets a subagent by id", async () => {
+    mockGetSubagent.mockResolvedValue({ id: "subagent-1", name: "Reviewer", username: "reviewer" });
+
+    await makeProgram().parseAsync(["get", "subagent", "subagent-1"], { from: "user" });
+
+    expect(mockGetSubagent).toHaveBeenCalledWith("subagent-1");
+    expect(mockListSubagents).not.toHaveBeenCalled();
+    expect(vi.mocked(outputModule.output)).toHaveBeenCalledWith(
+      { id: "subagent-1", name: "Reviewer", username: "reviewer" },
+      "text",
+      vi.mocked(outputModule.formatSubagent),
+      { kind: "subagent" },
     );
   });
 });

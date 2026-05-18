@@ -87,6 +87,36 @@ describe("ApiClient new methods — public contract", () => {
     const { ApiClient } = await import("../packages/cli/src/client/index");
     expect((ApiClient.prototype as any).getAgent.length).toBe(1);
   });
+
+  it("listSubagents is a function on ApiClient", async () => {
+    const { ApiClient } = await import("../packages/cli/src/client/index");
+    expect(typeof (ApiClient.prototype as any).listSubagents).toBe("function");
+  });
+
+  it("listSubagents accepts no arguments", async () => {
+    const { ApiClient } = await import("../packages/cli/src/client/index");
+    expect((ApiClient.prototype as any).listSubagents.length).toBe(0);
+  });
+
+  it("getSubagent is a function on ApiClient", async () => {
+    const { ApiClient } = await import("../packages/cli/src/client/index");
+    expect(typeof (ApiClient.prototype as any).getSubagent).toBe("function");
+  });
+
+  it("getSubagent accepts one argument (subagent id)", async () => {
+    const { ApiClient } = await import("../packages/cli/src/client/index");
+    expect((ApiClient.prototype as any).getSubagent.length).toBe(1);
+  });
+
+  it("deleteSubagent is a function on ApiClient", async () => {
+    const { ApiClient } = await import("../packages/cli/src/client/index");
+    expect(typeof (ApiClient.prototype as any).deleteSubagent).toBe("function");
+  });
+
+  it("deleteSubagent accepts one argument (subagent id)", async () => {
+    const { ApiClient } = await import("../packages/cli/src/client/index");
+    expect((ApiClient.prototype as any).deleteSubagent.length).toBe(1);
+  });
 });
 
 describe("ApiError", () => {

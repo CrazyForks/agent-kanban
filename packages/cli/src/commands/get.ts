@@ -9,6 +9,8 @@ import {
   formatModelList,
   formatRepository,
   formatRepositoryList,
+  formatSubagent,
+  formatSubagentList,
   formatTask,
   formatTaskList,
   formatTaskListWide,
@@ -148,6 +150,22 @@ export function registerGetCommand(program: Command) {
         if (opts.available) params.available = "true";
         const agents = (await client.listAgents(params)) as AgentRef[];
         output(agents, fmt, formatAgentList, { kind: "agent" });
+      }
+    });
+
+  getCmd
+    .command("subagent [id]")
+    .description("Get a task-local subagent or list subagents")
+    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .action(async (id: string | undefined, opts) => {
+      const client = await createClient();
+      const fmt = getOutputFormat(opts.output);
+      if (id) {
+        const subagent = await client.getSubagent(id);
+        output(subagent, fmt, formatSubagent, { kind: "subagent" });
+      } else {
+        const subagents = await client.listSubagents();
+        output(subagents, fmt, formatSubagentList, { kind: "subagent" });
       }
     });
 

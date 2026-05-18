@@ -95,6 +95,27 @@ export function formatAgentList(agents: any[]): string {
   return lines.join("\n");
 }
 
+function formatSubagentModels(models: Record<string, string> | null | undefined): string {
+  if (!models || Object.keys(models).length === 0) return "";
+  return Object.entries(models)
+    .map(([runtime, model]) => `${runtime}=${model}`)
+    .join(", ");
+}
+
+export function formatSubagentList(subagents: any[]): string {
+  if (subagents.length === 0) return "No subagents found.";
+
+  const lines = subagents.map((agent) => {
+    const role = agent.role ? `(${agent.role})` : "";
+    const models = formatSubagentModels(agent.models);
+    const modelText = models ? ` models=${models}` : "";
+    const bio = agent.bio ? ` — ${agent.bio}` : "";
+    return `  ${agent.id}  ${agent.name} ${role}${modelText}${bio}`.trimEnd();
+  });
+
+  return lines.join("\n");
+}
+
 export function formatModelList(models: any[]): string {
   if (models.length === 0) return "No models found.";
 
@@ -191,6 +212,19 @@ export function formatAgent(agent: any): string {
   if (agent.task_count != null) lines.push(`  Tasks:    ${agent.task_count}`);
   if (agent.queued_task_count != null) lines.push(`  Queued:   ${agent.queued_task_count}`);
   if (agent.active_task_count != null) lines.push(`  Active:   ${agent.active_task_count}`);
+  return lines.join("\n");
+}
+
+export function formatSubagent(agent: any): string {
+  const lines: string[] = [];
+  lines.push(`${agent.name}`);
+  lines.push(`  ID:       ${agent.id}`);
+  lines.push(`  Username: ${agent.username}`);
+  if (agent.role) lines.push(`  Role:     ${agent.role}`);
+  if (agent.bio) lines.push(`  Bio:      ${agent.bio}`);
+  const models = formatSubagentModels(agent.models);
+  if (models) lines.push(`  Models:   ${models}`);
+  if (agent.skills?.length) lines.push(`  Skills:   ${agent.skills.join(", ")}`);
   return lines.join("\n");
 }
 
