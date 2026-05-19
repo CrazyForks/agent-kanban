@@ -1,5 +1,6 @@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "../../components/ui/dropdown-menu";
 import { Skeleton } from "../../components/ui/skeleton";
+import { TableCell, TableRow } from "../../components/ui/table";
 import { type DialogKind, type User } from "./types";
 
 export function UserRowActions({
@@ -51,8 +52,8 @@ export function SkeletonRows() {
   return (
     <>
       {[0, 1, 2, 3, 4].map((i) => (
-        <tr key={i} className="border-b border-border">
-          <td className="px-4 py-3">
+        <TableRow key={i} className="border-border">
+          <TableCell className="px-4 py-3">
             <div className="flex items-center gap-3">
               <Skeleton className="w-7 h-7 rounded-full" />
               <div className="space-y-1.5">
@@ -60,18 +61,18 @@ export function SkeletonRows() {
                 <Skeleton className="h-2.5 w-40" />
               </div>
             </div>
-          </td>
-          <td className="px-4 py-3">
+          </TableCell>
+          <TableCell className="px-4 py-3">
             <Skeleton className="h-4 w-14 rounded" />
-          </td>
-          <td className="px-4 py-3">
+          </TableCell>
+          <TableCell className="px-4 py-3">
             <Skeleton className="h-4 w-14 rounded" />
-          </td>
-          <td className="px-4 py-3">
+          </TableCell>
+          <TableCell className="px-4 py-3">
             <Skeleton className="h-3 w-16" />
-          </td>
-          <td className="px-4 py-3" />
-        </tr>
+          </TableCell>
+          <TableCell className="px-4 py-3" />
+        </TableRow>
       ))}
     </>
   );

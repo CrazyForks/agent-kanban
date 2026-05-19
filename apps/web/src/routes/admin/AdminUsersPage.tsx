@@ -1,3 +1,4 @@
+import { ArrowDown, ArrowUp } from "lucide-react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { formatRelative } from "../../components/TaskDetailFields";
@@ -5,6 +6,7 @@ import { Avatar, AvatarFallback } from "../../components/ui/avatar";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/table";
 import { authClient, useSession } from "../../lib/auth-client";
 import { BanUserDialog } from "./BanUserDialog";
 import { DeleteUserDialog } from "./DeleteUserDialog";
@@ -99,10 +101,9 @@ export function AdminUsersPage() {
     if (value !== "all") setRoleFilter("all");
   }
 
-  function applySortDirection(value: SortDirection | null) {
-    if (!value) return;
+  function toggleCreatedSort() {
     setPage(0);
-    setSortDirection(value);
+    setSortDirection((direction) => (direction === "desc" ? "asc" : "desc"));
   }
 
   function applyPageSize(value: string | null) {
@@ -180,44 +181,49 @@ export function AdminUsersPage() {
             </SelectGroup>
           </SelectContent>
         </Select>
-        <Select value={sortDirection} onValueChange={applySortDirection}>
-          <SelectTrigger size="sm" className="w-44">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectGroup>
-              <SelectItem value="desc">Newest registered</SelectItem>
-              <SelectItem value="asc">Oldest registered</SelectItem>
-            </SelectGroup>
-          </SelectContent>
-        </Select>
       </div>
 
       <div className="rounded-lg border border-border overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border bg-surface-secondary">
-              <th className="px-4 py-3 text-left text-xs font-medium text-content-tertiary uppercase tracking-wider">User</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-content-tertiary uppercase tracking-wider">Role</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-content-tertiary uppercase tracking-wider">Status</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-content-tertiary uppercase tracking-wider">Created</th>
-              <th className="px-4 py-3 w-10" />
-            </tr>
-          </thead>
-          <tbody>
+        <Table>
+          <TableHeader>
+            <TableRow className="border-border bg-surface-secondary hover:bg-surface-secondary">
+              <TableHead className="px-4 py-3 text-xs font-medium text-content-tertiary uppercase tracking-wider">User</TableHead>
+              <TableHead className="px-4 py-3 text-xs font-medium text-content-tertiary uppercase tracking-wider">Role</TableHead>
+              <TableHead className="px-4 py-3 text-xs font-medium text-content-tertiary uppercase tracking-wider">Status</TableHead>
+              <TableHead className="px-4 py-3 text-xs font-medium text-content-tertiary uppercase tracking-wider">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  onClick={toggleCreatedSort}
+                  className="-mx-2 uppercase tracking-wider text-content-tertiary hover:text-content-primary"
+                  aria-label={`Sort by created date ${sortDirection === "desc" ? "oldest first" : "newest first"}`}
+                >
+                  Created
+                  {sortDirection === "desc" ? (
+                    <ArrowDown data-icon="inline-end" aria-hidden="true" />
+                  ) : (
+                    <ArrowUp data-icon="inline-end" aria-hidden="true" />
+                  )}
+                </Button>
+              </TableHead>
+              <TableHead className="w-10 px-4 py-3" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {loading ? (
               <SkeletonRows />
             ) : users.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="px-4 py-16 text-center text-content-tertiary text-sm">
+              <TableRow>
+                <TableCell colSpan={5} className="px-4 py-16 text-center text-content-tertiary text-sm">
                   No users found
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ) : (
               users.map((user) => (
                 <Fragment key={user.id}>
-                  <tr className="border-b border-border bg-surface-secondary hover:bg-surface-tertiary transition-colors">
-                    <td className="px-4 py-3">
+                  <TableRow className="border-border bg-surface-secondary hover:bg-surface-tertiary">
+                    <TableCell className="px-4 py-3">
                       <div className="flex items-center gap-3">
                         <Avatar size="sm">
                           <AvatarFallback className="bg-surface-tertiary text-content-secondary text-xs">
@@ -229,40 +235,40 @@ export function AdminUsersPage() {
                           <p className="font-mono text-xs text-content-tertiary leading-tight">{user.email}</p>
                         </div>
                       </div>
-                    </td>
-                    <td className="px-4 py-3">
+                    </TableCell>
+                    <TableCell className="px-4 py-3">
                       <RoleBadge role={user.role} />
-                    </td>
-                    <td className="px-4 py-3">
+                    </TableCell>
+                    <TableCell className="px-4 py-3">
                       <StatusBadge user={user} />
-                    </td>
-                    <td className="px-4 py-3">
+                    </TableCell>
+                    <TableCell className="px-4 py-3">
                       <span className="font-mono text-xs text-content-tertiary">{formatRelative(user.createdAt)}</span>
-                    </td>
-                    <td className="px-4 py-3 text-right">
+                    </TableCell>
+                    <TableCell className="px-4 py-3 text-right">
                       <UserRowActions
                         user={user}
                         isSelf={user.id === currentUserId}
                         onAction={handleAction}
                         onViewSessions={(uid) => setExpandedSessions((prev) => (prev === uid ? null : uid))}
                       />
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                   {expandedSessions === user.id && (
-                    <tr className="bg-surface-primary border-b border-border">
-                      <td colSpan={5}>
+                    <TableRow className="bg-surface-primary border-border hover:bg-surface-primary">
+                      <TableCell colSpan={5} className="p-0">
                         <div className="pt-2">
                           <p className="px-4 pb-1 text-xs font-medium text-content-tertiary uppercase tracking-wider">Sessions</p>
                           <SessionsPanel userId={user.id} onToast={showSessionToast} />
                         </div>
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   )}
                 </Fragment>
               ))
             )}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
 
       {total > 0 && (
