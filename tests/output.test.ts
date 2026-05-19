@@ -139,10 +139,10 @@ describe("formatTask", () => {
     expect(result).not.toContain("Input:");
   });
 
-  it("includes result when present", () => {
+  it("omits legacy result when present", () => {
     const task = { id: "t1", title: "T", status: "done", result: "Completed successfully" };
     const result = formatTask(task);
-    expect(result).toContain("Completed successfully");
+    expect(result).not.toContain("Completed successfully");
   });
 
   it("omits Result line when result is absent", () => {

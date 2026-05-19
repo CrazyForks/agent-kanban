@@ -502,7 +502,7 @@ describe("PrMonitor — PR state transitions", () => {
 
     await runCheck(monitor);
 
-    expect(completeTask).toHaveBeenCalledWith("task-1", { result: "PR merged" });
+    expect(completeTask).toHaveBeenCalledWith("task-1");
   });
 
   it("calls cancelTask when PR state is CLOSED", async () => {
@@ -540,7 +540,7 @@ describe("PrMonitor — PR state transitions", () => {
 
     await runCheck(monitor);
 
-    expect(completeTask).toHaveBeenCalledWith("task-1", { result: "PR merged" });
+    expect(completeTask).toHaveBeenCalledWith("task-1");
   });
 
   it("skips PR check for tasks without pr_url", async () => {
@@ -720,7 +720,7 @@ describe("PrMonitor — simplified one-pass behavior", () => {
 
     // Verify API calls
     expect(getTask).toHaveBeenCalledTimes(6);
-    expect(completeTask).toHaveBeenCalledWith("task-3", { result: "PR merged" });
+    expect(completeTask).toHaveBeenCalledWith("task-3");
     expect(cancelTask).toHaveBeenCalledWith("task-4");
 
     // Verify tracking state
@@ -783,7 +783,7 @@ describe("PrMonitor — simplified one-pass behavior", () => {
     await runCheck(monitor);
 
     // All PR states should be checked regardless of task status
-    expect(completeTask).toHaveBeenCalledWith("task-1", { result: "PR merged" });
+    expect(completeTask).toHaveBeenCalledWith("task-1");
     expect(cancelTask).toHaveBeenCalledWith("task-2");
 
     // Verify tracking state

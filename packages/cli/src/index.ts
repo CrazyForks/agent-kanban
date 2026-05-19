@@ -154,15 +154,10 @@ taskCmd
 taskCmd
   .command("complete <id>")
   .description("Complete a task (ops fallback)")
-  .option("--result <result>", "Completion result summary")
-  .option("--pr-url <url>", "PR URL")
   .option("-o, --output <format>", "Output format (json, yaml, text)")
   .action(async (id, opts) => {
     const client = await createClient();
-    const body: Record<string, unknown> = {};
-    if (opts.result) body.result = opts.result;
-    if (opts.prUrl) body.pr_url = opts.prUrl;
-    const task = await client.completeTask(id, body);
+    const task = await client.completeTask(id);
     const fmt = getOutputFormat(opts.output);
     output(task, fmt, (t) => `Completed task ${t.id}: ${t.title}`);
   });

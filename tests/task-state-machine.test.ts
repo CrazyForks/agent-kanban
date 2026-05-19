@@ -394,28 +394,49 @@ describe("task lifecycle repo functions", () => {
       const { completeTask } = await import("../apps/web/server/taskRepo");
       const task = await createTestTask();
       await forceStatus(task.id, "in_review");
-      const result = await completeTask(env.DB, task.id, "agent:leader", "system", "done", null, "agent:leader");
+      const result = await completeTask(env.DB, task.id, "agent:leader", "system", "agent:leader");
       expect(result!.status).toBe("done");
+    });
+
+    it("preserves existing PR metadata when completing", async () => {
+      const { completeTask } = await import("../apps/web/server/taskRepo");
+      const task = await createTestTask();
+      await env.DB.prepare("UPDATE tasks SET status = 'in_review', pr_url = ?, result = ? WHERE id = ?")
+        .bind("https://github.com/org/repo/pull/42", "legacy result", task.id)
+        .run();
+
+      const result = await completeTask(env.DB, task.id, "agent:leader", "system", "agent:leader");
+      const stored = await env.DB.prepare("SELECT pr_url, result FROM tasks WHERE id = ?")
+        .bind(task.id)
+        .first<{ pr_url: string | null; result: string | null }>();
+      const actions = await env.DB.prepare("SELECT detail FROM task_actions WHERE task_id = ? AND action = 'completed'")
+        .bind(task.id)
+        .all<{ detail: string | null }>();
+
+      expect(result!.pr_url).toBe("https://github.com/org/repo/pull/42");
+      expect(stored!.pr_url).toBe("https://github.com/org/repo/pull/42");
+      expect(stored!.result).toBe("legacy result");
+      expect(actions.results[0]?.detail).toBeNull();
     });
 
     it("rejects complete from todo", async () => {
       const { completeTask } = await import("../apps/web/server/taskRepo");
       const task = await createTestTask();
-      await expect(completeTask(env.DB, task.id, "agent:leader", "system", null, null, "agent:leader")).rejects.toThrow();
+      await expect(completeTask(env.DB, task.id, "agent:leader", "system", "agent:leader")).rejects.toThrow();
     });
 
     it("rejects complete from in_progress", async () => {
       const { completeTask } = await import("../apps/web/server/taskRepo");
       const task = await createTestTask();
       await forceStatus(task.id, "in_progress");
-      await expect(completeTask(env.DB, task.id, "agent:leader", "system", null, null, "agent:leader")).rejects.toThrow();
+      await expect(completeTask(env.DB, task.id, "agent:leader", "system", "agent:leader")).rejects.toThrow();
     });
 
     it("rejects complete by agent:worker", async () => {
       const { completeTask } = await import("../apps/web/server/taskRepo");
       const task = await createTestTask();
       await forceStatus(task.id, "in_review");
-      await expect(completeTask(env.DB, task.id, "agent:worker", "system", null, null, "agent:worker")).rejects.toThrow();
+      await expect(completeTask(env.DB, task.id, "agent:worker", "system", "agent:worker")).rejects.toThrow();
     });
   });
 

@@ -844,7 +844,7 @@ describe("routes", () => {
     const task = await createTask(env.DB, userId, { title: "Complete Task", board_id: boardId });
     await env.DB.prepare("UPDATE tasks SET status = 'in_review' WHERE id = ?").bind(task.id).run();
     const leaderJwt = await signLeaderSessionJWT();
-    const res = await apiRequest("POST", `/api/tasks/${task.id}/complete`, { result: "done" }, leaderJwt);
+    const res = await apiRequest("POST", `/api/tasks/${task.id}/complete`, {}, leaderJwt);
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.status).toBe("done");

@@ -40,7 +40,6 @@ export interface Task {
   labels: string[] | null;
   created_by: string | null;
   assigned_to: string | null;
-  result: string | null;
   pr_url: string | null;
   input: Record<string, unknown> | null;
   created_from: string | null;
@@ -381,12 +380,6 @@ export interface CreateTaskInput {
 
 export interface AssignTaskInput {
   agent_id: string;
-}
-
-export interface CompleteTaskInput {
-  result?: string;
-  pr_url?: string;
-  agent_id?: string;
 }
 
 export interface CreateAgentInput {

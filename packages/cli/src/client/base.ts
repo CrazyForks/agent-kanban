@@ -76,8 +76,8 @@ export abstract class ApiClient {
   claimTask(id: string) {
     return this.request("POST", `/api/tasks/${id}/claim`);
   }
-  completeTask(id: string, body: Record<string, unknown>) {
-    return this.request("POST", `/api/tasks/${id}/complete`, body);
+  completeTask(id: string) {
+    return this.request("POST", `/api/tasks/${id}/complete`);
   }
   updateTask(id: string, body: Record<string, unknown>) {
     return this.request("PATCH", `/api/tasks/${id}`, body);

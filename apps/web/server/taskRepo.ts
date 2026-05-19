@@ -6,7 +6,11 @@ import { type D1, MAX_TASK_PARTITION_ROWS, newLongId, parseJsonFields } from "./
 import { isRuntimeAvailable } from "./machineRepo";
 import { computeBlocked, detectCycle, getDependencies, setDependencies } from "./taskDeps";
 
-const parseTask = <T extends Task>(row: T) => parseJsonFields(row, ["labels", "input"]);
+const parseTask = <T extends Task>(row: T & { result?: string | null }): T => {
+  const task = parseJsonFields(row, ["labels", "input"]) as T & { result?: string | null };
+  delete task.result;
+  return task;
+};
 
 async function assertKnownLabels(db: D1, boardId: string, labels: string[] | null | undefined): Promise<void> {
   if (!labels?.length) return;
@@ -146,7 +150,6 @@ export async function createTask(
     labels: input.labels || null,
     created_by: actorId,
     assigned_to: input.assigned_to || null,
-    result: null,
     pr_url: null,
     input: input.input || null,
     created_from: input.created_from || null,
@@ -264,7 +267,7 @@ export async function getTask(db: D1, taskId: string, ownerId: string): Promise<
 export async function updateTask(
   db: D1,
   taskId: string,
-  updates: Partial<Pick<Task, "title" | "description" | "repository_id" | "labels" | "result" | "pr_url" | "input" | "position" | "scheduled_at">> & {
+  updates: Partial<Pick<Task, "title" | "description" | "repository_id" | "labels" | "pr_url" | "input" | "position" | "scheduled_at">> & {
     depends_on?: string[];
   },
 ): Promise<Task | null> {
@@ -287,7 +290,7 @@ export async function updateTask(
   const binds: unknown[] = [now];
 
   const jsonFields = new Set(["labels", "input"]);
-  const allowedFields = ["title", "description", "repository_id", "labels", "result", "pr_url", "input", "position", "scheduled_at"] as const;
+  const allowedFields = ["title", "description", "repository_id", "labels", "pr_url", "input", "position", "scheduled_at"] as const;
   for (const field of allowedFields) {
     if (field in updates && (updates as any)[field] !== undefined) {
       sets.push(`${field} = ?`);
@@ -387,8 +390,6 @@ export async function completeTask(
   taskId: string,
   actorType: string,
   actorId: string,
-  result: string | null,
-  prUrl: string | null,
   identity: IdentityType,
   sessionId: string | null = null,
 ): Promise<Task | null> {
@@ -400,15 +401,15 @@ export async function completeTask(
   const logId = newLongId();
 
   await db.batch([
-    db.prepare("UPDATE tasks SET status = 'done', result = ?, pr_url = ?, updated_at = ? WHERE id = ?").bind(result, prUrl, now, taskId),
+    db.prepare("UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ?").bind(now, taskId),
     db
       .prepare(
         "INSERT INTO task_actions (id, task_id, actor_type, actor_id, action, detail, session_id, created_at) VALUES (?, ?, ?, ?, 'completed', ?, ?, ?)",
       )
-      .bind(logId, taskId, actorType, actorId, result, sessionId, now),
+      .bind(logId, taskId, actorType, actorId, null, sessionId, now),
   ]);
 
-  return parseTask({ ...task, status: "done" as const, result, pr_url: prUrl, updated_at: now });
+  return parseTask({ ...task, status: "done" as const, updated_at: now });
 }
 
 export async function cancelTask(

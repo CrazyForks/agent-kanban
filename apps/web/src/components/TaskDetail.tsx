@@ -254,13 +254,6 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
         </div>
       )}
 
-      {task.result && (
-        <div>
-          <FieldLabel>Result</FieldLabel>
-          <p className="text-sm text-content-secondary">{task.result}</p>
-        </div>
-      )}
-
       {task.subtask_count > 0 && (
         <>
           <Separator />

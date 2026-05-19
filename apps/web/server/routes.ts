@@ -854,19 +854,9 @@ api.post("/api/tasks/:id/claim", async (c) => {
 });
 
 api.post("/api/tasks/:id/complete", async (c) => {
-  const body = (await c.req.json().catch(() => ({}))) as { result?: string; pr_url?: string };
   const { actorType, actorId, sessionId } = resolveActor(c);
 
-  const task = await completeTask(
-    c.env.DB,
-    c.req.param("id"),
-    actorType,
-    actorId,
-    body.result || null,
-    body.pr_url || null,
-    c.get("identityType"),
-    sessionId,
-  );
+  const task = await completeTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), sessionId);
   return c.json(task);
 });
 

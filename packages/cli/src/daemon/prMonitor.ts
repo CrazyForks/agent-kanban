@@ -97,7 +97,7 @@ export class PrMonitor {
 
         if (state === "MERGED") {
           logger.info(`PR merged for task ${taskId}, marking done`);
-          await this.client.completeTask(taskId, { result: "PR merged" });
+          await this.client.completeTask(taskId);
           this.untrack(taskId);
         } else if (state === "CLOSED") {
           logger.info(`PR closed for task ${taskId}, marking cancelled`);

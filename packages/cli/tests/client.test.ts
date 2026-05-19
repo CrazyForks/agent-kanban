@@ -821,10 +821,11 @@ describe("ApiClient method stubs", () => {
   it("completeTask posts to /api/tasks/:id/complete", async () => {
     const c = await makeAgentClient();
     stubOk({});
-    await c.completeTask("task-3", { pr: "url" });
+    await c.completeTask("task-3");
     const [url, opts] = lastCall();
     expect(url).toContain("/api/tasks/task-3/complete");
     expect(opts.method).toBe("POST");
+    expect(opts.body).toBeUndefined();
   });
 
   it("updateTask patches /api/tasks/:id", async () => {

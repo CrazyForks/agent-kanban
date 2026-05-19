@@ -182,7 +182,6 @@ export function formatTask(task: any): string {
   if (task.pr_url) lines.push(`  PR:          ${task.pr_url}`);
   if (task.description) lines.push(`\n  ${task.description}`);
   if (task.input) lines.push(`\n  Input: ${JSON.stringify(task.input)}`);
-  if (task.result) lines.push(`  Result: ${task.result}`);
   return lines.join("\n");
 }
 
