@@ -155,6 +155,7 @@ export async function dispatchTasks(
   const localRuntimes = new Set(getAvailableProviders().map((provider) => provider.name));
   const agentCache = new Map<string, { runtime: AgentRuntime | null; available: boolean }>();
   let task: any = null;
+  let taskRuntime: AgentRuntime | null = null;
   for (const t of available) {
     let agentState = agentCache.get(t.assigned_to);
     if (agentState === undefined) {
@@ -183,6 +184,7 @@ export async function dispatchTasks(
       (!circuitBreaker || circuitBreaker.canDispatch(agentState.runtime))
     ) {
       task = t;
+      taskRuntime = agentState.runtime;
       break;
     }
   }
@@ -206,7 +208,10 @@ export async function dispatchTasks(
     return false;
   }
 
+  if (circuitBreaker && taskRuntime && !circuitBreaker.tryAcquireDispatch(taskRuntime)) return false;
+
   const dispatched = await dispatchOne(task, dir, boardType, client, pool);
+  if (!dispatched && circuitBreaker && taskRuntime) circuitBreaker.releaseDispatch(taskRuntime);
   if (dispatched) prMonitor.track(task.id);
   return dispatched;
 }

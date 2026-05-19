@@ -484,6 +484,7 @@ async function finalize(agent: AgentProcess, opts: { crashed: boolean; error?: u
       logger.warn(`Cleanup transition failed for ${sessionId}: ${errMessage(e)}`);
     });
   } else if (nextStatus === "in_review") {
+    ctx.circuitBreaker.recordWorkflowEntered(agent.providerName);
     (ctx.tunnel as TunnelSink & { sendStatus?: (sid: string, s: string) => void })?.sendStatus?.(sessionId, "done");
     logger.info(`Task ${taskId} in review, preserving worktree`);
   } else if (nextStatus === "rate_limited") {

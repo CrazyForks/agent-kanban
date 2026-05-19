@@ -39,6 +39,7 @@ describe("RuntimeCircuitBreaker", () => {
     vi.setSystemTime(new Date("2026-05-19T12:01:01Z"));
 
     expect(breaker.canDispatch("codex")).toBe(true);
+    expect(breaker.tryAcquireDispatch("codex")).toBe(true);
     expect(breaker.canDispatch("codex")).toBe(false);
   });
 
@@ -52,5 +53,17 @@ describe("RuntimeCircuitBreaker", () => {
 
     expect(breaker.canDispatch("codex")).toBe(true);
     expect(breaker.pauseResetAt("codex")).toBeNull();
+  });
+
+  it("releases a half-open probe when dispatch does not start", () => {
+    const breaker = new RuntimeCircuitBreaker({ failureThreshold: 1, cooldownMs: 0 });
+
+    breaker.recordPreClaimFailure("codex", "task-1", "agent exited before claim");
+    expect(breaker.tryAcquireDispatch("codex")).toBe(true);
+    expect(breaker.canDispatch("codex")).toBe(false);
+
+    breaker.releaseDispatch("codex");
+
+    expect(breaker.canDispatch("codex")).toBe(true);
   });
 });

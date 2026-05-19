@@ -300,6 +300,36 @@ describe("RuntimePool finalize() — releaseTask on completing", () => {
     expect(apiClient.releaseTask as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 
+  it("closes a half-open runtime circuit when the probe reaches in_review", async () => {
+    const taskId = randomUUID();
+    const sessionId = randomUUID();
+    await seedActiveSession(sessions, sessionId, taskId);
+
+    const circuitBreaker = new RuntimeCircuitBreaker({ failureThreshold: 1, cooldownMs: 0 });
+    circuitBreaker.recordPreClaimFailure("claude", taskId, "agent exited before claim");
+    expect(circuitBreaker.tryAcquireDispatch("claude")).toBe(true);
+    expect(circuitBreaker.canDispatch("claude")).toBe(false);
+
+    const agentClient = makeAgentClient({ status: "in_review" });
+    const handle = makeHandle([makeTurnEndEvent()]);
+    const provider = makeProvider(handle);
+
+    await new Promise<void>((resolve) => {
+      const pool = new RuntimePool(
+        apiClient,
+        { onSlotFreed: resolve },
+        { onRateLimited: vi.fn(), onRateLimitResumed: vi.fn() },
+        0,
+        null,
+        circuitBreaker,
+      );
+      pool.spawnAgent({ provider, taskId, sessionId, cwd: "/tmp", taskContext: "test", agentClient, agentEnv: {} });
+    });
+
+    expect(circuitBreaker.canDispatch("claude")).toBe(true);
+    expect(circuitBreaker.pauseResetAt("claude")).toBeNull();
+  });
+
   // --------------------------------------------------------------------------
   // Case 2: agent finishes normally with result but task is in_progress
   //   (e.g. rejected before finalize ran). Since agent produced a result,

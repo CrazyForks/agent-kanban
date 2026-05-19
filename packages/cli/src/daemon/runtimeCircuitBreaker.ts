@@ -33,20 +33,34 @@ export class RuntimeCircuitBreaker {
     if (circuit.state === "closed") return true;
 
     if (circuit.state === "half-open") {
-      if (circuit.probeInFlight) return false;
-      circuit.probeInFlight = true;
-      logger.info(`Runtime "${runtime}" circuit half-open — allowing one probe`);
-      return true;
+      return !circuit.probeInFlight;
     }
 
-    if ((circuit.resumeAt ?? 0) <= Date.now()) {
+    return (circuit.resumeAt ?? 0) <= Date.now();
+  }
+
+  tryAcquireDispatch(runtime: string): boolean {
+    const circuit = this.circuits.get(runtime);
+    if (!circuit || circuit.state === "closed") return true;
+
+    if (circuit.state === "open") {
+      if ((circuit.resumeAt ?? 0) > Date.now()) return false;
       circuit.state = "half-open";
-      circuit.probeInFlight = true;
+      circuit.probeInFlight = false;
       logger.info(`Runtime "${runtime}" circuit cooldown elapsed — allowing one probe`);
-      return true;
     }
 
-    return false;
+    if (circuit.probeInFlight) return false;
+    circuit.probeInFlight = true;
+    logger.info(`Runtime "${runtime}" circuit half-open — allowing one probe`);
+    return true;
+  }
+
+  releaseDispatch(runtime: string): void {
+    const circuit = this.circuits.get(runtime);
+    if (!circuit || circuit.state !== "half-open" || !circuit.probeInFlight) return;
+    circuit.probeInFlight = false;
+    logger.warn(`Runtime "${runtime}" circuit half-open probe was not started — releasing probe`);
   }
 
   isRuntimePaused(runtime: string): boolean {
