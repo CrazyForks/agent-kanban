@@ -26,6 +26,7 @@ import { createRepoWorkspace, createTempWorkspace } from "../workspace/workspace
 import { apiCallIdempotent, apiCallOptional, cryptoBoundary, execBoundary, fsSync } from "./boundaries.js";
 import type { PrMonitor } from "./prMonitor.js";
 import type { RateLimiter } from "./rateLimiter.js";
+import type { RuntimeCircuitBreaker } from "./runtimeCircuitBreaker.js";
 import { isRuntimeLimitIgnored } from "./runtimeOverrides.js";
 import type { RuntimePool } from "./runtimePool.js";
 
@@ -122,6 +123,7 @@ export async function dispatchTasks(
   rateLimiter: RateLimiter,
   prMonitor: PrMonitor,
   opts: DispatchOpts,
+  circuitBreaker?: RuntimeCircuitBreaker,
 ): Promise<boolean> {
   const tasks = (await client.listTasks({ status: "todo" })) as any[];
   const repos = await client.listRepositories();
@@ -176,7 +178,10 @@ export async function dispatchTasks(
     const ignoreRuntimeLimit = isRuntimeLimitIgnored(agentState.runtime);
     const localAvailability = ignoreRuntimeLimit ? null : await getProvider(agentState.runtime).checkAvailability?.();
     if (localAvailability && localAvailability.status !== "ready") continue;
-    if (ignoreRuntimeLimit || !rateLimiter.isRuntimePaused(agentState.runtime)) {
+    if (
+      (ignoreRuntimeLimit || !rateLimiter.isRuntimePaused(agentState.runtime)) &&
+      (!circuitBreaker || circuitBreaker.canDispatch(agentState.runtime))
+    ) {
       task = t;
       break;
     }

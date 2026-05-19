@@ -17,6 +17,7 @@ import { auditOrphanedTasks, cleanupLeaderSessions, cleanupStaleSessions } from 
 import { DaemonLoop } from "./loop.js";
 import { PrMonitor } from "./prMonitor.js";
 import { RateLimiter } from "./rateLimiter.js";
+import { RuntimeCircuitBreaker } from "./runtimeCircuitBreaker.js";
 import { isRuntimeLimitIgnored } from "./runtimeOverrides.js";
 import { RuntimePool } from "./runtimePool.js";
 import { TunnelClient } from "./tunnel.js";
@@ -40,6 +41,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   process.on("unhandledRejection", (err: any) => {
     logger.error(`Unhandled rejection: ${err?.message ?? err}`);
   });
+  const circuitBreaker = new RuntimeCircuitBreaker();
 
   mkdirSync(STATE_DIR, { recursive: true });
 
@@ -107,6 +109,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     },
     opts.taskTimeout,
     tunnel,
+    circuitBreaker,
   );
 
   tunnel.onHistoryRequest((sessionId, requestId) => {
@@ -122,10 +125,17 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }
   });
 
-  loop = new DaemonLoop(client, pool, rateLimiter, prMonitor, {
-    maxConcurrent: opts.maxConcurrent,
-    pollInterval,
-  });
+  loop = new DaemonLoop(
+    client,
+    pool,
+    rateLimiter,
+    prMonitor,
+    {
+      maxConcurrent: opts.maxConcurrent,
+      pollInterval,
+    },
+    circuitBreaker,
+  );
 
   const heartbeatInterval = setInterval(() => {
     (async () => {
@@ -138,6 +148,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     logger.info("Shutting down daemon...");
     loop.stop();
     rateLimiter.stop();
+    circuitBreaker.stop();
     prMonitor.stop();
     usageCollector.stop();
     clearInterval(heartbeatInterval);
