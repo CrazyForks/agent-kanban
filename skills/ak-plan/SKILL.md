@@ -137,6 +137,53 @@ Use Explore agents to thoroughly scan the codebase for gaps related to the goals
 - Frontend gaps (if applicable, respect the project's UI principles)
 - Test coverage gaps
 
+### Task Decomposition Model
+
+Plan tasks as independently runnable work packages, not as a sequential todo
+list. A task is not "step 1, step 2, step 3" in the leader's private plan. A
+task is a self-contained assignment that another agent can claim, understand,
+implement, test, and submit for review without guessing the rest of the plan.
+
+Before drafting tasks, define the project-level integration strategy:
+
+1. **Architecture direction** — the shared pattern workers must preserve, such
+   as adapter, provider, repository, service, command, route, plugin, or module
+   boundaries.
+2. **Shared contracts** — interfaces, schemas, API shapes, events, storage
+   formats, CLI flags, and UI state contracts that multiple tasks must obey.
+3. **Ownership boundaries** — which module or business capability each task owns.
+4. **Integration dependencies** — which contracts must exist before dependent
+   implementations start.
+
+Split by business capability, product surface, module boundary, or adapter
+implementation. Do not split by chronological implementation steps such as
+"create interface", "wire backend", "write tests", "final cleanup", or "verify
+everything" unless that work is itself an independently reviewable product or
+platform outcome.
+
+For abstraction work, make the shared abstraction contract explicit before
+parallel implementation starts. If several providers/adapters/plugins need the
+same abstraction:
+
+- Create one contract task only when the contract is substantial enough to be
+  independently reviewed and all later adapter tasks can depend on it.
+- Otherwise keep the contract and the first implementation together, then make
+  later adapter tasks depend on that task.
+- Each adapter task must use the shared contract and may extend it when the
+  adapter reveals a real missing capability.
+- If extending the contract affects other adapters or callers, the adapter task
+  must update the shared contract and the affected call sites, or the leader
+  must make that task sequential with the affected work.
+- Worker tasks must not bypass the shared abstraction because the current
+  interface is inconvenient or incomplete. The task description must say how to
+  evolve the contract safely.
+
+Never create a final "acceptance", "QA", "integration review", or "verify all
+previous work" task whose purpose is to re-check the whole plan. End-to-end
+verification is leader-owned during PR review. Create a verification
+infrastructure task only when the project lacks reusable tooling or fixtures
+needed for workers and leaders to validate future work.
+
 Use `AskUserQuestion` to interactively confirm the plan with the user. For each ambiguous point, present options:
 
 - **Scope** — which gaps to address in this version vs defer to later
@@ -182,16 +229,24 @@ Before creating any tasks, show the user a **task summary table** using `AskUser
 ```
 📋 Task Plan Preview
 
-| # | Title | Repo | Labels | Depends on | Agent |
-|---|-------|------|--------|------------|-------|
-| 1 | <title> | <repo> | backend | — | <agent> |
-| 2 | <title> | <repo> | frontend | #1 | <agent> |
+Architecture direction:
+- <shared pattern and integration strategy>
+
+Shared contracts:
+- <interface/schema/API/event/CLI/UI contract that workers must preserve>
+
+| # | Title | Boundary | Repo | Labels | Depends on | Agent |
+|---|-------|----------|------|--------|------------|-------|
+| 1 | <title> | <module/capability/contract> | <repo> | backend | — | <agent> |
+| 2 | <title> | <module/capability/adapter> | <repo> | frontend | #1 | <agent> |
 | ...
 
 Per-task description summary:
 
 ### Task 1: <title>
 Goal: <one sentence>
+Boundary: <business capability/module/adapter/contract this task owns>
+Contract: <shared interface/schema/API this task must preserve or evolve>
 Files: <file list>
 Spec: <key points — not the full description, but enough to judge scope>
 
@@ -303,10 +358,14 @@ T2=$(ak create task --board $BOARD --title "..." --repo $REPO --assign-to $AGENT
 ### Task Creation Best Practices
 
 - Create one task for one reviewable outcome.
-- Split by feature/module boundary and context overlap, not by human job title.
+- Split by business capability, product surface, feature/module boundary, adapter/provider implementation, and context overlap. Do not split by chronological todo steps or human job title.
 - Keep highly overlapping work in one task, even if it touches frontend, backend, CLI, infra, schema, and tests.
 - Split only when work is independently understandable, independently reviewable, and has low file/data/API context overlap.
 - Make each task independently claimable: no hidden chat context, no "continue from above" descriptions.
+- Each task must include the architectural direction and shared contract it must preserve. If there is no shared contract, say so explicitly.
+- Prefer contract-first dependencies when multiple tasks implement the same abstraction. Later adapter/provider tasks should depend on the task that establishes or last changes the shared contract.
+- Do not create tasks that encourage workers to choose separate architectural directions for the same feature. If workers need the same abstraction, merge the work or serialize it through a shared contract task.
+- Do not create standalone final QA or acceptance tasks for the whole plan. The leader performs acceptance during PR review. Only create test/verification tasks for reusable infrastructure that future tasks can run.
 - Put the exact files, APIs, commands, UI states, and acceptance checks in `--description`.
 - Assign every task at creation with `--assign-to`.
 - Use `--depends-on` for real blockers or overlapping context. Tasks touching the same files, data model, or API contract should be sequential or merged.
@@ -321,6 +380,18 @@ Agents are autonomous — the description is their only input. A good descriptio
 ```
 ## Goal
 One sentence: what this task produces.
+
+## Boundary
+The business capability, module, adapter, provider, or contract this task owns.
+
+## Architecture
+The shared pattern this task must preserve, such as an adapter interface,
+repository layer, service boundary, route contract, or UI state model.
+
+## Contract
+The exact interface/schema/API/CLI/UI contract this task must use. If the
+contract is insufficient, extend it in this task and update affected callers
+instead of bypassing the abstraction.
 
 ## Files
 - src/foo.ts — API route handlers

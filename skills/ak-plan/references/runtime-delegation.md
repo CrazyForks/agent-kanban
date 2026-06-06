@@ -64,6 +64,25 @@ Do not create duplicate workers for hypothetical future work. When creation is n
 
 For complex but coherent work, prefer one primary worker carrying focused task-local subagents over splitting the same outcome across multiple role-based workers. The primary worker owns the task, implementation direction, final integration, and review submission. Subagents handle independent, narrow work that would otherwise bloat the primary worker's context and cause attention drift.
 
+Leader-created tasks must preserve one shared architectural direction. When
+multiple tasks implement the same family of behavior, such as providers,
+adapters, plugins, transports, commands, or storage backends, the leader must
+make the shared contract explicit before those tasks run in parallel.
+
+Worker task boundaries should follow stable implementation ownership, not
+chronological todo steps. Good boundaries are a business capability, module,
+adapter/provider implementation, reusable contract, or platform capability.
+Poor boundaries are "write tests", "wire it up", "clean up", "final QA", or
+"verify all previous tasks" when those are only phases of the leader's plan.
+
+If a worker discovers that the shared interface, schema, route contract, or
+adapter abstraction is missing a capability required by its assigned boundary,
+the correct move is to evolve the shared contract and update affected callers in
+that task, or to hand off/create a dependent contract task when the change is
+too broad. The worker must not bypass the abstraction, duplicate a parallel
+path, or implement a one-off workaround outside the agreed pattern because the
+current contract is inconvenient.
+
 Subagents are task-local specialist definitions, not inline prompt blocks. Create or reuse the specialist definition first, then put its ID in the primary worker's `spec.subagents`.
 
 Good reusable subagent profiles:
@@ -105,6 +124,7 @@ Rule of thumb:
 - High context overlap + same deliverable → keep one task and use subagents if specialist focus helps.
 - Low context overlap + separate deliverable → create a follow-up task through handoff.
 - Shared files, data model, or API contract usually means high overlap; merge the work into one task or make it sequential with `--depends-on`.
+- Shared abstraction family, such as several adapters implementing one interface, requires one explicit contract path. Parallel adapter work is acceptable only after the shared contract is established and each task says how to evolve it without bypassing it.
 
 Create workers by generating an Agent YAML from the current task context.
 
