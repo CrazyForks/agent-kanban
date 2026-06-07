@@ -62,7 +62,7 @@ describe("routes", () => {
   async function configureAmaOwnerRuntime(ownerId: string, runtime: string, environmentId: string, projectId = "project_123", vaultId = "vault_123") {
     const now = new Date().toISOString();
     await env.DB.prepare(
-      `INSERT INTO ama_owner_runtime_bindings (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
+      `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
        VALUES (?, ?, ?, ?, '{}')
        ON CONFLICT(owner_id) DO UPDATE SET
          ama_project_id = excluded.ama_project_id,
@@ -372,18 +372,16 @@ describe("routes", () => {
       expect(maintainer).toMatchObject({
         board_id: maintainerBoard.id,
         repository_id: repository.id,
-        ak_agent_id: maintainerAgent.id,
-        ama_agent_id: "ama_agent_maintainer",
-        ama_environment_id: "env_123",
+        agent_id: maintainerAgent.id,
         ama_schedule_id: "sched_maintainer",
         status: "active",
       });
       expect(scheduleRequests).toHaveLength(1);
 
-      const sessionRow = await env.DB.prepare("SELECT status, runtime_source FROM runtime_agent_sessions WHERE id = ?")
+      const sessionRow = await env.DB.prepare("SELECT status FROM ama_agent_sessions WHERE id = ?")
         .bind(scheduleRequests[0].runtimeEnv.AK_SESSION_ID)
-        .first<{ status: string; runtime_source: string }>();
-      expect(sessionRow).toMatchObject({ status: "active", runtime_source: "ama" });
+        .first<{ status: string }>();
+      expect(sessionRow).toMatchObject({ status: "active" });
 
       const listRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers`, undefined, userToken);
       expect(listRes.status).toBe(200);
@@ -622,10 +620,10 @@ describe("routes", () => {
   it("GET /api/agents/:id includes AMA runtime session status and usage", async () => {
     const amaAgent = await createTestAgent(env.DB, userId, { username: `ama-session-agent-${randomUUID()}`, runtime: "claude" });
     await env.DB.prepare(
-      `INSERT INTO runtime_agent_sessions (
-        id, owner_id, agent_id, runtime_source, runtime_session_id, status, public_key, delegation_proof,
+      `INSERT INTO ama_agent_sessions (
+        id, owner_id, agent_id, ama_session_id, status, public_key, delegation_proof,
         input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_micro_usd, created_at
-      ) VALUES (?, ?, ?, 'ama', ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         "runtime-session-agent-detail",
@@ -1184,7 +1182,7 @@ describe("routes", () => {
       expect(body.description).toBe(taskDetail);
       expect(body.metadata.annotations).toMatchObject({
         "ama.projectId": "project_123",
-        "ak.agentId": agentId,
+        agentId,
         "ama.agentId": "ama_agent_123",
         "ama.environmentId": "env_123",
         "ama.runtime": "claude-code",
@@ -1192,14 +1190,14 @@ describe("routes", () => {
         "ama.runtimeSecretEnv.AK_AGENT_KEY": "vaultver_123",
         "ama.dispatch.result": "accepted",
       });
-      expect(body.metadata.annotations["ak.runtimeSessionId"]).toEqual(expect.any(String));
+      expect(body.metadata.annotations.agentSessionId).toEqual(expect.any(String));
       const taskRow = await env.DB.prepare("SELECT description FROM tasks WHERE id = ?").bind(body.id).first<{ description: string }>();
       expect(taskRow?.description).toBe(taskDetail);
 
-      const sessionRow = await env.DB.prepare("SELECT runtime_source, runtime_session_id, status FROM runtime_agent_sessions WHERE id = ?")
-        .bind(body.metadata.annotations["ak.runtimeSessionId"])
-        .first<{ runtime_source: string; runtime_session_id: string; status: string }>();
-      expect(sessionRow).toMatchObject({ runtime_source: "ama", runtime_session_id: "session_ama_123", status: "active" });
+      const sessionRow = await env.DB.prepare("SELECT ama_session_id, status FROM ama_agent_sessions WHERE id = ?")
+        .bind(body.metadata.annotations.agentSessionId)
+        .first<{ ama_session_id: string; status: string }>();
+      expect(sessionRow).toMatchObject({ ama_session_id: "session_ama_123", status: "active" });
       const bridgeMachine = await env.DB.prepare("SELECT id FROM machines WHERE device_id = 'ama-runtime-bridge'").first<{ id: string }>();
       expect(bridgeMachine).toBeNull();
       const calledUrls = fetchMock.mock.calls.map(([url]) => String(url));
@@ -1208,7 +1206,7 @@ describe("routes", () => {
       expect(runtimePrivateKeyJwk).toBeTruthy();
       const runtimePrivateKey = await crypto.subtle.importKey("jwk", runtimePrivateKeyJwk!, { name: "Ed25519" } as any, true, ["sign"]);
       const runtimeJwt = await new SignJWT({
-        sub: body.metadata.annotations["ak.runtimeSessionId"],
+        sub: body.metadata.annotations.agentSessionId,
         aid: agentId,
         jti: randomUUID(),
         aud: BETTER_AUTH_URL,
@@ -1294,7 +1292,7 @@ describe("routes", () => {
       expect(res.status).toBe(500);
       const taskRow = await env.DB.prepare("SELECT id FROM tasks WHERE title = ?").bind("Failed AMA dispatch task").first();
       expect(taskRow).toBeNull();
-      const activeSessions = await env.DB.prepare("SELECT COUNT(*) as count FROM runtime_agent_sessions WHERE agent_id = ? AND status = 'active'")
+      const activeSessions = await env.DB.prepare("SELECT COUNT(*) as count FROM ama_agent_sessions WHERE agent_id = ? AND status = 'active'")
         .bind(tempAgent.id)
         .first<{ count: number }>();
       expect(activeSessions?.count).toBe(0);
@@ -1753,18 +1751,17 @@ describe("routes", () => {
     });
 
     try {
-      const { createRuntimeAgentSession } = await import("../apps/web/server/agentSessionRepo");
+      const { createAmaAgentSession } = await import("../apps/web/server/agentSessionRepo");
       const runtimeSessionId = randomUUID();
       const keypair = await crypto.subtle.generateKey({ name: "Ed25519" } as any, true, ["sign", "verify"]);
       const privateKey = (keypair as any).privateKey;
       const pubJwk = await crypto.subtle.exportKey("jwk", (keypair as any).publicKey);
-      await createRuntimeAgentSession(env.DB, env, {
+      await createAmaAgentSession(env.DB, env, {
         ownerId: userId,
         agentId,
         sessionId: runtimeSessionId,
         sessionPublicKey: pubJwk.x!,
-        runtimeSource: "ama",
-        runtimeSessionId: "session_usage_123",
+        amaSessionId: "session_usage_123",
       });
       const runtimeJwt = await new SignJWT({ sub: runtimeSessionId, aid: agentId, jti: randomUUID(), aud: BETTER_AUTH_URL })
         .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
@@ -1778,7 +1775,7 @@ describe("routes", () => {
         runtimeJwt,
       );
       expect(usageRes.status).toBe(200);
-      const usage = await env.DB.prepare("SELECT input_tokens, output_tokens, cost_micro_usd FROM runtime_agent_sessions WHERE id = ?")
+      const usage = await env.DB.prepare("SELECT input_tokens, output_tokens, cost_micro_usd FROM ama_agent_sessions WHERE id = ?")
         .bind(runtimeSessionId)
         .first<{ input_tokens: number; output_tokens: number; cost_micro_usd: number }>();
       expect(usage).toMatchObject({ input_tokens: 10, output_tokens: 20, cost_micro_usd: 50 });
@@ -1788,13 +1785,13 @@ describe("routes", () => {
         title: "Close runtime on complete",
         board_id: boardId,
         assigned_to: agentId,
-        metadata: { annotations: { "ak.runtimeSessionId": runtimeSessionId, "ama.sessionId": "session_usage_123" } },
+        metadata: { annotations: { agentSessionId: runtimeSessionId, "ama.sessionId": "session_usage_123" } },
       });
       await env.DB.prepare("UPDATE tasks SET status = 'in_review' WHERE id = ?").bind(task.id).run();
       const leaderJwt = await signLeaderSessionJWT();
       const completeRes = await apiRequest("POST", `/api/tasks/${task.id}/complete`, {}, leaderJwt);
       expect(completeRes.status).toBe(200);
-      const closed = await env.DB.prepare("SELECT status, closed_at FROM runtime_agent_sessions WHERE id = ?")
+      const closed = await env.DB.prepare("SELECT status, closed_at FROM ama_agent_sessions WHERE id = ?")
         .bind(runtimeSessionId)
         .first<{ status: string; closed_at: string | null }>();
       expect(closed?.status).toBe("closed");

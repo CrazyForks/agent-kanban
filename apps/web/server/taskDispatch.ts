@@ -1,8 +1,8 @@
 import { generateKeypair, type Task } from "@agent-kanban/shared";
 import { HTTPException } from "hono/http-exception";
-import { getAgent } from "./agentRepo";
-import { bindRuntimeAgentSession, closeSession, createRuntimeAgentSession } from "./agentSessionRepo";
-import { resolveAmaProjectId, resolveAmaSessionSecretVaultId } from "./amaOwnerMappingRepo";
+import { getAgent, updateAgentMetadataAnnotations } from "./agentRepo";
+import { bindAmaAgentSession, closeSession, createAmaAgentSession } from "./agentSessionRepo";
+import { resolveAmaProjectId, resolveAmaSessionSecretVaultId } from "./amaOwnerIntegrationRepo";
 import {
   createAmaAgent,
   createAmaSessionSecret,
@@ -16,7 +16,6 @@ import {
 } from "./amaRuntime";
 import type { D1 } from "./db";
 import { getReadyMachineEnvironmentForRuntime } from "./machineRepo";
-import { getRuntimeAgentMapping, upsertRuntimeAgentMapping } from "./runtimeAgentMappingRepo";
 import { updateTask } from "./taskRepo";
 import type { Env } from "./types";
 
@@ -65,7 +64,7 @@ export async function dispatchTaskToAma(db: D1, env: Env, ownerId: string, task:
       },
       runtimeSecretEnv: [{ name: "AK_AGENT_KEY", ref: secret.activeVersionId }],
     });
-    await bindRuntimeAgentSession(db, sessionIdentity.sessionId, dispatch.sessionId);
+    await bindAmaAgentSession(db, sessionIdentity.sessionId, dispatch.sessionId);
   } catch (error) {
     await closeSession(db, sessionIdentity.sessionId);
     throw error;
@@ -73,7 +72,7 @@ export async function dispatchTaskToAma(db: D1, env: Env, ownerId: string, task:
 
   return await annotateTask(db, task, {
     "ama.projectId": dispatch.projectId,
-    "ak.agentId": task.assigned_to,
+    agentId: task.assigned_to,
     "ama.agentId": amaAgent.id,
     "ama.environmentId": dispatch.environmentId,
     "ama.runtime": amaRuntime,
@@ -81,20 +80,21 @@ export async function dispatchTaskToAma(db: D1, env: Env, ownerId: string, task:
     "ama.session.status": dispatch.status,
     "ama.session.statusReason": dispatch.statusReason,
     "ama.runtimeSecretEnv.AK_AGENT_KEY": secret.activeVersionId,
-    "ak.runtimeSessionId": sessionIdentity.sessionId,
+    agentSessionId: sessionIdentity.sessionId,
     "ama.dispatch.result": "accepted",
   });
 }
 
 export async function ensureAmaAgentForAkAgent(db: D1, env: Env, ownerId: string, akAgentId: string, projectId: string, runtime: string) {
-  const existing = await getRuntimeAgentMapping(db, { ownerId, akAgentId, runtimeSource: "ama" });
-  if (existing) {
-    const live = await readAmaAgent(env, projectId, existing.runtimeAgentId);
+  const akAgent = await getAgent(db, akAgentId, ownerId);
+  if (!akAgent) throw new HTTPException(404, { message: "Assigned agent not found" });
+  const annotations = metadataObject(metadataObject(akAgent.metadata).annotations);
+  const existingAmaAgentId = stringAnnotation(annotations, "ama.agentId");
+  if (existingAmaAgentId) {
+    const live = await readAmaAgent(env, projectId, existingAmaAgentId);
     if (live) return live;
   }
 
-  const akAgent = await getAgent(db, akAgentId, ownerId);
-  if (!akAgent) throw new HTTPException(404, { message: "Assigned agent not found" });
   const runtimeProfile = await resolveAmaProviderModelProfile(env, projectId, {
     runtime,
     preferredModel: akAgent.model,
@@ -109,16 +109,11 @@ export async function ensureAmaAgentForAkAgent(db: D1, env: Env, ownerId: string
     model: runtimeProfile.model,
     metadata: { runtime: runtimeProfile.runtime },
   });
-  await upsertRuntimeAgentMapping(db, {
-    ownerId,
-    akAgentId,
-    runtimeSource: "ama",
-    runtimeAgentId: agent.id,
-    metadata: {
-      projectId,
-      provider: agent.provider,
-      model: agent.model,
-    },
+  await updateAgentMetadataAnnotations(db, ownerId, akAgentId, {
+    "ama.projectId": projectId,
+    "ama.agentId": agent.id,
+    "ama.provider": agent.provider,
+    "ama.model": agent.model,
   });
   return agent;
 }
@@ -180,12 +175,11 @@ export async function stopTaskAmaSession(
 export async function createAkAgentSessionIdentity(db: D1, env: Env, ownerId: string, agentId: string) {
   const sessionId = crypto.randomUUID();
   const keypair = await generateKeypair();
-  await createRuntimeAgentSession(db, env, {
+  await createAmaAgentSession(db, env, {
     ownerId,
     agentId,
     sessionId,
     sessionPublicKey: keypair.publicKeyBase64,
-    runtimeSource: "ama",
   });
   return { sessionId, privateKeyJwk: keypair.privateKeyJwk };
 }

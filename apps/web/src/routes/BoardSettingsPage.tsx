@@ -37,7 +37,7 @@ interface BoardMaintainer {
   name: string;
   prompt: string;
   status: "active" | "paused" | "archived";
-  ak_agent_id?: string;
+  agent_id?: string;
   repository_id: string | null;
   interval_seconds: number;
   last_run_at: string | null;
@@ -265,7 +265,7 @@ function BoardMaintainersSection({ boardId }: { boardId: string }) {
                     <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-content-tertiary">{maintainer.status}</span>
                   </div>
                   <p className="mt-1 truncate font-mono text-[11px] text-content-tertiary">
-                    agent={maintainer.ak_agent_id ?? "unbound"} · every {formatInterval(maintainer.interval_seconds)}
+                    agent={maintainer.agent_id ?? "unbound"} · every {formatInterval(maintainer.interval_seconds)}
                   </p>
                   <p className="mt-1 text-xs text-content-secondary">
                     Last run {maintainer.last_run_at ? formatRelative(maintainer.last_run_at) : "never"}
@@ -330,7 +330,7 @@ function MaintainerDialog({
     if (!open) return;
     setName(maintainer?.name ?? "");
     setPrompt(maintainer?.prompt ?? "");
-    setAgentId(maintainer?.ak_agent_id ?? "");
+    setAgentId(maintainer?.agent_id ?? "");
     setRepositoryId(maintainer?.repository_id ?? "");
     setIntervalSeconds(String(maintainer?.interval_seconds ?? 86400));
   }, [open, maintainer?.id]);

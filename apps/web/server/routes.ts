@@ -26,8 +26,13 @@ import {
   updateAgent,
   upsertLatestAgent,
 } from "./agentRepo";
-import { closeRuntimeSessionForTask, closeSession, createSession, listSessions, reopenSession, updateSessionUsage } from "./agentSessionRepo";
-import { ensureAmaOwnerRuntimeBinding, resolveAmaExternalTenantId, resolveAmaProjectId, resolveAmaSessionSecretVaultId } from "./amaOwnerMappingRepo";
+import { closeAmaAgentSessionForTask, closeSession, createSession, listSessions, reopenSession, updateSessionUsage } from "./agentSessionRepo";
+import {
+  ensureAmaOwnerIntegration,
+  resolveAmaExternalTenantId,
+  resolveAmaProjectId,
+  resolveAmaSessionSecretVaultId,
+} from "./amaOwnerIntegrationRepo";
 import {
   archiveAmaScheduledAgentTrigger,
   createAmaEnvironment,
@@ -286,7 +291,7 @@ function readyAmaRuntimeNames(runtimes: MachineRuntime[]): string[] {
 
 async function ensureMachineAmaEnvironment(db: D1, env: Env, ownerId: string, machine: Machine): Promise<string> {
   if (machine.ama_environment_id) return machine.ama_environment_id;
-  const binding = await ensureAmaOwnerRuntimeBinding(db, env, ownerId);
+  const binding = await ensureAmaOwnerIntegration(db, env, ownerId);
   const environment = await createAmaEnvironment(env, {
     projectId: binding.amaProjectId,
     name: machine.name,
@@ -1032,14 +1037,14 @@ api.post("/api/tasks/:id/complete", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
 
   const task = await completeTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), sessionId);
-  if (task) await closeRuntimeSessionForTask(c.env.DB, task);
+  if (task) await closeAmaAgentSessionForTask(c.env.DB, task);
   return c.json(task);
 });
 
 api.post("/api/tasks/:id/release", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
   const task = await releaseTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), "released", sessionId);
-  if (task) await closeRuntimeSessionForTask(c.env.DB, task);
+  if (task) await closeAmaAgentSessionForTask(c.env.DB, task);
   return c.json(task);
 });
 
@@ -1069,7 +1074,7 @@ api.post("/api/tasks/:id/cancel", async (c) => {
   if (!task) throw new HTTPException(404, { message: "Task not found" });
   await stopTaskAmaSession(c.env.DB, c.env, task);
   const cancelled = await cancelTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), sessionId);
-  if (cancelled) await closeRuntimeSessionForTask(c.env.DB, cancelled);
+  if (cancelled) await closeAmaAgentSessionForTask(c.env.DB, cancelled);
   return c.json(cancelled);
 });
 
@@ -1275,9 +1280,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
   const maintainer = await createBoardMaintainer(c.env.DB, ownerId, {
     boardId,
     repositoryId: repository?.id ?? null,
-    akAgentId: maintainerAgentId,
-    amaAgentId: schedule.agentId,
-    amaEnvironmentId: schedule.environmentId,
+    agentId: maintainerAgentId,
     amaScheduleId: schedule.id,
     name,
     prompt: body.prompt,

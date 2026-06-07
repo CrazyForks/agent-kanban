@@ -41,13 +41,7 @@ export async function applyMigrations(db: D1Database) {
     "0019_agent_versions.sql",
     "0020_board_labels.sql",
     "0021_subagents.sql",
-    "0022_task_metadata.sql",
-    "0023_board_maintainers.sql",
-    "0024_runtime_agent_sessions.sql",
-    "0025_ama_owner_mappings.sql",
-    "0026_runtime_agent_mappings.sql",
-    "0027_machine_ama_environment.sql",
-    "0028_ama_owner_runtime_bindings.sql",
+    "0022_ama_runtime_integration.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");

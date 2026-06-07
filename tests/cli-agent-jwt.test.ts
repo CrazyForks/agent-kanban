@@ -46,9 +46,7 @@ async function applyMigrations(db: D1Database) {
     "0018_agent_subagents.sql",
     "0019_agent_versions.sql",
     "0021_subagents.sql",
-    "0022_task_metadata.sql",
-    "0023_board_maintainers.sql",
-    "0024_runtime_agent_sessions.sql",
+    "0022_ama_runtime_integration.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
@@ -270,14 +268,13 @@ describe("CLI ApiClient agent JWT passthrough", () => {
     const runtimeSessionId = randomUUID();
     const runtimeKeypair = (await crypto.subtle.generateKey({ name: "Ed25519" } as any, true, ["sign", "verify"])) as CryptoKeyPair;
     const runtimePubJwk = await crypto.subtle.exportKey("jwk", runtimeKeypair.publicKey);
-    const { createRuntimeAgentSession, closeSession } = await import("../apps/web/server/agentSessionRepo");
-    await createRuntimeAgentSession(testEnv.DB, testEnv, {
+    const { createAmaAgentSession, closeSession } = await import("../apps/web/server/agentSessionRepo");
+    await createAmaAgentSession(testEnv.DB, testEnv, {
       ownerId: runtimeUserId,
       agentId: runtimeAgent.id,
       sessionId: runtimeSessionId,
       sessionPublicKey: runtimePubJwk.x!,
-      runtimeSource: "ama",
-      runtimeSessionId: "ama-session-closed",
+      amaSessionId: "ama-session-closed",
     });
 
     const { createBoard } = await import("../apps/web/server/boardRepo");
@@ -299,7 +296,7 @@ describe("CLI ApiClient agent JWT passthrough", () => {
       error: { code: "FORBIDDEN", message: "Agent session is not registered" },
     });
 
-    const runtimeSession = await testEnv.DB.prepare("SELECT status FROM runtime_agent_sessions WHERE id = ?").bind(runtimeSessionId).first<any>();
+    const runtimeSession = await testEnv.DB.prepare("SELECT status FROM ama_agent_sessions WHERE id = ?").bind(runtimeSessionId).first<any>();
     expect(runtimeSession?.status).toBe("closed");
     const legacySession = await testEnv.DB.prepare("SELECT id FROM agent_sessions WHERE id = ?").bind(runtimeSessionId).first<any>();
     expect(legacySession).toBeNull();

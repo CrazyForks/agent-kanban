@@ -33,7 +33,7 @@ export async function getSystemStats(db: D1): Promise<SystemStats> {
         SELECT 1 FROM (
           SELECT agent_id, status FROM agent_sessions
           UNION ALL
-          SELECT agent_id, status FROM runtime_agent_sessions
+          SELECT agent_id, status FROM ama_agent_sessions
         ) sessions
         WHERE sessions.agent_id = agents.id AND sessions.status = 'active'
       )`,
@@ -42,9 +42,9 @@ export async function getSystemStats(db: D1): Promise<SystemStats> {
     db.prepare("SELECT COUNT(*) FROM machines WHERE status = 'online'"),
     db.prepare("SELECT status, COUNT(*) as count FROM tasks GROUP BY status"),
     db.prepare("SELECT COUNT(*) FROM boards"),
-    db.prepare("SELECT COUNT(*) FROM (SELECT id FROM agent_sessions UNION ALL SELECT id FROM runtime_agent_sessions)"),
+    db.prepare("SELECT COUNT(*) FROM (SELECT id FROM agent_sessions UNION ALL SELECT id FROM ama_agent_sessions)"),
     db.prepare(
-      "SELECT COUNT(*) FROM (SELECT id FROM agent_sessions WHERE status = 'active' UNION ALL SELECT id FROM runtime_agent_sessions WHERE status = 'active')",
+      "SELECT COUNT(*) FROM (SELECT id FROM agent_sessions WHERE status = 'active' UNION ALL SELECT id FROM ama_agent_sessions WHERE status = 'active')",
     ),
   ]);
 

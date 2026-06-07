@@ -40,7 +40,7 @@ export async function createSession(
   return { delegation_proof: delegationProof };
 }
 
-export async function createRuntimeAgentSession(
+export async function createAmaAgentSession(
   db: D1,
   env: Env,
   input: {
@@ -48,8 +48,7 @@ export async function createRuntimeAgentSession(
     agentId: string;
     sessionId: string;
     sessionPublicKey: string;
-    runtimeSource: "ama";
-    runtimeSessionId?: string | null;
+    amaSessionId?: string | null;
   },
 ): Promise<{ delegation_proof: string }> {
   const agentPrivateKey = await getAgentPrivateKey(db, input.agentId);
@@ -60,27 +59,18 @@ export async function createRuntimeAgentSession(
 
   await db
     .prepare(`
-    INSERT INTO runtime_agent_sessions (
-      id, owner_id, agent_id, runtime_source, runtime_session_id, status, public_key, delegation_proof, created_at
+    INSERT INTO ama_agent_sessions (
+      id, owner_id, agent_id, ama_session_id, status, public_key, delegation_proof, created_at
     )
-    VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)
+    VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
   `)
-    .bind(
-      input.sessionId,
-      input.ownerId,
-      input.agentId,
-      input.runtimeSource,
-      input.runtimeSessionId ?? null,
-      input.sessionPublicKey,
-      delegationProof,
-      now,
-    )
+    .bind(input.sessionId, input.ownerId, input.agentId, input.amaSessionId ?? null, input.sessionPublicKey, delegationProof, now)
     .run();
 
   await registerBetterAuthAgentSession(env, db, {
     ownerId: input.ownerId,
     agentId: input.agentId,
-    hostId: `runtime-${input.runtimeSource}`,
+    hostId: "ama-runtime",
     sessionId: input.sessionId,
     sessionPublicKey: input.sessionPublicKey,
   });
@@ -88,8 +78,8 @@ export async function createRuntimeAgentSession(
   return { delegation_proof: delegationProof };
 }
 
-export async function bindRuntimeAgentSession(db: D1, sessionId: string, runtimeSessionId: string): Promise<void> {
-  await db.prepare("UPDATE runtime_agent_sessions SET runtime_session_id = ? WHERE id = ?").bind(runtimeSessionId, sessionId).run();
+export async function bindAmaAgentSession(db: D1, sessionId: string, amaSessionId: string): Promise<void> {
+  await db.prepare("UPDATE ama_agent_sessions SET ama_session_id = ? WHERE id = ?").bind(amaSessionId, sessionId).run();
 }
 
 async function registerBetterAuthAgentSession(
@@ -106,7 +96,7 @@ async function registerBetterAuthAgentSession(
       model: "agentHost",
       data: {
         id: input.hostId,
-        name: input.hostId.startsWith("runtime-") ? input.hostId : `machine-${input.hostId.slice(0, 8)}`,
+        name: input.hostId === "ama-runtime" ? "ama-runtime" : `machine-${input.hostId.slice(0, 8)}`,
         userId: input.ownerId,
         status: "active",
         activatedAt: new Date(),
@@ -169,17 +159,17 @@ export async function getSession(db: D1, sessionId: string): Promise<AgentSessio
 export async function closeSession(db: D1, sessionId: string): Promise<void> {
   const now = new Date().toISOString();
   await db.prepare("UPDATE agent_sessions SET status = 'closed', closed_at = ? WHERE id = ?").bind(now, sessionId).run();
-  await db.prepare("UPDATE runtime_agent_sessions SET status = 'closed', closed_at = ? WHERE id = ?").bind(now, sessionId).run();
+  await db.prepare("UPDATE ama_agent_sessions SET status = 'closed', closed_at = ? WHERE id = ?").bind(now, sessionId).run();
 }
 
-export async function closeRuntimeSessionForTask(db: D1, task: { metadata?: unknown }): Promise<void> {
+export async function closeAmaAgentSessionForTask(db: D1, task: { metadata?: unknown }): Promise<void> {
   const metadata =
     task.metadata && typeof task.metadata === "object" && !Array.isArray(task.metadata) ? (task.metadata as Record<string, unknown>) : {};
   const annotations =
     metadata.annotations && typeof metadata.annotations === "object" && !Array.isArray(metadata.annotations)
       ? (metadata.annotations as Record<string, unknown>)
       : {};
-  const sessionId = annotations["ak.runtimeSessionId"];
+  const sessionId = annotations.agentSessionId;
   if (typeof sessionId === "string" && sessionId.length > 0) {
     await closeSession(db, sessionId);
   }
@@ -187,11 +177,11 @@ export async function closeRuntimeSessionForTask(db: D1, task: { metadata?: unkn
 
 export async function reopenSession(db: D1, sessionId: string): Promise<void> {
   const row = await db.prepare("SELECT status FROM agent_sessions WHERE id = ?").bind(sessionId).first<{ status: string }>();
-  const runtimeRow = row ?? (await db.prepare("SELECT status FROM runtime_agent_sessions WHERE id = ?").bind(sessionId).first<{ status: string }>());
+  const runtimeRow = row ?? (await db.prepare("SELECT status FROM ama_agent_sessions WHERE id = ?").bind(sessionId).first<{ status: string }>());
   if (!runtimeRow) throw new HTTPException(404, { message: `Session ${sessionId} not found` });
   if (runtimeRow.status === "active") return;
   await db.prepare("UPDATE agent_sessions SET status = 'active', closed_at = NULL WHERE id = ?").bind(sessionId).run();
-  await db.prepare("UPDATE runtime_agent_sessions SET status = 'active', closed_at = NULL WHERE id = ?").bind(sessionId).run();
+  await db.prepare("UPDATE ama_agent_sessions SET status = 'active', closed_at = NULL WHERE id = ?").bind(sessionId).run();
 }
 
 export async function updateSessionUsage(db: D1, sessionId: string, usage: SessionUsageInput): Promise<void> {
@@ -209,7 +199,7 @@ export async function updateSessionUsage(db: D1, sessionId: string, usage: Sessi
     .run();
   await db
     .prepare(`
-    UPDATE runtime_agent_sessions SET
+    UPDATE ama_agent_sessions SET
       input_tokens = input_tokens + ?,
       output_tokens = output_tokens + ?,
       cache_read_tokens = cache_read_tokens + ?,

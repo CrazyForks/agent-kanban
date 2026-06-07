@@ -5,9 +5,7 @@ export interface BoardMaintainer {
   owner_id: string;
   board_id: string;
   repository_id: string | null;
-  ak_agent_id: string;
-  ama_agent_id: string;
-  ama_environment_id: string;
+  agent_id: string;
   ama_schedule_id: string;
   name: string;
   prompt: string;
@@ -15,6 +13,7 @@ export interface BoardMaintainer {
   status: "active" | "paused" | "archived";
   last_run_at: string | null;
   last_ama_session_id: string | null;
+  last_error_message: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -22,9 +21,7 @@ export interface BoardMaintainer {
 export interface CreateBoardMaintainerInput {
   boardId: string;
   repositoryId?: string | null;
-  akAgentId: string;
-  amaAgentId: string;
-  amaEnvironmentId: string;
+  agentId: string;
   amaScheduleId: string;
   name: string;
   prompt: string;
@@ -56,18 +53,16 @@ export async function createBoardMaintainer(db: D1, ownerId: string, input: Crea
   await db
     .prepare(
       `INSERT INTO board_maintainers (
-        id, owner_id, board_id, repository_id, ak_agent_id, ama_agent_id, ama_environment_id, ama_schedule_id,
+        id, owner_id, board_id, repository_id, agent_id, ama_schedule_id,
         name, prompt, interval_seconds, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
       ownerId,
       input.boardId,
       input.repositoryId ?? null,
-      input.akAgentId,
-      input.amaAgentId,
-      input.amaEnvironmentId,
+      input.agentId,
       input.amaScheduleId,
       input.name,
       input.prompt,

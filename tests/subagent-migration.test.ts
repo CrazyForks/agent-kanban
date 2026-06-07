@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createTestAgent, seedUser } from "./helpers/db";
+import { seedUser } from "./helpers/db";
 
 const MIGRATIONS_DIR = join(__dirname, "../apps/web/migrations");
 const MIGRATIONS_BEFORE_SUBAGENTS = [
@@ -57,11 +57,60 @@ afterAll(async () => {
   await mf.dispose();
 });
 
+async function createLegacyAgent(
+  db: D1Database,
+  ownerId: string,
+  input: {
+    id: string;
+    username: string;
+    name: string;
+    runtime: string;
+    model?: string | null;
+    bio?: string | null;
+    soul?: string | null;
+    role?: string | null;
+    skills?: string[] | null;
+    subagents?: string[] | null;
+  },
+) {
+  const now = new Date().toISOString();
+  await db
+    .prepare(
+      `INSERT INTO agents (
+        id, owner_id, name, username, gpg_subkey_id, bio, soul, role, handoff_to, runtime, model,
+        skills, subagents, version, public_key, private_key, fingerprint, builtin, mailbox_token, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'latest', ?, ?, ?, 0, NULL, ?, ?)`,
+    )
+    .bind(
+      input.id,
+      ownerId,
+      input.name,
+      input.username,
+      null,
+      input.bio ?? null,
+      input.soul ?? null,
+      input.role ?? null,
+      null,
+      input.runtime,
+      input.model ?? null,
+      input.skills ? JSON.stringify(input.skills) : null,
+      input.subagents ? JSON.stringify(input.subagents) : null,
+      `public-${input.id}`,
+      "{}",
+      `fingerprint-${input.id}`,
+      now,
+      now,
+    )
+    .run();
+  return { id: input.id };
+}
+
 describe("0021_subagents migration", () => {
   it("copies existing agent subagent references into the subagents table", async () => {
     const ownerId = "subagent-migration-owner";
     await seedUser(db, ownerId, "subagent-migration-owner@test.local");
-    const referenced = await createTestAgent(db, ownerId, {
+    const referenced = await createLegacyAgent(db, ownerId, {
+      id: "legacy-reviewer-id",
       username: "legacy-reviewer",
       name: "Legacy Reviewer",
       runtime: "claude",
@@ -71,7 +120,8 @@ describe("0021_subagents migration", () => {
       role: "reviewer",
       skills: ["saltbo/agent-kanban@agent-kanban"],
     });
-    const parent = await createTestAgent(db, ownerId, {
+    const parent = await createLegacyAgent(db, ownerId, {
+      id: "parent-agent-id",
       username: "parent-agent",
       name: "Parent Agent",
       runtime: "claude",

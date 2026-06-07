@@ -4,11 +4,11 @@ import { type D1, parseJsonFields } from "./db";
 import { addSubkey, getOrCreateRootKey } from "./gpgKeyRepo";
 import { runtimeReadyPredicateSql } from "./machineRepo";
 
-const parseAgent = <T extends Agent>(row: T) => parseJsonFields(row, ["skills", "subagents", "handoff_to"]);
+const parseAgent = <T extends Agent>(row: T) => parseJsonFields(row, ["skills", "subagents", "handoff_to", "metadata"]);
 const SESSION_UNION_SQL = `
   SELECT agent_id, status, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_micro_usd FROM agent_sessions
   UNION ALL
-  SELECT agent_id, status, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_micro_usd FROM runtime_agent_sessions
+  SELECT agent_id, status, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_micro_usd FROM ama_agent_sessions
 `;
 
 export type AgentListFilters = {
@@ -90,6 +90,7 @@ export async function prepareAgent(
     public_key: publicKeyBase64,
     fingerprint,
     builtin: builtin ? 1 : 0,
+    metadata: {},
     created_at: now,
     updated_at: now,
     privateKeyJwk,
@@ -100,10 +101,11 @@ export async function insertAgent(db: D1, agent: PreparedAgent, extras?: { mailb
   const skillsJson = agent.skills ? JSON.stringify(agent.skills) : null;
   const subagentsJson = agent.subagents ? JSON.stringify(agent.subagents) : null;
   const handoffJson = agent.handoff_to ? JSON.stringify(agent.handoff_to) : null;
+  const metadataJson = JSON.stringify(agent.metadata ?? {});
   await db
     .prepare(`
-    INSERT INTO agents (id, owner_id, name, username, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, version, public_key, private_key, fingerprint, builtin, mailbox_token, gpg_subkey_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO agents (id, owner_id, name, username, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, version, public_key, private_key, fingerprint, builtin, mailbox_token, gpg_subkey_id, metadata, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
     .bind(
       agent.id,
@@ -126,6 +128,7 @@ export async function insertAgent(db: D1, agent: PreparedAgent, extras?: { mailb
       agent.builtin,
       extras?.mailboxToken ?? null,
       extras?.gpgSubkeyId ?? null,
+      metadataJson,
       agent.created_at,
       agent.updated_at,
     )
@@ -174,7 +177,7 @@ export async function listAgents(db: D1, ownerId: string, filters: AgentListFilt
   let query = `
     SELECT a.id, a.owner_id, a.name, a.username, a.gpg_subkey_id, a.bio, a.soul, a.role, a.kind, a.handoff_to, a.runtime, a.model, a.skills, a.subagents,
       a.version,
-      a.public_key, a.fingerprint, a.builtin, a.created_at, a.updated_at,
+      a.public_key, a.fingerprint, a.builtin, a.metadata, a.created_at, a.updated_at,
       CASE WHEN EXISTS (
         SELECT 1 FROM machines m, json_each(m.runtimes) rt
         WHERE m.owner_id = a.owner_id
@@ -228,7 +231,7 @@ export async function getAgent(db: D1, agentId: string, ownerId: string): Promis
     .prepare(`
     SELECT a.id, a.owner_id, a.name, a.username, a.gpg_subkey_id, a.bio, a.soul, a.role, a.kind, a.handoff_to, a.runtime, a.model, a.skills, a.subagents,
       a.version,
-      a.public_key, a.fingerprint, a.builtin, a.created_at, a.updated_at,
+      a.public_key, a.fingerprint, a.builtin, a.metadata, a.created_at, a.updated_at,
       CASE WHEN EXISTS (
         SELECT 1 FROM machines m, json_each(m.runtimes) rt
         WHERE m.owner_id = a.owner_id
@@ -261,7 +264,7 @@ export async function updateAgent(
 ): Promise<Agent | null> {
   const agent = await db
     .prepare(
-      "SELECT id, owner_id, name, username, gpg_subkey_id, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, version, public_key, private_key, fingerprint, builtin, mailbox_token, created_at, updated_at FROM agents WHERE id = ?",
+      "SELECT id, owner_id, name, username, gpg_subkey_id, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, version, public_key, private_key, fingerprint, builtin, mailbox_token, metadata, created_at, updated_at FROM agents WHERE id = ?",
     )
     .bind(agentId)
     .first<Agent & { private_key: string; mailbox_token: string | null }>();
@@ -306,7 +309,7 @@ function jsonOrNull(value: unknown | null): string | null {
 async function getLatestAgentSnapshot(db: D1, username: string, ownerId: string): Promise<AgentSnapshot | null> {
   const row = await db
     .prepare(
-      "SELECT id, owner_id, name, username, gpg_subkey_id, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, version, public_key, private_key, fingerprint, builtin, mailbox_token, created_at, updated_at FROM agents WHERE username = ? AND owner_id = ? AND version = 'latest'",
+      "SELECT id, owner_id, name, username, gpg_subkey_id, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, version, public_key, private_key, fingerprint, builtin, mailbox_token, metadata, created_at, updated_at FROM agents WHERE username = ? AND owner_id = ? AND version = 'latest'",
     )
     .bind(username, ownerId)
     .first<Agent & { private_key: string; mailbox_token: string | null }>();
@@ -328,8 +331,8 @@ async function insertAgentSnapshot(db: D1, source: AgentSnapshot, version: strin
   const snapshotId = crypto.randomUUID();
   await db
     .prepare(`
-      INSERT INTO agents (id, owner_id, name, username, gpg_subkey_id, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, version, public_key, private_key, fingerprint, builtin, mailbox_token, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO agents (id, owner_id, name, username, gpg_subkey_id, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, version, public_key, private_key, fingerprint, builtin, mailbox_token, metadata, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .bind(
       snapshotId,
@@ -352,6 +355,7 @@ async function insertAgentSnapshot(db: D1, source: AgentSnapshot, version: strin
       source.fingerprint,
       source.builtin,
       source.mailbox_token,
+      JSON.stringify(source.metadata ?? {}),
       now,
       now,
     )
@@ -370,7 +374,7 @@ async function updateLatestFromPrepared(
     .prepare(`
       UPDATE agents
       SET name = ?, gpg_subkey_id = ?, bio = ?, soul = ?, role = ?, kind = ?, handoff_to = ?, runtime = ?, model = ?,
-          skills = ?, subagents = ?, public_key = ?, private_key = ?, fingerprint = ?, builtin = ?, mailbox_token = ?, updated_at = ?
+          skills = ?, subagents = ?, public_key = ?, private_key = ?, fingerprint = ?, builtin = ?, mailbox_token = ?, metadata = ?, updated_at = ?
       WHERE id = ?
     `)
     .bind(
@@ -390,6 +394,7 @@ async function updateLatestFromPrepared(
       latest.fingerprint,
       agent.builtin,
       extras?.mailboxToken ?? latest.mailbox_token,
+      JSON.stringify(agent.metadata ?? {}),
       now,
       latest.id,
     )
@@ -444,6 +449,19 @@ export async function getAgentLogs(db: D1, agentId: string): Promise<any[]> {
 export async function getAgentPrivateKey(db: D1, agentId: string): Promise<JsonWebKey | null> {
   const row = await db.prepare("SELECT private_key FROM agents WHERE id = ?").bind(agentId).first<{ private_key: string }>();
   return row ? JSON.parse(row.private_key) : null;
+}
+
+export async function updateAgentMetadataAnnotations(db: D1, ownerId: string, agentId: string, annotations: Record<string, unknown>): Promise<void> {
+  const row = await db.prepare("SELECT metadata FROM agents WHERE id = ? AND owner_id = ?").bind(agentId, ownerId).first<{ metadata: string }>();
+  if (!row) throw new Error("Agent not found");
+  const metadata = JSON.parse(row.metadata || "{}") as Record<string, unknown>;
+  const existing =
+    metadata.annotations && typeof metadata.annotations === "object" && !Array.isArray(metadata.annotations) ? metadata.annotations : {};
+  metadata.annotations = { ...(existing as Record<string, unknown>), ...annotations };
+  await db
+    .prepare("UPDATE agents SET metadata = ?, updated_at = ? WHERE id = ? AND owner_id = ?")
+    .bind(JSON.stringify(metadata), new Date().toISOString(), agentId, ownerId)
+    .run();
 }
 
 export async function setAgentGpgSubkeyId(db: D1, agentId: string, gpgSubkeyId: string): Promise<void> {

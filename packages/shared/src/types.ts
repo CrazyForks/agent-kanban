@@ -226,6 +226,7 @@ export interface Agent {
   public_key: string;
   fingerprint: string;
   builtin: number;
+  metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }

@@ -2,7 +2,7 @@ import { createAmaProject, createAmaVault } from "./amaRuntime";
 import type { D1 } from "./db";
 import type { Env } from "./types";
 
-export interface AmaOwnerRuntimeBinding {
+export interface AmaOwnerIntegration {
   ownerId: string;
   amaProjectId: string;
   externalTenantId: string;
@@ -10,7 +10,7 @@ export interface AmaOwnerRuntimeBinding {
   metadata: Record<string, unknown>;
 }
 
-type AmaOwnerRuntimeBindingRow = {
+type AmaOwnerIntegrationRow = {
   owner_id: string;
   ama_project_id: string;
   external_tenant_id: string;
@@ -18,17 +18,15 @@ type AmaOwnerRuntimeBindingRow = {
   metadata: string;
 };
 
-export async function getAmaOwnerRuntimeBinding(db: D1, ownerId: string): Promise<AmaOwnerRuntimeBinding | null> {
+export async function getAmaOwnerIntegration(db: D1, ownerId: string): Promise<AmaOwnerIntegration | null> {
   const row = await db
-    .prepare(
-      "SELECT owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata FROM ama_owner_runtime_bindings WHERE owner_id = ?",
-    )
+    .prepare("SELECT owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata FROM ama_owner_integrations WHERE owner_id = ?")
     .bind(ownerId)
-    .first<AmaOwnerRuntimeBindingRow>();
-  return row ? parseBinding(row) : null;
+    .first<AmaOwnerIntegrationRow>();
+  return row ? parseIntegration(row) : null;
 }
 
-export async function upsertAmaOwnerRuntimeBinding(
+export async function upsertAmaOwnerIntegration(
   db: D1,
   input: {
     ownerId: string;
@@ -37,13 +35,13 @@ export async function upsertAmaOwnerRuntimeBinding(
     sessionSecretVaultId?: string | null;
     metadata?: Record<string, unknown>;
   },
-): Promise<AmaOwnerRuntimeBinding> {
+): Promise<AmaOwnerIntegration> {
   const externalTenantId = input.externalTenantId ?? input.ownerId;
   const sessionSecretVaultId = input.sessionSecretVaultId ?? null;
   const metadata = input.metadata ?? {};
   await db
     .prepare(
-      `INSERT INTO ama_owner_runtime_bindings (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
+      `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
        VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(owner_id) DO UPDATE SET
          ama_project_id = excluded.ama_project_id,
@@ -63,8 +61,8 @@ export async function upsertAmaOwnerRuntimeBinding(
   };
 }
 
-export async function ensureAmaOwnerRuntimeBinding(db: D1, env: Env, ownerId: string): Promise<AmaOwnerRuntimeBinding> {
-  const existing = await getAmaOwnerRuntimeBinding(db, ownerId);
+export async function ensureAmaOwnerIntegration(db: D1, env: Env, ownerId: string): Promise<AmaOwnerIntegration> {
+  const existing = await getAmaOwnerIntegration(db, ownerId);
   if (existing?.sessionSecretVaultId) return existing;
 
   const projectId = existing?.amaProjectId ?? (await createAmaProject(env, { name: `Workspace ${ownerId}` })).id;
@@ -78,7 +76,7 @@ export async function ensureAmaOwnerRuntimeBinding(db: D1, env: Env, ownerId: st
         metadata: { purpose: "session-secrets" },
       });
 
-  return await upsertAmaOwnerRuntimeBinding(db, {
+  return await upsertAmaOwnerIntegration(db, {
     ownerId,
     amaProjectId: projectId,
     externalTenantId: existing?.externalTenantId ?? ownerId,
@@ -88,22 +86,22 @@ export async function ensureAmaOwnerRuntimeBinding(db: D1, env: Env, ownerId: st
 }
 
 export async function resolveAmaProjectId(db: D1, env: Env, ownerId: string): Promise<string> {
-  return (await ensureAmaOwnerRuntimeBinding(db, env, ownerId)).amaProjectId;
+  return (await ensureAmaOwnerIntegration(db, env, ownerId)).amaProjectId;
 }
 
 export async function resolveAmaExternalTenantId(db: D1, env: Env, ownerId: string): Promise<string> {
-  return (await ensureAmaOwnerRuntimeBinding(db, env, ownerId)).externalTenantId;
+  return (await ensureAmaOwnerIntegration(db, env, ownerId)).externalTenantId;
 }
 
 export async function resolveAmaSessionSecretVaultId(db: D1, env: Env, ownerId: string): Promise<string> {
-  const binding = await ensureAmaOwnerRuntimeBinding(db, env, ownerId);
+  const binding = await ensureAmaOwnerIntegration(db, env, ownerId);
   if (!binding.sessionSecretVaultId) {
     throw new Error(`AMA session secret vault is missing for owner ${ownerId}`);
   }
   return binding.sessionSecretVaultId;
 }
 
-function parseBinding(row: AmaOwnerRuntimeBindingRow): AmaOwnerRuntimeBinding {
+function parseIntegration(row: AmaOwnerIntegrationRow): AmaOwnerIntegration {
   return {
     ownerId: row.owner_id,
     amaProjectId: row.ama_project_id,

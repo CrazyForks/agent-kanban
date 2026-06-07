@@ -156,7 +156,7 @@ export function formatMaintainer(maintainer: any): string {
   lines.push(`${maintainer.name}`);
   lines.push(`  ID:           ${maintainer.id}`);
   lines.push(`  Board:        ${maintainer.board_id}`);
-  lines.push(`  Agent:        ${maintainer.ak_agent_id ?? "unbound"}`);
+  lines.push(`  Agent:        ${maintainer.agent_id ?? "unbound"}`);
   lines.push(`  Status:       ${maintainer.status}`);
   lines.push(`  Interval:     ${maintainer.interval_seconds}s`);
   if (maintainer.last_run_at) lines.push(`  Last run:     ${maintainer.last_run_at}`);
@@ -169,7 +169,7 @@ export function formatMaintainerList(maintainers: any[]): string {
   return maintainers
     .map((maintainer) => {
       const lastRun = maintainer.last_run_at ? ` last=${maintainer.last_run_at}` : "";
-      return `  ${maintainer.id}  [${maintainer.status}] ${maintainer.name}  agent=${maintainer.ak_agent_id ?? "unbound"} interval=${maintainer.interval_seconds}s${lastRun}`;
+      return `  ${maintainer.id}  [${maintainer.status}] ${maintainer.name}  agent=${maintainer.agent_id ?? "unbound"} interval=${maintainer.interval_seconds}s${lastRun}`;
     })
     .join("\n");
 }

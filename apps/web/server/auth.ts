@@ -203,8 +203,8 @@ async function handleAgentIdentity(c: Context<{ Bindings: Env }>, identity: any,
      JOIN agents a ON s.agent_id = a.id
      WHERE s.id = ? AND s.status = 'active'
      UNION ALL
-     SELECT s.agent_id, a.kind, s.owner_id, s.runtime_source AS source
-     FROM runtime_agent_sessions s
+     SELECT s.agent_id, a.kind, s.owner_id, 'ama' AS source
+     FROM ama_agent_sessions s
      JOIN agents a ON s.agent_id = a.id
      WHERE s.id = ? AND s.status = 'active'
      LIMIT 1`,
