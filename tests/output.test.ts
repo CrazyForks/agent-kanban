@@ -11,6 +11,7 @@ import {
   formatTask,
   formatTaskList,
   formatTaskNotes,
+  formatTaskRuntime,
   getOutputFormat,
   output,
 } from "../packages/cli/src/output";
@@ -199,6 +200,25 @@ describe("formatTaskNotes", () => {
     const result = formatTaskNotes(logs);
     // The timestamp should be a recognisable date string (locale-formatted)
     expect(result.trim().length).toBeGreaterThan(0);
+  });
+});
+
+describe("formatTaskRuntime", () => {
+  it("shows AMA session status and recent event types", () => {
+    const result = formatTaskRuntime({
+      task_id: "task-1",
+      ama_session_id: "session-1",
+      session: { status: "idle", statusReason: null, startedAt: "2026-06-06T12:00:00.000Z" },
+      events: [
+        { id: "event-1", sequence: 1, type: "message_start", role: "assistant" },
+        { id: "event-2", sequence: 2, type: "message_end", role: "assistant" },
+      ],
+      pagination: { hasMore: false },
+    });
+    expect(result).toContain("Task runtime");
+    expect(result).toContain("session-1");
+    expect(result).toContain("idle");
+    expect(result).toContain("message_end");
   });
 });
 

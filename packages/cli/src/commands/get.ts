@@ -6,6 +6,9 @@ import {
   formatBoard,
   formatBoardList,
   formatLabelList,
+  formatMaintainer,
+  formatMaintainerList,
+  formatMaintainerRuns,
   formatModelList,
   formatRepository,
   formatRepositoryList,
@@ -15,6 +18,7 @@ import {
   formatTaskList,
   formatTaskListWide,
   formatTaskNotes,
+  formatTaskRuntime,
   getOutputFormat,
   output,
 } from "../output.js";
@@ -110,13 +114,23 @@ export function registerGetCommand(program: Command) {
     .option("--status <status>", "Filter by status")
     .option("--label <label>", "Filter by label")
     .option("--repo <id>", "Filter by repository ID")
+    .option("--session", "Show task session state and events")
     .action(async (id: string | undefined, opts) => {
       const client = await createClient();
       const fmt = getOutputFormat(opts.output);
       if (id) {
-        const task = await client.getTask(id);
-        output(task, fmt, formatTask, { kind: "task" });
+        if (opts.session) {
+          const runtime = await client.getTaskRuntime(id);
+          output(runtime, fmt, formatTaskRuntime, { kind: "taskRuntime" });
+        } else {
+          const task = await client.getTask(id);
+          output(task, fmt, formatTask, { kind: "task" });
+        }
       } else {
+        if (opts.session) {
+          console.error("Usage: ak get task <id> --session");
+          process.exit(1);
+        }
         if (!opts.board) {
           console.error("Error: --board is required when listing tasks\nUsage: ak get task --board <id>");
           process.exit(1);
@@ -127,6 +141,37 @@ export function registerGetCommand(program: Command) {
         if (opts.repo) params.repository_id = opts.repo;
         const tasks = await client.listTasks(params);
         output(tasks, fmt, formatTaskList, { wideFormatter: formatTaskListWide, kind: "task" });
+      }
+    });
+
+  getCmd
+    .command("maintainer [id]")
+    .description("Get board maintainers or maintainer runs")
+    .requiredOption("--board <id>", "Board ID")
+    .option("--runs", "List heartbeat runs for a maintainer")
+    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .action(async (id: string | undefined, opts) => {
+      const client = await createClient();
+      const fmt = getOutputFormat(opts.output);
+      if (opts.runs) {
+        if (!id) {
+          console.error("Usage: ak get maintainer <id> --board <board-id> --runs");
+          process.exit(1);
+        }
+        const runs = await client.getBoardMaintainerRuns(opts.board, id);
+        output(runs, fmt, formatMaintainerRuns, { kind: "maintainerRun" });
+        return;
+      }
+      const maintainers = await client.listBoardMaintainers(opts.board);
+      if (id) {
+        const maintainer = maintainers.find((candidate) => candidate.id === id);
+        if (!maintainer) {
+          console.error(`Maintainer not found: ${id}`);
+          process.exit(1);
+        }
+        output(maintainer, fmt, formatMaintainer, { kind: "maintainer" });
+      } else {
+        output(maintainers, fmt, formatMaintainerList, { kind: "maintainer" });
       }
     });
 

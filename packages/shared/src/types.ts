@@ -42,6 +42,7 @@ export interface Task {
   assigned_to: string | null;
   pr_url: string | null;
   input: Record<string, unknown> | null;
+  metadata: Record<string, unknown>;
   created_from: string | null;
   scheduled_at: string | null;
   position: number;
@@ -371,6 +372,7 @@ export interface CreateTaskInput {
   repository_id?: string;
   labels?: string[];
   input?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
   board_id?: string;
   agent_id?: string;
   depends_on?: string[];

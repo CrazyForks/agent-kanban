@@ -112,6 +112,9 @@ importers:
       '@agent-kanban/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@any-managed-agents/sdk':
+        specifier: github:saltbo/any-managed-agents#e0e77c8&path:sdk/typescript
+        version: https://codeload.github.com/saltbo/any-managed-agents/tar.gz/e0e77c8d6a1eae7c9282441f6a607ec392dbb39e#path:sdk/typescript
       '@assistant-ui/react':
         specifier: ^0.12.24
         version: 0.12.24(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(use-sync-external-store@1.6.0(react@19.2.5))
@@ -339,6 +342,10 @@ packages:
     peerDependenciesMeta:
       zod:
         optional: true
+
+  '@any-managed-agents/sdk@https://codeload.github.com/saltbo/any-managed-agents/tar.gz/e0e77c8d6a1eae7c9282441f6a607ec392dbb39e#path:sdk/typescript':
+    resolution: {path: sdk/typescript, tarball: https://codeload.github.com/saltbo/any-managed-agents/tar.gz/e0e77c8d6a1eae7c9282441f6a607ec392dbb39e}
+    version: 0.1.0
 
   '@asamuzakjp/css-color@5.1.8':
     resolution: {integrity: sha512-OISPR9c2uPo23rUdvfEQiLPjoMLOpEeLNnP5iGkxr6tDDxJd3NjD+6fxY0mdaMbIPUjFGL4HFOJqLvow5q4aqQ==}
@@ -6480,6 +6487,8 @@ snapshots:
     optionalDependencies:
       zod: 4.3.6
 
+  '@any-managed-agents/sdk@https://codeload.github.com/saltbo/any-managed-agents/tar.gz/e0e77c8d6a1eae7c9282441f6a607ec392dbb39e#path:sdk/typescript': {}
+
   '@asamuzakjp/css-color@5.1.8':
     dependencies:
       '@csstools/css-calc': 3.1.1(@csstools/css-parser-algorithms@4.0.0(@csstools/css-tokenizer@4.0.0))(@csstools/css-tokenizer@4.0.0)
@@ -8689,7 +8698,7 @@ snapshots:
       react-refresh: 0.18.0
       remotion: 4.0.447(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       source-map: 0.7.3
-      style-loader: 4.0.0(webpack@5.105.0)
+      style-loader: 4.0.0(webpack@5.105.0(esbuild@0.25.0))
       webpack: 5.105.0(esbuild@0.25.0)
     transitivePeerDependencies:
       - '@swc/core'
@@ -12035,7 +12044,7 @@ snapshots:
     dependencies:
       js-tokens: 9.0.1
 
-  style-loader@4.0.0(webpack@5.105.0):
+  style-loader@4.0.0(webpack@5.105.0(esbuild@0.25.0)):
     dependencies:
       webpack: 5.105.0(esbuild@0.25.0)
 
@@ -12083,7 +12092,7 @@ snapshots:
 
   tapable@2.3.2: {}
 
-  terser-webpack-plugin@5.4.0(esbuild@0.25.0)(webpack@5.105.0):
+  terser-webpack-plugin@5.4.0(esbuild@0.25.0)(webpack@5.105.0(esbuild@0.27.7)):
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
       jest-worker: 27.5.1
@@ -12506,7 +12515,7 @@ snapshots:
       neo-async: 2.6.2
       schema-utils: 4.3.3
       tapable: 2.3.2
-      terser-webpack-plugin: 5.4.0(esbuild@0.25.0)(webpack@5.105.0)
+      terser-webpack-plugin: 5.4.0(esbuild@0.25.0)(webpack@5.105.0(esbuild@0.27.7))
       watchpack: 2.5.1
       webpack-sources: 3.3.4
     transitivePeerDependencies:

@@ -5,6 +5,11 @@ import { addSubkey, getOrCreateRootKey } from "./gpgKeyRepo";
 import { runtimeReadyPredicateSql } from "./machineRepo";
 
 const parseAgent = <T extends Agent>(row: T) => parseJsonFields(row, ["skills", "subagents", "handoff_to"]);
+const SESSION_UNION_SQL = `
+  SELECT agent_id, status, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_micro_usd FROM agent_sessions
+  UNION ALL
+  SELECT agent_id, status, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_micro_usd FROM runtime_agent_sessions
+`;
 
 export type AgentListFilters = {
   kind?: "worker" | "leader";
@@ -177,16 +182,16 @@ export async function listAgents(db: D1, ownerId: string, filters: AgentListFilt
           AND m.last_heartbeat_at >= ?
           AND ${runtimeReadyPredicateSql("a.runtime")}
       ) THEN 1 ELSE 0 END as runtime_available,
-      CASE WHEN EXISTS (SELECT 1 FROM agent_sessions s WHERE s.agent_id = a.id AND s.status = 'active') THEN 'online' ELSE 'offline' END as status,
+      CASE WHEN EXISTS (SELECT 1 FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id AND s.status = 'active') THEN 'online' ELSE 'offline' END as status,
       (SELECT MAX(tl.created_at) FROM task_actions tl WHERE tl.actor_id = a.id) as last_active_at,
       (SELECT COUNT(*) FROM tasks t WHERE t.assigned_to = a.id) as task_count,
       (SELECT COUNT(*) FROM tasks t WHERE t.assigned_to = a.id AND t.status = 'todo') as queued_task_count,
       (SELECT COUNT(*) FROM tasks t WHERE t.assigned_to = a.id AND t.status IN ('in_progress', 'in_review')) as active_task_count,
-      COALESCE((SELECT SUM(s.input_tokens) FROM agent_sessions s WHERE s.agent_id = a.id), 0) as input_tokens,
-      COALESCE((SELECT SUM(s.output_tokens) FROM agent_sessions s WHERE s.agent_id = a.id), 0) as output_tokens,
-      COALESCE((SELECT SUM(s.cache_read_tokens) FROM agent_sessions s WHERE s.agent_id = a.id), 0) as cache_read_tokens,
-      COALESCE((SELECT SUM(s.cache_creation_tokens) FROM agent_sessions s WHERE s.agent_id = a.id), 0) as cache_creation_tokens,
-      COALESCE((SELECT SUM(s.cost_micro_usd) FROM agent_sessions s WHERE s.agent_id = a.id), 0) as cost_micro_usd
+      COALESCE((SELECT SUM(s.input_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as input_tokens,
+      COALESCE((SELECT SUM(s.output_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as output_tokens,
+      COALESCE((SELECT SUM(s.cache_read_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cache_read_tokens,
+      COALESCE((SELECT SUM(s.cache_creation_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cache_creation_tokens,
+      COALESCE((SELECT SUM(s.cost_micro_usd) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cost_micro_usd
     FROM agents a
     WHERE a.owner_id = ?
   `;
@@ -231,16 +236,16 @@ export async function getAgent(db: D1, agentId: string, ownerId: string): Promis
           AND m.last_heartbeat_at >= ?
           AND ${runtimeReadyPredicateSql("a.runtime")}
       ) THEN 1 ELSE 0 END as runtime_available,
-      CASE WHEN EXISTS (SELECT 1 FROM agent_sessions s WHERE s.agent_id = a.id AND s.status = 'active') THEN 'online' ELSE 'offline' END as status,
+      CASE WHEN EXISTS (SELECT 1 FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id AND s.status = 'active') THEN 'online' ELSE 'offline' END as status,
       (SELECT MAX(tl.created_at) FROM task_actions tl WHERE tl.actor_id = a.id) as last_active_at,
       (SELECT COUNT(*) FROM tasks t WHERE t.assigned_to = a.id) as task_count,
       (SELECT COUNT(*) FROM tasks t WHERE t.assigned_to = a.id AND t.status = 'todo') as queued_task_count,
       (SELECT COUNT(*) FROM tasks t WHERE t.assigned_to = a.id AND t.status IN ('in_progress', 'in_review')) as active_task_count,
-      COALESCE((SELECT SUM(s.input_tokens) FROM agent_sessions s WHERE s.agent_id = a.id), 0) as input_tokens,
-      COALESCE((SELECT SUM(s.output_tokens) FROM agent_sessions s WHERE s.agent_id = a.id), 0) as output_tokens,
-      COALESCE((SELECT SUM(s.cache_read_tokens) FROM agent_sessions s WHERE s.agent_id = a.id), 0) as cache_read_tokens,
-      COALESCE((SELECT SUM(s.cache_creation_tokens) FROM agent_sessions s WHERE s.agent_id = a.id), 0) as cache_creation_tokens,
-      COALESCE((SELECT SUM(s.cost_micro_usd) FROM agent_sessions s WHERE s.agent_id = a.id), 0) as cost_micro_usd
+      COALESCE((SELECT SUM(s.input_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as input_tokens,
+      COALESCE((SELECT SUM(s.output_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as output_tokens,
+      COALESCE((SELECT SUM(s.cache_read_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cache_read_tokens,
+      COALESCE((SELECT SUM(s.cache_creation_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cache_creation_tokens,
+      COALESCE((SELECT SUM(s.cost_micro_usd) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cost_micro_usd
     FROM agents a
     WHERE a.id = ? AND a.owner_id = ?
   `)

@@ -1,3 +1,4 @@
+import type { AgentEvent } from "@agent-kanban/shared";
 import { AssistantRuntimeProvider, type ThreadMessageLike, useExternalStoreRuntime } from "@assistant-ui/react";
 import { type ReactNode, useCallback, useMemo } from "react";
 import type { AgentStatus, RelayEvent } from "../hooks/useSessionRelay";
@@ -389,4 +390,148 @@ export function RelayRuntimeProvider({ sessionId, taskDone, children }: RelayRun
   });
 
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>;
+}
+
+interface AmaRuntimeProviderProps {
+  runtimeSnapshot: { session?: Record<string, unknown>; events?: Record<string, unknown>[] } | null | undefined;
+  taskDone: boolean;
+  children: ReactNode;
+}
+
+export function AmaRuntimeProvider({ runtimeSnapshot, taskDone, children }: AmaRuntimeProviderProps) {
+  const events = useMemo(() => (runtimeSnapshot?.events ?? []).map(amaEventToRelayEvent), [runtimeSnapshot?.events]);
+  const status = typeof runtimeSnapshot?.session?.status === "string" ? runtimeSnapshot.session.status : null;
+  const agentStatus: AgentStatus = status === "running" || status === "pending" ? "working" : "idle";
+  const messages = useMemo(() => convertEvents(events, agentStatus), [events, agentStatus]);
+  const isRunning = agentStatus === "working" && !taskDone;
+  const convertMessage = useCallback((message: ThreadMessageLike): ThreadMessageLike => message, []);
+  const onNew = useCallback(async () => {}, []);
+
+  const runtime = useExternalStoreRuntime({
+    isRunning,
+    messages,
+    convertMessage,
+    onNew,
+  });
+
+  return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>;
+}
+
+function amaEventToRelayEvent(raw: Record<string, unknown>): RelayEvent {
+  const payload = objectValue(raw.payload);
+  const embedded = objectValue(payload?.event);
+  const event = embedded ? (embedded as AgentEvent) : fallbackAmaAgentEvent(raw, payload);
+  return {
+    id: stringValue(raw.id) ?? stringValue(raw.eventId) ?? `runtime-${stringValue(raw.sequence) ?? crypto.randomUUID()}`,
+    event,
+    timestamp: stringValue(raw.createdAt) ?? stringValue(raw.timestamp) ?? new Date().toISOString(),
+  };
+}
+
+function fallbackAmaAgentEvent(raw: Record<string, unknown>, payload: Record<string, unknown> | null): AgentEvent {
+  const type = stringValue(raw.type);
+
+  if (type === "turn_start") {
+    return { type: "turn.start" };
+  }
+
+  if (type === "turn_end") {
+    return { type: "turn.end" };
+  }
+
+  if (type === "message_end") {
+    const message = objectValue(payload?.message);
+    return { type: "message", blocks: messageContentBlocks(message) };
+  }
+
+  if (type === "tool_execution_start") {
+    const toolCallId = stringValue(payload?.toolCallId) ?? stringValue(payload?.id) ?? stringValue(raw.id) ?? crypto.randomUUID();
+    return {
+      type: "block.start",
+      block: {
+        type: "tool_use",
+        id: toolCallId,
+        name: normalizeAmaToolName(stringValue(payload?.toolName)),
+        input: objectValue(payload?.args) ?? {},
+      },
+    };
+  }
+
+  if (type === "tool_execution_end") {
+    const toolCallId = stringValue(payload?.toolCallId) ?? stringValue(payload?.id) ?? "";
+    return {
+      type: "block.done",
+      block: {
+        type: "tool_result",
+        tool_use_id: toolCallId,
+        output: amaToolResultText(payload),
+        error: booleanValue(payload?.isError),
+      },
+    };
+  }
+
+  if (type === "runtime.output") {
+    const content = stringValue(payload?.content);
+    return content ? { type: "message", blocks: [{ type: "text", text: content }] } : { type: "message", blocks: [] };
+  }
+
+  if (type === "runtime.metadata" || type === "usage.recorded") {
+    return { type: "message", blocks: [] };
+  }
+
+  const text =
+    stringValue(payload?.text) ??
+    stringValue(payload?.message) ??
+    stringValue(raw.summary) ??
+    `${stringValue(raw.type) ?? "ama.event"}${stringValue(raw.status) ? ` ${stringValue(raw.status)}` : ""}`;
+  return { type: "message", blocks: [{ type: "text", text }] };
+}
+
+function messageContentBlocks(message: Record<string, unknown> | null): AgentEvent extends { type: "message"; blocks: infer B } ? B : never {
+  const content = Array.isArray(message?.content) ? message.content : [];
+  const blocks = content
+    .map((part) => {
+      const item = objectValue(part);
+      if (!item) return null;
+      const text = stringValue(item.text);
+      if (!text) return null;
+      return { type: "text" as const, text };
+    })
+    .filter((block): block is { type: "text"; text: string } => block !== null);
+  return blocks as AgentEvent extends { type: "message"; blocks: infer B } ? B : never;
+}
+
+function normalizeAmaToolName(toolName: string | null): string {
+  if (toolName === "sandbox.exec") return "Bash";
+  return toolName ?? "tool";
+}
+
+function amaToolResultText(payload: Record<string, unknown> | null): string {
+  const result = objectValue(payload?.result);
+  if (!result) return "";
+  const stdout = stringValue(result.stdout);
+  const stderr = stringValue(result.stderr);
+  const output = stringValue(result.output);
+  const exitCode = result.exit_code ?? result.exitCode;
+  const parts = [];
+  if (stdout) parts.push(stdout);
+  if (stderr) parts.push(stderr);
+  if (output) parts.push(output);
+  if (parts.length > 0) return parts.join("\n");
+  if (exitCode !== undefined && exitCode !== null) return `exit_code: ${String(exitCode)}`;
+  return JSON.stringify(result);
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function stringValue(value: unknown): string | null {
+  if (typeof value === "string" && value.length > 0) return value;
+  if (typeof value === "number") return String(value);
+  return null;
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }

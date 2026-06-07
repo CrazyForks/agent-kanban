@@ -6,7 +6,7 @@ import type { ApiClient } from "../client/base.js";
 import { MachineClient } from "../client/machine.js";
 import { getCredentials } from "../config.js";
 import { PID_FILE } from "../paths.js";
-import { findLeaderSession, isPidAlive, writeSession } from "../session/store.js";
+import { isPidAlive, listSessions, writeSession } from "../session/store.js";
 import { loadIdentity, type StoredIdentity, saveIdentity } from "./identity.js";
 import { detectRuntime, findRuntimeAncestorPid } from "./runtime.js";
 
@@ -31,7 +31,7 @@ function missingIdentityMessage(runtime: AgentRuntime): string {
     "  --username  required, user-like handle chosen by the agent",
     "  --name      optional full name shown in the UI",
     "",
-    `This identity is reused for the same api-url + machine + runtime (${runtime}).`,
+    `This legacy local identity is reused for the same api-url + runtime (${runtime}).`,
     "",
     "Examples:",
     "  ak identity create --username alex",
@@ -102,8 +102,11 @@ export async function createClient(): Promise<ApiClient> {
     throw new Error(`Could not locate ${runtime} process in ancestry. ak must be invoked from inside a ${runtime} session.`);
   }
 
-  const existing = findLeaderSession(leaderPid);
-  if (existing && existing.runtime === runtime && isPidAlive(leaderPid)) {
+  const apiUrl = getCredentials().apiUrl;
+  const existing = listSessions({ type: "leader" }).find(
+    (session) => session.pid === leaderPid && session.runtime === runtime && session.apiUrl === apiUrl,
+  );
+  if (existing && isPidAlive(leaderPid)) {
     const key = await crypto.subtle.importKey("jwk", existing.privateKeyJwk, { name: "Ed25519" } as any, false, ["sign"]);
     cachedLeaderClient = new AgentClient(existing.apiUrl, existing.agentId, existing.sessionId, key);
     return cachedLeaderClient;
@@ -116,7 +119,7 @@ export async function createClient(): Promise<ApiClient> {
   }
 
   if (!isDaemonAlive()) {
-    throw new Error("Daemon is not running. Start it with: ak start");
+    throw new Error("No AK agent session is available. Start the Machine daemon with: ak start");
   }
 
   // First call — create a leader session for an existing identity
@@ -125,7 +128,6 @@ export async function createClient(): Promise<ApiClient> {
   const privJwk = await crypto.subtle.exportKey("jwk", privateKey);
   if (!pubJwk.x) throw new Error("Ed25519 key export missing x component");
   const sessionId = randomUUID();
-  const apiUrl = getCredentials().apiUrl;
   await machineClient.createSession(identity.agent_id, sessionId, pubJwk.x);
 
   writeSession({

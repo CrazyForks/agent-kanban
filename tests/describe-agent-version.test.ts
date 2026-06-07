@@ -70,14 +70,13 @@ describe("describe agent version", () => {
     const command = commands.get("agent <id>")!;
     listAgents.mockResolvedValue([{ id: "agent-1", username: "alex-kim", version: "abc123def4" }]);
     getAgent.mockResolvedValue({ id: "agent-1", username: "alex-kim", version: "abc123def4", name: "Alex Kim" });
-    listSessions.mockResolvedValue([]);
 
     await command.action!("alex-kim", { version: "abc123def4", output: "json" });
 
     expect(getAgent).toHaveBeenCalledWith("agent-1");
-    expect(listSessions).toHaveBeenCalledWith("agent-1");
+    expect(listSessions).not.toHaveBeenCalled();
     expect(output).toHaveBeenCalledWith(
-      { agent: { id: "agent-1", username: "alex-kim", version: "abc123def4", name: "Alex Kim" }, sessions: [] },
+      { id: "agent-1", username: "alex-kim", version: "abc123def4", name: "Alex Kim" },
       "json",
       expect.any(Function),
       { kind: "agent" },

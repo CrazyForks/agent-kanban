@@ -17,6 +17,10 @@ const mockDetectRuntime = vi.fn<[], string | null>(() => null);
 const mockFindRuntimeAncestorPid = vi.fn<[string], number | null>(() => null);
 const mockReadSession = vi.fn(() => null as any);
 const mockFindLeaderSession = vi.fn(() => null as any);
+const mockListSessions = vi.fn(() => {
+  const session = mockFindLeaderSession();
+  return session ? [session] : [];
+});
 const mockIsPidAlive = vi.fn(() => false);
 const mockWriteSession = vi.fn();
 const mockLoadIdentity = vi.fn(() => null);
@@ -36,6 +40,7 @@ function registerMocks() {
   vi.mock("../src/session/store.js", () => ({
     readSession: mockReadSession,
     findLeaderSession: mockFindLeaderSession,
+    listSessions: mockListSessions,
     isPidAlive: mockIsPidAlive,
     writeSession: mockWriteSession,
   }));
@@ -81,6 +86,10 @@ beforeEach(() => {
   mockFindRuntimeAncestorPid.mockReturnValue(null);
   mockReadSession.mockReturnValue(null);
   mockFindLeaderSession.mockReturnValue(null);
+  mockListSessions.mockImplementation(() => {
+    const session = mockFindLeaderSession();
+    return session ? [session] : [];
+  });
   mockIsPidAlive.mockReturnValue(false);
   mockReadFileSync.mockImplementation((path: unknown) => {
     if (typeof path === "string" && path.endsWith("daemon.pid")) return DEAD_PID;
@@ -906,6 +915,15 @@ describe("ApiClient method stubs", () => {
     await c.getTaskNotes("task-12");
     const [url, opts] = lastCall();
     expect(url).toContain("/api/tasks/task-12/notes");
+    expect(opts.method).toBe("GET");
+  });
+
+  it("getTaskRuntime calls GET /api/tasks/:id/runtime", async () => {
+    const c = await makeAgentClient();
+    stubOk({ task_id: "task-12", ama_session_id: "session-1", session: {}, events: [] });
+    await c.getTaskRuntime("task-12");
+    const [url, opts] = lastCall();
+    expect(url).toContain("/api/tasks/task-12/runtime");
     expect(opts.method).toBe("GET");
   });
 

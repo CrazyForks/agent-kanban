@@ -89,8 +89,8 @@ export type Auth = ReturnType<typeof createAuth>;
 
 function authAllowedHosts(env: Env): string[] {
   const hosts = env.ALLOWED_HOSTS.split(",");
-  if (!hosts.some((host) => host.startsWith("localhost") || host.startsWith("127.0.0.1"))) return hosts;
-  return [...hosts, "localhost:*", "127.0.0.1:*"];
+  const localHosts = ["localhost:*", "127.0.0.1:*"];
+  return [...hosts, ...localHosts.filter((host) => !hosts.includes(host))];
 }
 
 function verificationUrlForRequest(env: Env, url: string, request?: Request): string {

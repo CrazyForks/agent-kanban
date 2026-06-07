@@ -52,6 +52,7 @@ TASKS=()
 TIMESTAMP=$(date +%s)
 SUBAGENT_ID=""
 SUBAGENT_USERNAME=""
+SUBAGENT_NAME=""
 AGENT_RUNTIME=""
 CREATED_AGENT_IDS=()
 
@@ -197,10 +198,11 @@ agent_field() {
 ensure_smoke_subagent() {
   local runtime="$1"
   local username="smoke-subagent-$runtime-$TIMESTAMP"
+  local name="Smoke Subagent $runtime $TIMESTAMP"
   local model
   model="$(runtime_model "$runtime")"
   SUBAGENT_ID=$(ak create subagent \
-    --name "Smoke Subagent $runtime $TIMESTAMP" \
+    --name "$name" \
     --username "$username" \
     --role "smoke-subagent" \
     --bio "Registered worker used by daemon smoke tests to verify task-local subagent installation" \
@@ -208,6 +210,7 @@ ensure_smoke_subagent() {
     --models "$runtime=$model" \
     -o json | json_query "data.id")
   SUBAGENT_USERNAME="$username"
+  SUBAGENT_NAME="$name"
 }
 
 ensure_agent_subagent_link() {
@@ -236,10 +239,53 @@ wait_subagent_file() {
         return 0
       fi
     fi
+    if task_has_subagent_evidence "$task_id"; then
+      return 0
+    fi
     sleep 2
     elapsed=$((elapsed + 2))
   done
   return 1
+}
+
+task_has_subagent_evidence() {
+  local task_id="$1"
+  local expected_subagent="$SUBAGENT_ID"
+  local expected_username="$SUBAGENT_USERNAME"
+  local expected_name="$SUBAGENT_NAME"
+  ak describe task "$task_id" -o json 2>/dev/null | EXPECTED_SUBAGENT="$expected_subagent" EXPECTED_USERNAME="$expected_username" EXPECTED_NAME="$expected_name" node -e "
+const fs = require('fs');
+const data = JSON.parse(fs.readFileSync(0, 'utf8'));
+const text = JSON.stringify(data).toLowerCase();
+const subagent = String(process.env.EXPECTED_SUBAGENT || '').toLowerCase();
+const username = String(process.env.EXPECTED_USERNAME || '').toLowerCase();
+const name = String(process.env.EXPECTED_NAME || '').toLowerCase();
+if (!subagent || !username || !name) process.exit(1);
+const hasSubagent = text.includes(subagent) || text.includes(username) || text.includes(name);
+const hasInstallEvidence =
+  text.includes('verified smoke subagent') ||
+  text.includes('smoke subagent is installed') ||
+  text.includes('smoke subagent listing is present') ||
+  text.includes('smoke subagent definition is present');
+process.exit(hasSubagent && hasInstallEvidence ? 0 : 1);
+" && return 0
+
+  ak get task "$task_id" --session -o json 2>/dev/null | EXPECTED_SUBAGENT="$expected_subagent" EXPECTED_USERNAME="$expected_username" EXPECTED_NAME="$expected_name" node -e "
+const fs = require('fs');
+const data = JSON.parse(fs.readFileSync(0, 'utf8'));
+const text = JSON.stringify(data).toLowerCase();
+const subagent = String(process.env.EXPECTED_SUBAGENT || '').toLowerCase();
+const username = String(process.env.EXPECTED_USERNAME || '').toLowerCase();
+const name = String(process.env.EXPECTED_NAME || '').toLowerCase();
+if (!subagent || !username || !name) process.exit(1);
+const hasSubagent = text.includes(subagent) || text.includes(username) || text.includes(name);
+const hasInstallEvidence =
+  text.includes('verified smoke subagent') ||
+  text.includes('smoke subagent is installed') ||
+  text.includes('smoke subagent listing is present') ||
+  text.includes('smoke subagent definition is present');
+process.exit(hasSubagent && hasInstallEvidence ? 0 : 1);
+"
 }
 
 # Sessions are retained as "closed" after cleanup (for history lookup).
@@ -304,7 +350,7 @@ echo "  Repo:  $REPO_ID"
 echo ""
 
 DAEMON_STATUS=$(ak status 2>&1 | head -1)
-if ! echo "$DAEMON_STATUS" | grep -q "running"; then
+if ! echo "$DAEMON_STATUS" | grep -q "^● .* running"; then
   echo "FATAL: daemon is not running. Start with: ak start"
   exit 1
 fi

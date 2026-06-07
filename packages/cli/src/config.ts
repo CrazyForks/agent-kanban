@@ -52,9 +52,9 @@ export function writeConfig(config: Config): void {
 export function getCredentials(host?: string): { apiUrl: string; apiKey: string } {
   const config = readConfig();
   const target = host || config.current;
-  if (!target) throw new Error("No environment configured. Run: ak start --api-url <url> --api-key <key>");
+  if (!target) throw new Error("No AK API environment configured. Run: ak config set --api-url <url> --api-key <key>");
   const cred = config.credentials[target];
-  if (!cred) throw new Error(`No credentials for ${target}. Run: ak start --api-url <url> --api-key <key>`);
+  if (!cred) throw new Error(`No AK API credentials for ${target}. Run: ak config set --api-url <url> --api-key <key>`);
   return { apiUrl: cred["api-url"], apiKey: cred["api-key"] };
 }
 

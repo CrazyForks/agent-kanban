@@ -14,8 +14,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // ── Mock createClient before importing the command ────────────────────────────
 
 const mockGetTask = vi.fn();
+const mockGetTaskRuntime = vi.fn();
 const mockListTasks = vi.fn();
-const mockClient = { getTask: mockGetTask, listTasks: mockListTasks };
+const mockClient = { getTask: mockGetTask, getTaskRuntime: mockGetTaskRuntime, listTasks: mockListTasks };
 const mockCreateClient = vi.fn(() => Promise.resolve(mockClient));
 
 vi.mock("../src/agent/leader.js", () => ({
@@ -29,6 +30,7 @@ vi.mock("../src/output.js", () => ({
   formatTask: vi.fn(),
   formatTaskList: vi.fn(),
   formatTaskListWide: vi.fn(),
+  formatTaskRuntime: vi.fn(),
   formatBoard: vi.fn(),
   formatBoardList: vi.fn(),
   formatAgent: vi.fn(),
@@ -58,6 +60,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockListTasks.mockResolvedValue([]);
   mockGetTask.mockResolvedValue({ id: "task-1", title: "Test task" });
+  mockGetTaskRuntime.mockResolvedValue({ task_id: "task-1", ama_session_id: "session-1", session: { status: "idle" }, events: [] });
 
   exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
     throw new Error("process.exit called");
@@ -141,5 +144,19 @@ describe("get task — single-task fetch by ID", () => {
     const program = makeProgram();
     await program.parseAsync(["get", "task", "task-42"], { from: "user" });
     expect(mockListTasks).not.toHaveBeenCalled();
+  });
+
+  it("calls client.getTaskRuntime instead of client.getTask when --session is provided", async () => {
+    const program = makeProgram();
+    await program.parseAsync(["get", "task", "task-42", "--session"], { from: "user" });
+    expect(mockGetTaskRuntime).toHaveBeenCalledWith("task-42");
+    expect(mockGetTask).not.toHaveBeenCalled();
+  });
+
+  it("requires a task id when --session is provided", async () => {
+    const program = makeProgram();
+    await expect(program.parseAsync(["get", "task", "--session"], { from: "user" })).rejects.toThrow("process.exit called");
+    expect(errorSpy).toHaveBeenCalledWith("Usage: ak get task <id> --session");
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });

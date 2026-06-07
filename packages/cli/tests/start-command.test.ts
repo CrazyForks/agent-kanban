@@ -1,27 +1,38 @@
 // @vitest-environment node
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const testSessionsDir = join(tmpdir(), `ak-start-command-test-${randomUUID()}`);
+const spawnMock = vi.fn(() => ({ pid: 12345, unref: vi.fn() }));
+const assertDaemonDependenciesMock = vi.fn();
+
+vi.mock("node:child_process", () => ({ spawn: spawnMock }));
+vi.mock("../src/daemon/preflight.js", () => ({ assertDaemonDependencies: assertDaemonDependenciesMock }));
+vi.mock("../src/providers/registry.js", () => ({ getAvailableProviders: () => [{ name: "codex" }] }));
 
 vi.mock("../src/paths.js", async () => {
   const actual = await vi.importActual<typeof import("../src/paths.js")>("../src/paths.js");
   return {
     ...actual,
+    CONFIG_DIR: testSessionsDir,
+    CONFIG_FILE: join(testSessionsDir, "config.json"),
     SESSIONS_DIR: testSessionsDir,
     LEGACY_SAVED_SESSIONS_FILE: join(testSessionsDir, "saved-sessions.json"),
     LEGACY_SESSION_PIDS_FILE: join(testSessionsDir, "session-pids.json"),
     PID_FILE: join(testSessionsDir, "daemon.pid"),
+    DAEMON_STATE_FILE: join(testSessionsDir, "daemon-state.json"),
+    LOGS_DIR: join(testSessionsDir, "logs"),
     STATE_DIR: testSessionsDir,
   };
 });
 
 const { writeSession, clearAllSessions } = await import("../src/session/store.js");
-const { confirmDaemonShutdown, listRunningTaskSessions } = await import("../src/commands/start.js");
+const { confirmDaemonShutdown, listRunningTaskSessions, registerRestartCommand, registerStartCommand } = await import("../src/commands/start.js");
 const stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
 
@@ -47,15 +58,166 @@ function setTTY(stdin: boolean, stdout: boolean): void {
 
 beforeEach(() => {
   mkdirSync(testSessionsDir, { recursive: true });
+  spawnMock.mockClear();
+  assertDaemonDependenciesMock.mockClear();
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   clearAllSessions();
+  rmSync(testSessionsDir, { recursive: true, force: true });
   if (stdinTTY) Object.defineProperty(process.stdin, "isTTY", stdinTTY);
   else delete (process.stdin as any).isTTY;
   if (stdoutTTY) Object.defineProperty(process.stdout, "isTTY", stdoutTTY);
   else delete (process.stdout as any).isTTY;
+});
+
+describe("start runtime command", () => {
+  it("starts the Machine runner through AK onboarding with the original credentials flow", async () => {
+    const program = new Command();
+    registerStartCommand(program);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          origin: "https://runner-control.test",
+          projectId: "project_1",
+          runnerId: "runner_from_token",
+          runnerName: "ak-runner",
+          environmentId: "env_1",
+          capabilities: ["sandbox.exec"],
+          accessToken: "runner-token",
+          tokenType: "Bearer",
+          expiresIn: 3600,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    await program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://ak.test/api/runtime/runners/onboarding",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ authorization: "Bearer ak_test_key" }),
+      }),
+    );
+    expect(spawnMock).toHaveBeenCalledWith(
+      "ama-runner",
+      [
+        "--origin",
+        "https://runner-control.test",
+        "--project-id",
+        "project_1",
+        "--runner-name",
+        "ak-runner",
+        "--environment-id",
+        "env_1",
+        "--capabilities",
+        "sandbox.exec",
+        "--max-concurrent",
+        "1",
+        "--allow-unsafe-process",
+      ],
+      expect.objectContaining({ detached: true, env: expect.objectContaining({ AMA_TOKEN: "runner-token" }) }),
+    );
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Machine runner started"));
+    const state = JSON.parse(readFileSync(join(testSessionsDir, "daemon-state.json"), "utf-8"));
+    expect(state).toMatchObject({ runtime: "ama-runner", apiUrl: "https://runner-control.test", providers: ["machine-runner"] });
+  });
+
+  it("does not pass onboarding runner id before AMA registration", async () => {
+    const program = new Command();
+    registerStartCommand(program);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          origin: "https://ama.test",
+          projectId: "project_1",
+          runnerId: "runner_from_token",
+          runnerName: "local-runner",
+          environmentId: "env_1",
+          capabilities: ["sandbox.exec"],
+          accessToken: "runner-token",
+          tokenType: "Bearer",
+          expiresIn: 3600,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    await program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      "ama-runner",
+      [
+        "--origin",
+        "https://ama.test",
+        "--project-id",
+        "project_1",
+        "--runner-name",
+        "local-runner",
+        "--environment-id",
+        "env_1",
+        "--capabilities",
+        "sandbox.exec",
+        "--max-concurrent",
+        "1",
+        "--allow-unsafe-process",
+      ],
+      expect.objectContaining({ detached: true, env: expect.objectContaining({ AMA_TOKEN: "runner-token" }) }),
+    );
+  });
+});
+
+describe("restart runtime command", () => {
+  it("restarts the Machine runner with the original AK credentials flow", async () => {
+    const program = new Command();
+    registerRestartCommand(program);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          origin: "https://runner-control.test",
+          projectId: "project_1",
+          runnerId: "runner_from_token",
+          runnerName: "ak-runner",
+          environmentId: "env_1",
+          capabilities: ["sandbox.exec"],
+          accessToken: "runner-token",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    await program.parseAsync(["restart", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      "ama-runner",
+      [
+        "--origin",
+        "https://runner-control.test",
+        "--project-id",
+        "project_1",
+        "--runner-name",
+        "ak-runner",
+        "--environment-id",
+        "env_1",
+        "--capabilities",
+        "sandbox.exec",
+        "--max-concurrent",
+        "1",
+        "--allow-unsafe-process",
+      ],
+      expect.objectContaining({ detached: true, env: expect.objectContaining({ AMA_TOKEN: "runner-token" }) }),
+    );
+    expect(logSpy).toHaveBeenCalledWith("○ Machine runner was not running");
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Machine runner started"));
+    const state = JSON.parse(readFileSync(join(testSessionsDir, "daemon-state.json"), "utf-8"));
+    expect(state).toMatchObject({ runtime: "ama-runner", apiUrl: "https://runner-control.test" });
+  });
 });
 
 describe("daemon shutdown confirmation", () => {

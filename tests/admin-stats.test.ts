@@ -34,7 +34,7 @@ describe("getSystemStats", () => {
     expect(stats).toHaveProperty("agents");
     expect(stats).toHaveProperty("tasks");
     expect(stats).toHaveProperty("boards");
-    expect(stats).toHaveProperty("machines");
+    expect(stats).toHaveProperty("runtime_sessions");
   });
 
   it("returns users.total as a number", async () => {
@@ -71,14 +71,14 @@ describe("getSystemStats", () => {
     expect(typeof stats.boards.total).toBe("number");
   });
 
-  it("returns machines.total as a number", async () => {
+  it("returns runtime_sessions.total as a number", async () => {
     const stats = await getSystemStats(env.DB);
-    expect(typeof stats.machines.total).toBe("number");
+    expect(typeof stats.runtime_sessions.total).toBe("number");
   });
 
-  it("returns machines.online as a number", async () => {
+  it("returns runtime_sessions.active as a number", async () => {
     const stats = await getSystemStats(env.DB);
-    expect(typeof stats.machines.online).toBe("number");
+    expect(typeof stats.runtime_sessions.active).toBe("number");
   });
 
   it("returns zero task counts on an empty database", async () => {
@@ -95,10 +95,10 @@ describe("getSystemStats", () => {
     expect(stats.boards.total).toBe(0);
   });
 
-  it("returns zero machine counts on an empty database", async () => {
+  it("returns zero runtime session counts on an empty database", async () => {
     const stats = await getSystemStats(env.DB);
-    expect(stats.machines.total).toBe(0);
-    expect(stats.machines.online).toBe(0);
+    expect(stats.runtime_sessions.total).toBe(0);
+    expect(stats.runtime_sessions.active).toBe(0);
   });
 
   it("returns zero agent counts on an empty database", async () => {
@@ -250,10 +250,10 @@ describe("GET /api/admin/stats", () => {
     expect(body).toHaveProperty("boards");
   });
 
-  it("returns machines field in stats for an admin user", async () => {
+  it("returns runtime_sessions field in stats for an admin user", async () => {
     const res = await apiRequest("GET", "/api/admin/stats", undefined, adminToken);
     const body = (await res.json()) as any;
-    expect(body).toHaveProperty("machines");
+    expect(body).toHaveProperty("runtime_sessions");
   });
 
   it("returns numeric users.total for an admin user", async () => {
@@ -292,15 +292,15 @@ describe("GET /api/admin/stats", () => {
     expect(typeof body.boards.total).toBe("number");
   });
 
-  it("returns numeric machines.total for an admin user", async () => {
+  it("returns numeric runtime_sessions.total for an admin user", async () => {
     const res = await apiRequest("GET", "/api/admin/stats", undefined, adminToken);
     const body = (await res.json()) as any;
-    expect(typeof body.machines.total).toBe("number");
+    expect(typeof body.runtime_sessions.total).toBe("number");
   });
 
-  it("returns numeric machines.online for an admin user", async () => {
+  it("returns numeric runtime_sessions.active for an admin user", async () => {
     const res = await apiRequest("GET", "/api/admin/stats", undefined, adminToken);
     const body = (await res.json()) as any;
-    expect(typeof body.machines.online).toBe("number");
+    expect(typeof body.runtime_sessions.active).toBe("number");
   });
 });

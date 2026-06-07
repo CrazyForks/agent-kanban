@@ -7,7 +7,7 @@ import { isRuntimeAvailable } from "./machineRepo";
 import { computeBlocked, detectCycle, getDependencies, setDependencies } from "./taskDeps";
 
 const parseTask = <T extends Task>(row: T & { result?: string | null }): T => {
-  const task = parseJsonFields(row, ["labels", "input"]) as T & { result?: string | null };
+  const task = parseJsonFields(row, ["labels", "input", "metadata"]) as T & { result?: string | null };
   delete task.result;
   return task;
 };
@@ -29,13 +29,20 @@ function enforceTransition(action: TaskActionType, currentStatus: TaskStatus, id
   }
 }
 
-async function assertAssignableWorkerAgent(db: D1, ownerId: string, agentId: string, missingStatus: 400 | 404): Promise<void> {
+async function assertAssignableWorkerAgent(
+  db: D1,
+  ownerId: string,
+  agentId: string,
+  missingStatus: 400 | 404,
+  skipRuntimeAvailability = false,
+): Promise<void> {
   const agent = await db
     .prepare("SELECT kind, runtime FROM agents WHERE id = ? AND owner_id = ?")
     .bind(agentId, ownerId)
     .first<{ kind: string; runtime: string }>();
   if (!agent) throw new HTTPException(missingStatus, { message: "Agent not found" });
   if (agent.kind !== "worker") throw new HTTPException(400, { message: "Tasks can only be assigned to worker agents" });
+  if (skipRuntimeAvailability) return;
   if (!(await isRuntimeAvailable(db, ownerId, agent.runtime))) {
     throw new HTTPException(409, {
       message: `Runtime "${agent.runtime}" is not available on any online machine. Choose or create a worker that uses an available runtime.`,
@@ -46,7 +53,7 @@ async function assertAssignableWorkerAgent(db: D1, ownerId: string, agentId: str
 export async function createTask(
   db: D1,
   ownerId: string,
-  input: CreateTaskInput & { actorType?: string; actorId?: string; assigned_to?: string },
+  input: CreateTaskInput & { actorType?: string; actorId?: string; assigned_to?: string; skipRuntimeAvailability?: boolean },
 ): Promise<Task> {
   const actorType = input.actorType ?? "machine";
   const actorId = input.actorId ?? "system";
@@ -73,6 +80,7 @@ export async function createTask(
   const now = new Date().toISOString();
   const labelsJson = input.labels ? JSON.stringify(input.labels) : null;
   const inputJson = input.input ? JSON.stringify(input.input) : null;
+  const metadataJson = input.metadata ? JSON.stringify(input.metadata) : "{}";
   const position = (maxPos?.max_pos ?? -1) + 1;
 
   if (input.depends_on?.length) {
@@ -86,7 +94,7 @@ export async function createTask(
   }
 
   if (input.assigned_to) {
-    await assertAssignableWorkerAgent(db, ownerId, input.assigned_to, 400);
+    await assertAssignableWorkerAgent(db, ownerId, input.assigned_to, 400, input.skipRuntimeAvailability);
   }
   await assertKnownLabels(db, board.id, input.labels);
 
@@ -100,8 +108,8 @@ export async function createTask(
   const stmts = [
     db
       .prepare(`
-      INSERT INTO tasks (id, board_id, seq, status, title, description, repository_id, labels, created_by, assigned_to, result, pr_url, input, created_from, scheduled_at, position, created_at, updated_at)
-      VALUES (?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tasks (id, board_id, seq, status, title, description, repository_id, labels, created_by, assigned_to, result, pr_url, input, metadata, created_from, scheduled_at, position, created_at, updated_at)
+      VALUES (?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)
     `)
       .bind(
         taskId,
@@ -114,6 +122,7 @@ export async function createTask(
         actorId,
         input.assigned_to || null,
         inputJson,
+        metadataJson,
         input.created_from || null,
         input.scheduled_at || null,
         position,
@@ -152,6 +161,7 @@ export async function createTask(
     assigned_to: input.assigned_to || null,
     pr_url: null,
     input: input.input || null,
+    metadata: input.metadata || {},
     created_from: input.created_from || null,
     scheduled_at: input.scheduled_at || null,
     position,
@@ -268,6 +278,7 @@ export async function updateTask(
   db: D1,
   taskId: string,
   updates: Partial<Pick<Task, "title" | "description" | "repository_id" | "labels" | "pr_url" | "input" | "position" | "scheduled_at">> & {
+    metadata?: Record<string, unknown>;
     depends_on?: string[];
   },
 ): Promise<Task | null> {
@@ -289,8 +300,8 @@ export async function updateTask(
   const sets: string[] = ["updated_at = ?"];
   const binds: unknown[] = [now];
 
-  const jsonFields = new Set(["labels", "input"]);
-  const allowedFields = ["title", "description", "repository_id", "labels", "pr_url", "input", "position", "scheduled_at"] as const;
+  const jsonFields = new Set(["labels", "input", "metadata"]);
+  const allowedFields = ["title", "description", "repository_id", "labels", "pr_url", "input", "metadata", "position", "scheduled_at"] as const;
   for (const field of allowedFields) {
     if (field in updates && (updates as any)[field] !== undefined) {
       sets.push(`${field} = ?`);
@@ -322,6 +333,28 @@ export async function deleteTask(db: D1, taskId: string): Promise<boolean> {
 
   const result = await db.prepare("DELETE FROM tasks WHERE id = ?").bind(taskId).run();
   return result.meta.changes > 0;
+}
+
+export async function deleteTaskAfterFailedDispatch(db: D1, taskId: string): Promise<void> {
+  await db.prepare("DELETE FROM tasks WHERE id = ?").bind(taskId).run();
+}
+
+export async function clearTaskAssignmentAfterFailedDispatch(
+  db: D1,
+  taskId: string,
+  actorType: string,
+  actorId: string,
+  sessionId: string | null = null,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await db.batch([
+    db.prepare("UPDATE tasks SET assigned_to = NULL, updated_at = ? WHERE id = ?").bind(now, taskId),
+    db
+      .prepare(
+        "INSERT INTO task_actions (id, task_id, actor_type, actor_id, action, detail, session_id, created_at) VALUES (?, ?, ?, ?, 'released', ?, ?, ?)",
+      )
+      .bind(newLongId(), taskId, actorType, actorId, "Runtime dispatch failed; assignment was cleared.", sessionId, now),
+  ]);
 }
 
 export async function claimTask(
@@ -358,6 +391,7 @@ export async function assignTask(
   actorType: string,
   actorId: string,
   sessionId: string | null = null,
+  options: { skipRuntimeAvailability?: boolean } = {},
 ): Promise<Task | null> {
   const task = await db
     .prepare("SELECT t.*, b.owner_id as board_owner_id FROM tasks t JOIN boards b ON t.board_id = b.id WHERE t.id = ?")
@@ -368,7 +402,7 @@ export async function assignTask(
   if (task.assigned_to) throw new HTTPException(409, { message: "Task is already assigned" });
 
   const { board_owner_id: ownerId, ...taskRow } = task;
-  await assertAssignableWorkerAgent(db, ownerId, targetAgentId, 404);
+  await assertAssignableWorkerAgent(db, ownerId, targetAgentId, 404, options.skipRuntimeAvailability);
 
   const now = new Date().toISOString();
   const logId = newLongId();
@@ -521,6 +555,18 @@ export async function rejectTask(
   ]);
 
   return parseTask({ ...task, status: "in_progress" as const, updated_at: now });
+}
+
+export async function rollbackRejectedTask(db: D1, taskId: string): Promise<void> {
+  const now = new Date().toISOString();
+  await db.batch([
+    db.prepare("UPDATE tasks SET status = 'in_review', updated_at = ? WHERE id = ? AND status = 'in_progress'").bind(now, taskId),
+    db
+      .prepare(
+        "DELETE FROM task_actions WHERE id = (SELECT id FROM task_actions WHERE task_id = ? AND action = 'rejected' ORDER BY created_at DESC LIMIT 1)",
+      )
+      .bind(taskId),
+  ]);
 }
 
 export async function addTaskAction(

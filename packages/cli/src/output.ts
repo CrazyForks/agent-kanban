@@ -151,6 +151,40 @@ export function formatLabelList(labels: any[]): string {
     .join("\n");
 }
 
+export function formatMaintainer(maintainer: any): string {
+  const lines: string[] = [];
+  lines.push(`${maintainer.name}`);
+  lines.push(`  ID:           ${maintainer.id}`);
+  lines.push(`  Board:        ${maintainer.board_id}`);
+  lines.push(`  Agent:        ${maintainer.ak_agent_id ?? "unbound"}`);
+  lines.push(`  Status:       ${maintainer.status}`);
+  lines.push(`  Interval:     ${maintainer.interval_seconds}s`);
+  if (maintainer.last_run_at) lines.push(`  Last run:     ${maintainer.last_run_at}`);
+  if (maintainer.last_ama_session_id) lines.push(`  Last session: ${maintainer.last_ama_session_id}`);
+  return lines.join("\n");
+}
+
+export function formatMaintainerList(maintainers: any[]): string {
+  if (maintainers.length === 0) return "No maintainers found.";
+  return maintainers
+    .map((maintainer) => {
+      const lastRun = maintainer.last_run_at ? ` last=${maintainer.last_run_at}` : "";
+      return `  ${maintainer.id}  [${maintainer.status}] ${maintainer.name}  agent=${maintainer.ak_agent_id ?? "unbound"} interval=${maintainer.interval_seconds}s${lastRun}`;
+    })
+    .join("\n");
+}
+
+export function formatMaintainerRuns(runs: any[]): string {
+  if (runs.length === 0) return "No maintainer runs found.";
+  return runs
+    .map((run) => {
+      const session = run.ama_session_id ? ` session=${run.ama_session_id}` : "";
+      const error = run.error_message ? ` error=${run.error_message}` : "";
+      return `  ${run.ama_schedule_run_id}  [${run.status}] scheduled=${run.scheduled_for}${session}${error}`;
+    })
+    .join("\n");
+}
+
 export function formatRepository(repo: any): string {
   const lines: string[] = [];
   lines.push(`${repo.name}`);
@@ -182,6 +216,33 @@ export function formatTask(task: any): string {
   if (task.pr_url) lines.push(`  PR:          ${task.pr_url}`);
   if (task.description) lines.push(`\n  ${task.description}`);
   if (task.input) lines.push(`\n  Input: ${JSON.stringify(task.input)}`);
+  return lines.join("\n");
+}
+
+export function formatTaskRuntime(runtime: any): string {
+  const session = runtime.session ?? {};
+  const events = Array.isArray(runtime.events) ? runtime.events : [];
+  const lines: string[] = [];
+  lines.push(`Task runtime`);
+  lines.push(`  Task:        ${runtime.task_id}`);
+  lines.push(`  Session:     ${runtime.ama_session_id ?? runtime.taskSessionId}`);
+  lines.push(`  Status:      ${session.status ?? "unknown"}${session.statusReason ? ` (${session.statusReason})` : ""}`);
+  if (session.runtimeEndpointPath) lines.push(`  Endpoint:    ${session.runtimeEndpointPath}`);
+  if (session.startedAt) lines.push(`  Started:     ${session.startedAt}`);
+  if (session.stoppedAt) lines.push(`  Stopped:     ${session.stoppedAt}`);
+  if (events.length === 0) {
+    lines.push(`  Events:      none`);
+    return lines.join("\n");
+  }
+  lines.push(`  Events:`);
+  for (const event of events.slice(-10)) {
+    const sequence = event.sequence != null ? `#${event.sequence}`.padEnd(6) : "".padEnd(6);
+    const type = String(event.type ?? "event").padEnd(18);
+    const role = event.role ? ` ${event.role}` : "";
+    lines.push(`    ${sequence}${type}${role}`);
+  }
+  const hasMore = runtime.pagination?.hasMore ? " (more available)" : "";
+  lines.push(`  Event count: ${events.length}${hasMore}`);
   return lines.join("\n");
 }
 

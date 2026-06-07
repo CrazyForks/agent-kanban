@@ -17,14 +17,11 @@ import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import type { Command } from "commander";
 import { getCredentials, saveCredentials, setCurrent } from "../config.js";
-import { assertDaemonDependencies } from "../daemon/preflight.js";
 import { DAEMON_STATE_FILE, LOGS_DIR, PID_FILE, SESSIONS_DIR, STATE_DIR } from "../paths.js";
-import { getAvailableProviders } from "../providers/registry.js";
 import { listSessions } from "../session/store.js";
 import { getVersion } from "../version.js";
 
 const MAX_LOG_ARCHIVES = 5;
-
 interface DaemonState {
   providers: string[];
   maxConcurrent: number;
@@ -32,6 +29,17 @@ interface DaemonState {
   taskTimeout: number;
   apiUrl: string;
   startedAt: string;
+  runtime?: "legacy-daemon" | "ama-runner";
+}
+
+interface AmaRunnerOnboardingResponse {
+  origin: string;
+  projectId: string;
+  runnerId: string;
+  runnerName: string;
+  environmentId: string;
+  capabilities: string[];
+  accessToken: string;
 }
 
 function rotateLogs(): void {
@@ -134,13 +142,147 @@ function maskApiUrl(url: string): string {
   }
 }
 
+function amaRunnerArgs(opts: Record<string, unknown>): string[] {
+  const args: string[] = [];
+  const add = (flag: string, value: unknown) => {
+    if (typeof value === "string" && value.length > 0) args.push(flag, value);
+  };
+  add("--origin", opts.amaOrigin);
+  add("--project-id", opts.amaProjectId);
+  add("--runner-id", opts.amaRunnerId);
+  add("--runner-name", opts.amaRunnerName);
+  add("--environment-id", opts.amaEnvironmentId);
+  add("--capabilities", opts.amaCapabilities);
+  add("--workdir", opts.amaWorkdir);
+  add("--max-concurrent", opts.maxConcurrent);
+  if (opts.amaAllowUnsafeProcess !== false) args.push("--allow-unsafe-process");
+  return args;
+}
+
+function amaRunnerOrigin(opts: Record<string, unknown>) {
+  return (typeof opts.amaOrigin === "string" && opts.amaOrigin) || "machine-runner";
+}
+
+async function waitForSpawn(child: ReturnType<typeof spawn>, runnerBin: string): Promise<number> {
+  return await new Promise((resolve, reject) => {
+    if (typeof child.once !== "function") {
+      if (typeof child.pid === "number") resolve(child.pid);
+      else reject(new Error(`Machine runner did not report a process id: ${runnerBin}`));
+      return;
+    }
+    let settled = false;
+    child.once("spawn", () => {
+      settled = true;
+      if (typeof child.pid === "number") {
+        resolve(child.pid);
+        return;
+      }
+      reject(new Error(`Machine runner did not report a process id: ${runnerBin}`));
+    });
+    child.once("error", (error: NodeJS.ErrnoException) => {
+      if (settled) return;
+      settled = true;
+      if (error.code === "ENOENT") {
+        reject(new Error(`Machine runner executable not found: ${runnerBin}`));
+        return;
+      }
+      reject(error);
+    });
+  });
+}
+
+async function startAmaRunner(opts: Record<string, unknown>) {
+  const existingPid = readDaemonPid();
+  if (existingPid) {
+    console.error(`Runtime already running (PID ${existingPid}). Stop it first or remove ${PID_FILE}`);
+    process.exit(1);
+  }
+  if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
+  rotateLogs();
+
+  const logFile = join(LOGS_DIR, "daemon.log");
+  const logFd = openSync(logFile, "a");
+  const runnerBin = (typeof opts.amaRunnerBin === "string" && opts.amaRunnerBin) || "ama-runner";
+  await applyAmaRunnerOnboarding(opts);
+  const args = amaRunnerArgs(opts);
+  const env = {
+    ...process.env,
+    ...(typeof opts.amaToken === "string" && opts.amaToken.length > 0 ? { AMA_TOKEN: opts.amaToken } : {}),
+  };
+  const child = spawn(runnerBin, args, { detached: true, stdio: ["ignore", logFd, logFd], env });
+  let pid: number;
+  try {
+    pid = await waitForSpawn(child, runnerBin);
+  } catch (error) {
+    closeSync(logFd);
+    throw error;
+  }
+  mkdirSync(STATE_DIR, { recursive: true });
+  writeFileSync(PID_FILE, String(pid));
+  const state: DaemonState = {
+    providers: ["machine-runner"],
+    maxConcurrent: parseInt(String(opts.maxConcurrent ?? "1"), 10),
+    pollInterval: 0,
+    taskTimeout: 0,
+    apiUrl: amaRunnerOrigin(opts),
+    startedAt: new Date().toISOString(),
+    runtime: "ama-runner",
+  };
+  writeFileSync(DAEMON_STATE_FILE, JSON.stringify(state, null, 2));
+  child.unref();
+  console.log(`● Machine runner started (PID ${pid}, v${getVersion()})`);
+  console.log(`  API:         ${maskApiUrl((typeof opts.apiUrl === "string" && opts.apiUrl) || state.apiUrl)}`);
+  console.log(`  Concurrency: ${state.maxConcurrent}`);
+  console.log(`  Logs:        ${logFile}`);
+}
+
+async function applyAmaRunnerOnboarding(opts: Record<string, unknown>) {
+  let creds: { apiUrl: string; apiKey: string };
+  if (typeof opts.apiUrl === "string" && typeof opts.apiKey === "string") {
+    creds = { apiUrl: opts.apiUrl, apiKey: opts.apiKey };
+  } else if (typeof opts.apiUrl === "string") {
+    try {
+      creds = getCredentials(new URL(opts.apiUrl).host);
+    } catch {
+      return;
+    }
+  } else {
+    try {
+      creds = getCredentials();
+    } catch {
+      return;
+    }
+  }
+
+  const response = await fetch(`${creds.apiUrl.replace(/\/$/, "")}/api/runtime/runners/onboarding`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${creds.apiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      runnerName: opts.runnerName,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Machine runner onboarding failed with HTTP ${response.status}: ${await response.text()}`);
+  }
+  const onboarding = (await response.json()) as AmaRunnerOnboardingResponse;
+  opts.amaOrigin = onboarding.origin;
+  opts.amaToken = onboarding.accessToken;
+  opts.amaProjectId = onboarding.projectId;
+  opts.amaRunnerName = onboarding.runnerName;
+  opts.amaEnvironmentId = onboarding.environmentId;
+  opts.amaCapabilities = onboarding.capabilities.join(",");
+}
+
 export function registerStartCommand(program: Command) {
   program
     .command("start")
-    .description("Start the Machine daemon — auto-claim and execute tasks")
+    .description("Start the Machine runner")
     .option("--api-url <url>", "API server URL")
-    .option("--api-key <key>", "Machine API key")
-    .option("--max-concurrent <n>", "Max concurrent agents", "3")
+    .option("--api-key <key>", "AK API key")
+    .option("--max-concurrent <n>", "Max concurrent agents", "1")
     .option("--poll-interval <ms>", "Poll interval in ms", "10000")
     .option("--task-timeout <ms>", "Task timeout in ms (0 to disable)", "7200000")
     .action(async (opts) => {
@@ -164,90 +306,27 @@ export function registerStartCommand(program: Command) {
         console.error("API URL and key required. Pass --api-url and --api-key.");
         process.exit(1);
       }
-      const apiUrl = creds.apiUrl;
-
-      // Check if already running — PID file check (must precede filesystem mutations)
-      const existingPid = readDaemonPid();
-      if (existingPid) {
-        console.error(`Daemon already running (PID ${existingPid}). Stop it first or remove ${PID_FILE}`);
-        process.exit(1);
-      }
-
-      assertDaemonDependencies();
 
       // Clear session cache if API URL changed. Sessions are backend-specific
       // and must not survive environment switches. Identities are now scoped
       // by api-url + machine + runtime, so they remain valid side by side.
       const prevState = readDaemonState();
-      if (prevState && prevState.apiUrl !== apiUrl) {
+      if (prevState && prevState.apiUrl !== creds.apiUrl) {
         rmSync(SESSIONS_DIR, { recursive: true, force: true });
       }
-      if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
-
-      // Rotate logs
-      rotateLogs();
-
-      // Open daemon.log for child stdout/stderr
-      const logFile = join(LOGS_DIR, "daemon.log");
-      const logFd = openSync(logFile, "a");
-
-      // Detect available providers
-      const available = getAvailableProviders();
-
-      // Spawn daemon as detached child
-      const child = spawn(
-        process.execPath,
-        [
-          process.argv[1],
-          "__daemon",
-          "--max-concurrent",
-          String(opts.maxConcurrent),
-          "--poll-interval",
-          String(opts.pollInterval),
-          "--task-timeout",
-          String(opts.taskTimeout),
-        ],
-        { detached: true, stdio: ["ignore", logFd, logFd] },
-      );
-
-      // Write child PID and daemon state
-      mkdirSync(STATE_DIR, { recursive: true });
-      writeFileSync(PID_FILE, String(child.pid));
-
-      const state: DaemonState = {
-        providers: available.map((p) => p.name),
-        maxConcurrent: parseInt(String(opts.maxConcurrent), 10),
-        pollInterval: parseInt(String(opts.pollInterval), 10),
-        taskTimeout: parseInt(String(opts.taskTimeout), 10),
-        apiUrl,
-        startedAt: new Date().toISOString(),
-      };
-      writeFileSync(DAEMON_STATE_FILE, JSON.stringify(state, null, 2));
-
-      child.unref();
-
-      const timeoutLabel = state.taskTimeout === 0 ? "none" : `${state.taskTimeout / 1000}s`;
-      const providersLabel = formatProviders(state.providers);
-      console.log(`● Daemon started (PID ${child.pid}, v${getVersion()})`);
-      console.log(`  Providers:   ${providersLabel}`);
-      console.log(`  Concurrency: ${state.maxConcurrent}`);
-      console.log(`  Poll:        ${state.pollInterval / 1000}s`);
-      console.log(`  Timeout:     ${timeoutLabel}`);
-      console.log(`  API:         ${maskApiUrl(state.apiUrl)}`);
-      console.log(`  Logs:        ak logs -f`);
-      process.exit(0);
+      await startAmaRunner({ ...opts, apiUrl: creds.apiUrl, apiKey: creds.apiKey });
     });
 }
 
 export function registerStopCommand(program: Command) {
   program
     .command("stop")
-    .description("Stop the Machine daemon")
+    .description("Stop the Machine runner")
     .option("-y, --yes", "Confirm stopping active tasks without prompting")
     .action(async (opts) => {
       const pid = readDaemonPid();
       if (!pid) {
-        console.log("○ Daemon is not running");
+        console.log("○ Machine runner is not running");
         return;
       }
 
@@ -284,9 +363,9 @@ export function registerStopCommand(program: Command) {
 
       if (alive) {
         process.kill(pid, "SIGKILL");
-        console.log(`● Daemon force-killed (PID ${pid}, SIGTERM timed out)`);
+        console.log(`● Machine runner force-killed (PID ${pid}, SIGTERM timed out)`);
       } else {
-        console.log(`● Daemon stopped (PID ${pid})`);
+        console.log(`● Machine runner stopped (PID ${pid})`);
       }
       if (uptimeStr) console.log(`  Uptime: ${uptimeStr}`);
     });
@@ -295,11 +374,11 @@ export function registerStopCommand(program: Command) {
 export function registerStatusCommand(program: Command) {
   program
     .command("status")
-    .description("Show Machine daemon status")
+    .description("Show Machine runner status")
     .action(() => {
       const pid = readDaemonPid();
       if (!pid) {
-        console.log("○ Daemon is not running");
+        console.log("○ Machine runner is not running");
         return;
       }
 
@@ -318,7 +397,7 @@ export function registerStatusCommand(program: Command) {
 
       const sessions = countActiveSessions();
 
-      console.log(`● Daemon running (PID ${pid}, v${getVersion()})`);
+      console.log(`● Machine runner running (PID ${pid}, v${getVersion()})`);
       if (uptimeStr) console.log(`  Uptime:      ${uptimeStr}`);
       if (state) {
         const providersLabel = formatProviders(state.providers ?? []);
@@ -326,24 +405,24 @@ export function registerStatusCommand(program: Command) {
         console.log(`  Concurrency: ${state.maxConcurrent}`);
         console.log(`  API:         ${maskApiUrl(state.apiUrl)}`);
       }
-      console.log(`  Sessions:    ${sessions} active`);
+      if (state?.runtime !== "ama-runner") console.log(`  Sessions:    ${sessions} active`);
     });
 }
 
 export function registerRestartCommand(program: Command) {
   program
     .command("restart")
-    .description("Restart the Machine daemon (stop + start with saved or new options)")
+    .description("Restart the Machine runner")
     .option("--api-url <url>", "API server URL")
-    .option("--api-key <key>", "Machine API key")
+    .option("--api-key <key>", "AK API key")
     .option("--max-concurrent <n>", "Max concurrent agents")
     .option("--poll-interval <ms>", "Poll interval in ms")
     .option("--task-timeout <ms>", "Task timeout in ms (0 to disable)")
     .option("-y, --yes", "Confirm stopping active tasks without prompting")
     .action(async (opts) => {
-      assertDaemonDependencies();
+      const prevState = readDaemonState();
 
-      // Stop existing daemon if running
+      // Stop existing runtime if running
       const pid = readDaemonPid();
       if (pid) {
         await confirmDaemonShutdown("restart", Boolean(opts.yes));
@@ -370,16 +449,13 @@ export function registerRestartCommand(program: Command) {
 
         if (alive) {
           process.kill(pid, "SIGKILL");
-          console.log(`● Daemon force-killed (PID ${pid})`);
+          console.log(`● Machine runner force-killed (PID ${pid})`);
         } else {
-          console.log(`● Daemon stopped (PID ${pid})`);
+          console.log(`● Machine runner stopped (PID ${pid})`);
         }
       } else {
-        console.log("○ Daemon was not running");
+        console.log("○ Machine runner was not running");
       }
-
-      // Resolve credentials — opts override saved state override config
-      const prevState = readDaemonState();
 
       if (opts.apiUrl && opts.apiKey) {
         saveCredentials(opts.apiUrl, opts.apiKey);
@@ -399,66 +475,17 @@ export function registerRestartCommand(program: Command) {
         console.error("API URL and key required. Pass --api-url and --api-key, or run `ak start` first.");
         process.exit(1);
       }
-      const apiUrl = creds.apiUrl;
 
       // Clear session cache if API URL changed
-      if (prevState && prevState.apiUrl !== apiUrl) {
+      if (prevState && prevState.apiUrl !== creds.apiUrl) {
         rmSync(SESSIONS_DIR, { recursive: true, force: true });
       }
-      if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
-
-      // Resolve options: CLI opts → saved state → defaults
-      const maxConcurrent = opts.maxConcurrent ?? String(prevState?.maxConcurrent ?? 3);
-      const pollInterval = opts.pollInterval ?? String(prevState?.pollInterval ?? 10000);
-      const taskTimeout = opts.taskTimeout ?? String(prevState?.taskTimeout ?? 7200000);
-
-      rotateLogs();
-
-      const logFile = join(LOGS_DIR, "daemon.log");
-      const logFd = openSync(logFile, "a");
-
-      const available = getAvailableProviders();
-
-      const child = spawn(
-        process.execPath,
-        [
-          process.argv[1],
-          "__daemon",
-          "--max-concurrent",
-          String(maxConcurrent),
-          "--poll-interval",
-          String(pollInterval),
-          "--task-timeout",
-          String(taskTimeout),
-        ],
-        { detached: true, stdio: ["ignore", logFd, logFd] },
-      );
-
-      mkdirSync(STATE_DIR, { recursive: true });
-      writeFileSync(PID_FILE, String(child.pid));
-
-      const state: DaemonState = {
-        providers: available.map((p) => p.name),
-        maxConcurrent: parseInt(String(maxConcurrent), 10),
-        pollInterval: parseInt(String(pollInterval), 10),
-        taskTimeout: parseInt(String(taskTimeout), 10),
-        apiUrl,
-        startedAt: new Date().toISOString(),
-      };
-      writeFileSync(DAEMON_STATE_FILE, JSON.stringify(state, null, 2));
-
-      child.unref();
-
-      const timeoutLabel = state.taskTimeout === 0 ? "none" : `${state.taskTimeout / 1000}s`;
-      const providersLabel = formatProviders(state.providers);
-      console.log(`● Daemon started (PID ${child.pid}, v${getVersion()})`);
-      console.log(`  Providers:   ${providersLabel}`);
-      console.log(`  Concurrency: ${state.maxConcurrent}`);
-      console.log(`  Poll:        ${state.pollInterval / 1000}s`);
-      console.log(`  Timeout:     ${timeoutLabel}`);
-      console.log(`  API:         ${maskApiUrl(state.apiUrl)}`);
-      console.log(`  Logs:        ak logs -f`);
-      process.exit(0);
+      await startAmaRunner({
+        ...opts,
+        apiUrl: creds.apiUrl,
+        apiKey: creds.apiKey,
+        maxConcurrent: opts.maxConcurrent ?? String(prevState?.maxConcurrent ?? 1),
+      });
     });
 }
 
@@ -517,7 +544,7 @@ function followLogFile(logFile: string): void {
 export function registerLogsCommand(program: Command) {
   program
     .command("logs")
-    .description("Show Machine daemon logs")
+    .description("Show local runtime logs")
     .option("--lines <n>", "Number of lines to show", "50")
     .option("-f, --follow", "Stream new log lines as they appear")
     .action((opts) => {

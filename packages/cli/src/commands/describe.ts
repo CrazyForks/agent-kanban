@@ -51,7 +51,7 @@ function formatDescribeTask(task: any, notes: any[], messages: any[]): string {
   return lines.join("\n");
 }
 
-function formatDescribeAgent(agent: any, sessions: any[]): string {
+function formatDescribeAgent(agent: any): string {
   const lines: string[] = [];
 
   lines.push(`${pad("Name")} ${agent.name}`);
@@ -69,12 +69,15 @@ function formatDescribeAgent(agent: any, sessions: any[]): string {
   if (agent.task_count != null) lines.push(`${pad("Task count")} ${agent.task_count}`);
   if (agent.last_active_at) lines.push(`${pad("Last active")} ${agent.last_active_at}`);
 
-  if (sessions.length > 0) {
+  const logs = Array.isArray(agent.logs) ? agent.logs : [];
+  if (logs.length > 0) {
     lines.push("");
-    lines.push("Sessions:");
-    for (const s of sessions) {
-      const status = s.closed_at ? "closed" : "open";
-      lines.push(`  ${s.id}  [${status}]  started: ${s.started_at}`);
+    lines.push("Activity:");
+    for (const log of logs.slice(0, 10)) {
+      const time = log.created_at ?? "";
+      const action = log.action ?? "activity";
+      const detail = log.detail ? `  ${log.detail}` : "";
+      lines.push(`  ${time}  ${action}${detail}`);
     }
   }
 
@@ -157,15 +160,14 @@ export function registerDescribeCommand(program: Command) {
 
   describeCmd
     .command("agent <id>")
-    .description("Show full detail for an agent: sessions, task history")
+    .description("Show full detail for an agent")
     .option("--version <version>", "Agent version when <id> is a username")
     .option("-o, --output <format>", "Output format (json, yaml, text)")
     .action(async (id: string, opts) => {
       const client = await createClient();
       const fmt = getOutputFormat(opts.output);
       const agent = await resolveAgent(client, id, opts.version);
-      const sessions = await client.listSessions(agent.id);
-      output({ agent, sessions }, fmt, () => formatDescribeAgent(agent, sessions), { kind: "agent" });
+      output(agent, fmt, () => formatDescribeAgent(agent), { kind: "agent" });
     });
 
   describeCmd

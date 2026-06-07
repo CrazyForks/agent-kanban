@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { SignJWT } from "jose";
 import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTestAgent } from "./helpers/db";
@@ -45,6 +46,9 @@ async function applyMigrations(db: D1Database) {
     "0018_agent_subagents.sql",
     "0019_agent_versions.sql",
     "0021_subagents.sql",
+    "0022_task_metadata.sql",
+    "0023_board_maintainers.sql",
+    "0024_runtime_agent_sessions.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
@@ -57,12 +61,11 @@ async function applyMigrations(db: D1Database) {
   }
 }
 
-async function seedUser(db: D1Database): Promise<string> {
-  const userId = "test-user-cli-jwt";
+async function seedUser(db: D1Database, userId = "test-user-cli-jwt"): Promise<string> {
   const now = new Date().toISOString();
   await db
     .prepare("INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES (?, ?, ?, 1, ?, ?)")
-    .bind(userId, "CLI JWT Test", "cli-jwt@example.com", now, now)
+    .bind(userId, "CLI JWT Test", `${userId}@example.com`, now, now)
     .run();
   return userId;
 }
@@ -255,5 +258,50 @@ describe("CLI ApiClient agent JWT passthrough", () => {
   it("machine API key is correctly rejected for claim (agent-only endpoint)", async () => {
     const res = await honoRequest("POST", `/api/tasks/${taskId}/claim`, { agent_id: agentId }, apiKey);
     expect(res.status).toBe(403);
+  });
+
+  it("rejects an otherwise valid JWT for a closed runtime agent session", async () => {
+    const runtimeUserId = await seedUser(testEnv.DB, `runtime-closed-${randomUUID()}`);
+    const runtimeAgent = await createTestAgent(testEnv.DB, runtimeUserId, {
+      name: "Closed Runtime Agent",
+      username: `closed-runtime-${randomUUID().slice(0, 8)}`,
+      runtime: "claude",
+    });
+    const runtimeSessionId = randomUUID();
+    const runtimeKeypair = (await crypto.subtle.generateKey({ name: "Ed25519" } as any, true, ["sign", "verify"])) as CryptoKeyPair;
+    const runtimePubJwk = await crypto.subtle.exportKey("jwk", runtimeKeypair.publicKey);
+    const { createRuntimeAgentSession, closeSession } = await import("../apps/web/server/agentSessionRepo");
+    await createRuntimeAgentSession(testEnv.DB, testEnv, {
+      ownerId: runtimeUserId,
+      agentId: runtimeAgent.id,
+      sessionId: runtimeSessionId,
+      sessionPublicKey: runtimePubJwk.x!,
+      runtimeSource: "ama",
+      runtimeSessionId: "ama-session-closed",
+    });
+
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { assignTask, createTask } = await import("../apps/web/server/taskRepo");
+    const board = await createBoard(testEnv.DB, runtimeUserId, `closed-runtime-board-${randomUUID().slice(0, 8)}`, "ops");
+    const task = await createTask(testEnv.DB, runtimeUserId, { title: "Closed runtime JWT task", board_id: board.id });
+    await assignTask(testEnv.DB, task.id, runtimeAgent.id, "machine", "system", null, { skipRuntimeAvailability: true });
+    await closeSession(testEnv.DB, runtimeSessionId);
+
+    const jwt = await new SignJWT({ sub: runtimeSessionId, aid: runtimeAgent.id, jti: randomUUID(), aud: BETTER_AUTH_URL })
+      .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
+      .setIssuedAt()
+      .setExpirationTime("60s")
+      .sign(runtimeKeypair.privateKey);
+
+    const res = await honoRequest("POST", `/api/tasks/${task.id}/claim`, { agent_id: runtimeAgent.id }, jwt);
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({
+      error: { code: "FORBIDDEN", message: "Agent session is not registered" },
+    });
+
+    const runtimeSession = await testEnv.DB.prepare("SELECT status FROM runtime_agent_sessions WHERE id = ?").bind(runtimeSessionId).first<any>();
+    expect(runtimeSession?.status).toBe("closed");
+    const legacySession = await testEnv.DB.prepare("SELECT id FROM agent_sessions WHERE id = ?").bind(runtimeSessionId).first<any>();
+    expect(legacySession).toBeNull();
   });
 });

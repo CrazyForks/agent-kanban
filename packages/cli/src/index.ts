@@ -12,7 +12,7 @@ import { registerLogsCommand, registerRestartCommand, registerStartCommand, regi
 import { registerUpdateCommand } from "./commands/update.js";
 import { registerUpgradeCommand } from "./commands/upgrade.js";
 import { registerWaitCommand } from "./commands/wait.js";
-import { getCredentials, readConfig, saveCredentials } from "./config.js";
+import { getCredentials, readConfig, saveCredentials, setCurrent } from "./config.js";
 import { getOutputFormat, output } from "./output.js";
 import { checkForUpdate, isNpx, isWorkerAgent } from "./updateCheck.js";
 import { getVersion } from "./version.js";
@@ -31,6 +31,9 @@ const helpSections: [string, [string, string][]][] = [
       ["delete <resource> <id>", "Delete a resource"],
       ["describe <resource> <id>", "Show detailed resource info"],
       ["apply -f <file>", "Apply a YAML/JSON resource spec"],
+      ["create maintainer", "Create an AI board maintainer"],
+      ["get maintainer --board <id>", "List board maintainers"],
+      ["get task <id> --session", "Show task session state and events"],
     ],
   ],
   [
@@ -74,7 +77,7 @@ configCmd
   .command("set")
   .description("Save credentials: ak config set --api-url <url> --api-key <key>")
   .requiredOption("--api-url <url>", "API server URL")
-  .requiredOption("--api-key <key>", "Machine API key")
+  .requiredOption("--api-key <key>", "AK API key")
   .action((opts) => {
     saveCredentials(opts.apiUrl, opts.apiKey);
     const host = new URL(opts.apiUrl).host;
@@ -89,6 +92,21 @@ configCmd
       const { apiUrl, apiKey } = getCredentials();
       console.log(`api-url: ${apiUrl}`);
       console.log(`api-key: ${apiKey.slice(0, 8)}...`);
+    } catch (e: any) {
+      console.error(e.message);
+      process.exit(1);
+    }
+  });
+
+configCmd
+  .command("use")
+  .description("Switch to saved credentials for an API URL")
+  .requiredOption("--api-url <url>", "API server URL")
+  .action((opts) => {
+    try {
+      setCurrent(opts.apiUrl);
+      const host = new URL(opts.apiUrl).host;
+      console.log(`Switched to ${host}`);
     } catch (e: any) {
       console.error(e.message);
       process.exit(1);

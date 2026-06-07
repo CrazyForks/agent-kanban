@@ -17,7 +17,12 @@ const mockGetAgent = vi.fn();
 const mockListAgents = vi.fn();
 const mockGetSubagent = vi.fn();
 const mockListSubagents = vi.fn();
-const mockClient = { getAgent: mockGetAgent, listAgents: mockListAgents, getSubagent: mockGetSubagent, listSubagents: mockListSubagents };
+const mockClient = {
+  getAgent: mockGetAgent,
+  listAgents: mockListAgents,
+  getSubagent: mockGetSubagent,
+  listSubagents: mockListSubagents,
+};
 const mockCreateClient = vi.fn(() => Promise.resolve(mockClient));
 
 vi.mock("../src/agent/leader.js", () => ({

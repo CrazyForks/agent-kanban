@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { SignJWT } from "jose";
 import { Miniflare } from "miniflare";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTestAgent, createTestEnv, createTestSubagent, seedUser, setupMiniflare, signUpVerifiedUser } from "./helpers/db";
 
 const BETTER_AUTH_URL = "http://localhost:8788";
@@ -191,6 +191,238 @@ describe("routes", () => {
     expect(body.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("creates board maintainers through AMA scheduled triggers and lists heartbeat runs", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
+      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
+      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
+      AK_API_URL: env.AK_API_URL,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_PROJECT_ID: "project_123",
+      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
+      AMA_SESSION_SECRET_VAULT_ID: "vault_123",
+      AK_API_URL: "https://ak.test",
+    });
+
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const maintainerBoard = await createBoard(env.DB, userTokenOwnerId, `maintainer-board-${crypto.randomUUID()}`, "ops");
+    const maintainerAgent = await createTestAgent(env.DB, userTokenOwnerId, {
+      name: "Daily maintainer",
+      username: `daily-maintainer-${crypto.randomUUID()}`,
+      runtime: "codex",
+      kind: "leader",
+      role: "board-maintainer",
+    });
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    const repository = await createRepository(env.DB, userTokenOwnerId, { name: "agent-kanban", url: "https://github.com/saltbo/agent-kanban.git" });
+    const scheduleRequests: any[] = [];
+    const updateRequests: any[] = [];
+    const archiveRequests: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/environments/env_123") {
+        return new Response(JSON.stringify({ id: "env_123", runtime: "codex" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/providers?limit=100") {
+        return new Response(JSON.stringify({ data: [{ id: "provider_codex", status: "active" }] }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/providers/provider_codex/models?limit=100") {
+        return new Response(JSON.stringify({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] }), {
+          status: 200,
+        });
+      }
+      if (url === "https://ama.test/api/agents") {
+        return new Response(
+          JSON.stringify({ id: "ama_agent_maintainer", projectId: "project_123", name: "agent", provider: "provider_codex", model: "gpt-5.3-codex" }),
+          { status: 201 },
+        );
+      }
+      if (url === "https://ama.test/api/vaults/vault_123/credentials") {
+        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+        expect(body.type).toBe("session_env_secret");
+        expect(body.secret.secretValue).toContain('"kty":"OKP"');
+        return new Response(JSON.stringify({ id: "vaultcred_maintainer", activeVersionId: "vaultver_maintainer" }), { status: 201 });
+      }
+      if (url === "https://ama.test/api/scheduled-agent-triggers") {
+        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+        scheduleRequests.push(body);
+        expect(body.metadata).toBeUndefined();
+        expect(body.agentId).toBe("ama_agent_maintainer");
+        expect(body.environmentId).toBe("env_123");
+        expect(body.resourceRefs).toEqual([{ type: "github_repository", owner: "saltbo", repo: "agent-kanban" }]);
+        expect(body.runtimeEnv).toMatchObject({
+          AK_WORKER: "1",
+          AK_BOARD_ID: maintainerBoard.id,
+          AK_API_URL: "https://ak.test",
+        });
+        expect(body.runtimeEnv.AK_AGENT_ID).toBe(maintainerAgent.id);
+        expect(body.runtimeEnv.AK_SESSION_ID).toEqual(expect.any(String));
+        expect(body.runtimeSecretEnv).toEqual([{ name: "AK_AGENT_KEY", ref: "vaultver_maintainer" }]);
+        expect(body.promptTemplate).toContain(`AK board ${maintainerBoard.id}`);
+        return new Response(
+          JSON.stringify({
+            id: "sched_maintainer",
+            agentId: "ama_agent_maintainer",
+            environmentId: "env_123",
+            name: body.name,
+            promptTemplate: body.promptTemplate,
+            schedule: { intervalSeconds: 3600, windowSeconds: 0 },
+            status: "active",
+            lastDispatchedAt: null,
+            lastRunId: null,
+          }),
+          { status: 201 },
+        );
+      }
+      if (url === "https://ama.test/api/scheduled-agent-triggers/sched_maintainer" && init?.method === "PATCH") {
+        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+        updateRequests.push(body);
+        expect(body.metadata).toBeUndefined();
+        return new Response(
+          JSON.stringify({
+            id: "sched_maintainer",
+            agentId: "ama_agent_maintainer",
+            environmentId: "env_123",
+            name: body.name ?? "Daily maintainer",
+            promptTemplate: body.promptTemplate ?? "unchanged",
+            schedule: { intervalSeconds: body.schedule?.intervalSeconds ?? 3600, windowSeconds: 0 },
+            status: body.status ?? "active",
+            lastDispatchedAt: null,
+            lastRunId: null,
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "https://ama.test/api/scheduled-agent-triggers/sched_maintainer" && init?.method === "DELETE") {
+        archiveRequests.push(url);
+        return new Response(null, { status: 204 });
+      }
+      if (url === "https://ama.test/api/scheduled-agent-triggers/sched_maintainer/runs?limit=100") {
+        return new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "schedrun_1",
+                scheduledFor: "2026-06-06T12:00:00.000Z",
+                heartbeatAt: "2026-06-06T12:01:00.000Z",
+                status: "session_created",
+                sessionId: "session_maintainer_1",
+                correlationId: "schedule:sched_maintainer:2026-06-06T12:00:00.000Z",
+                errorMessage: null,
+                metadata: { sessionMetadata: { source: "scheduled-agent-trigger" } },
+                createdAt: "2026-06-06T12:01:00.000Z",
+                updatedAt: "2026-06-06T12:01:01.000Z",
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const invalidRes = await apiRequest(
+        "POST",
+        `/api/boards/${maintainerBoard.id}/maintainers`,
+        {
+          agent_id: maintainerAgent.id,
+          prompt: "Too frequent",
+          interval_seconds: 30,
+        },
+        userToken,
+      );
+      expect(invalidRes.status).toBe(400);
+
+      const createRes = await apiRequest(
+        "POST",
+        `/api/boards/${maintainerBoard.id}/maintainers`,
+        {
+          agent_id: maintainerAgent.id,
+          repository_id: repository.id,
+          name: "Daily maintainer",
+          prompt: "Inspect open work and create follow-up tasks when needed.",
+          interval_seconds: 3600,
+        },
+        userToken,
+      );
+      expect(createRes.status).toBe(201);
+      const maintainer = (await createRes.json()) as any;
+      expect(maintainer).toMatchObject({
+        board_id: maintainerBoard.id,
+        repository_id: repository.id,
+        ak_agent_id: maintainerAgent.id,
+        ama_agent_id: "ama_agent_maintainer",
+        ama_environment_id: "env_123",
+        ama_schedule_id: "sched_maintainer",
+        status: "active",
+      });
+      expect(scheduleRequests).toHaveLength(1);
+
+      const sessionRow = await env.DB.prepare("SELECT status, runtime_source FROM runtime_agent_sessions WHERE id = ?")
+        .bind(scheduleRequests[0].runtimeEnv.AK_SESSION_ID)
+        .first<{ status: string; runtime_source: string }>();
+      expect(sessionRow).toMatchObject({ status: "active", runtime_source: "ama" });
+
+      const listRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers`, undefined, userToken);
+      expect(listRes.status).toBe(200);
+      await expect(listRes.json()).resolves.toEqual([expect.objectContaining({ id: maintainer.id, ama_schedule_id: "sched_maintainer" })]);
+
+      const runsRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/runs`, undefined, userToken);
+      expect(runsRes.status).toBe(200);
+      await expect(runsRes.json()).resolves.toEqual([
+        expect.objectContaining({
+          maintainer_id: maintainer.id,
+          ama_schedule_run_id: "schedrun_1",
+          ama_session_id: "session_maintainer_1",
+          status: "session_created",
+        }),
+      ]);
+
+      const pauseRes = await apiRequest("PATCH", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`, { status: "paused" }, userToken);
+      expect(pauseRes.status).toBe(200);
+      await expect(pauseRes.json()).resolves.toEqual(expect.objectContaining({ id: maintainer.id, status: "paused" }));
+      expect(updateRequests.at(-1)).toEqual({ status: "paused" });
+
+      const updateRes = await apiRequest(
+        "PATCH",
+        `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`,
+        { name: "Hourly maintainer", prompt: "Inspect stale work.", interval_seconds: 7200 },
+        userToken,
+      );
+      expect(updateRes.status).toBe(200);
+      await expect(updateRes.json()).resolves.toEqual(
+        expect.objectContaining({ name: "Hourly maintainer", prompt: "Inspect stale work.", interval_seconds: 7200 }),
+      );
+      expect(updateRequests.at(-1)).toMatchObject({
+        name: "Hourly maintainer",
+        schedule: { type: "interval", intervalSeconds: 7200 },
+      });
+      expect(updateRequests.at(-1).promptTemplate).toContain(`AK board ${maintainerBoard.id}`);
+
+      const archiveRes = await apiRequest("DELETE", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`, undefined, userToken);
+      expect(archiveRes.status).toBe(200);
+      await expect(archiveRes.json()).resolves.toEqual(expect.objectContaining({ id: maintainer.id, status: "archived" }));
+      expect(archiveRequests).toEqual(["https://ama.test/api/scheduled-agent-triggers/sched_maintainer"]);
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("GET /api/boards?name= finds board by name", async () => {
     const res = await apiRequest("GET", "/api/boards?name=Route Board", undefined, userToken);
     expect(res.status).toBe(200);
@@ -340,6 +572,37 @@ describe("routes", () => {
     expect(body.map((agent) => agent.username)).toEqual(["filter-claude-agent"]);
   });
 
+  it("GET /api/agents uses AMA as runtime availability source when AMA dispatch is configured", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_ACCESS_TOKEN: env.AMA_ACCESS_TOKEN,
+      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
+      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
+      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_ACCESS_TOKEN: "test-token",
+      AMA_PROJECT_ID: "project_123",
+      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
+      AMA_SESSION_SECRET_VAULT_ID: "vault_123",
+    });
+    try {
+      await createTestAgent(env.DB, userId, { username: "ama-available-agent", runtime: "claude", role: "ama-runtime-source" });
+      const res = await apiRequest("GET", "/api/agents?kind=worker&role=ama-runtime-source&available=true", undefined, apiKey);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as any[];
+      expect(body).toHaveLength(1);
+      expect(body[0]).toMatchObject({
+        username: "ama-available-agent",
+        runtime_available: true,
+        runtime_source: "ama",
+      });
+    } finally {
+      Object.assign(env, previousAma);
+    }
+  });
+
   it("GET /api/agents rejects invalid filters", async () => {
     const invalidRole = await apiRequest("GET", "/api/agents?role=BadRole", undefined, apiKey);
     expect(invalidRole.status).toBe(400);
@@ -357,6 +620,41 @@ describe("routes", () => {
     const body = (await res.json()) as any;
     expect(body.id).toBe(agentId);
     expect(body).toHaveProperty("logs");
+  });
+
+  it("GET /api/agents/:id includes AMA runtime session status and usage", async () => {
+    const amaAgent = await createTestAgent(env.DB, userId, { username: `ama-session-agent-${randomUUID()}`, runtime: "claude" });
+    await env.DB.prepare(
+      `INSERT INTO runtime_agent_sessions (
+        id, owner_id, agent_id, runtime_source, runtime_session_id, status, public_key, delegation_proof,
+        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_micro_usd, created_at
+      ) VALUES (?, ?, ?, 'ama', ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        "runtime-session-agent-detail",
+        userId,
+        amaAgent.id,
+        "ama-session-agent-detail",
+        "pub",
+        "proof",
+        1000,
+        2000,
+        300,
+        40,
+        5000,
+        new Date().toISOString(),
+      )
+      .run();
+
+    const res = await apiRequest("GET", `/api/agents/${amaAgent.id}`, undefined, apiKey);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.status).toBe("online");
+    expect(body.input_tokens).toBe(1000);
+    expect(body.output_tokens).toBe(2000);
+    expect(body.cache_read_tokens).toBe(300);
+    expect(body.cache_creation_tokens).toBe(40);
+    expect(body.cost_micro_usd).toBe(5000);
   });
 
   it("GET /api/agents/:id returns 404 for unknown agent", async () => {
@@ -745,10 +1043,397 @@ describe("routes", () => {
     expect(body.title).toBe("Route Task");
   });
 
+  it("POST /api/tasks keeps unassigned task creation compatible when AMA dispatch is configured", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_ACCESS_TOKEN: env.AMA_ACCESS_TOKEN,
+      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
+      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
+      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_ACCESS_TOKEN: "ama-token",
+      AMA_PROJECT_ID: "project_123",
+      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
+      AMA_SESSION_SECRET_VAULT_ID: "vault_123",
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const jwt = await signSessionJWT();
+      const res = await apiRequest("POST", "/api/tasks", { title: "Unassigned compatibility task", board_id: boardId }, jwt);
+
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as any;
+      expect(body.title).toBe("Unassigned compatibility task");
+      expect(body.status).toBe("todo");
+      expect(body.assigned_to).toBeNull();
+      expect(body.metadata?.annotations?.["ama.sessionId"]).toBeUndefined();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("POST /api/tasks dispatches assigned tasks to AMA and stores AK-owned annotations", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
+      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
+      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
+      AK_API_URL: env.AK_API_URL,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_PROJECT_ID: "project_123",
+      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
+      AMA_SESSION_SECRET_VAULT_ID: "vault_123",
+      AK_API_URL: "https://ak.test",
+    });
+
+    const taskDetail = "Use the detail alias in the task dispatch prompt.";
+    let runtimePrivateKeyJwk: JsonWebKey | null = null;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/environments/env_123") {
+        return new Response(JSON.stringify({ id: "env_123", runtime: "codex" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/providers?limit=100") {
+        return new Response(
+          JSON.stringify({
+            data: [{ id: "provider_codex", status: "active" }],
+            pagination: { limit: 100, hasMore: false, nextCursor: null },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "https://ama.test/api/providers/provider_codex/models?limit=100") {
+        return new Response(
+          JSON.stringify({
+            data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }],
+            pagination: { limit: 100, hasMore: false, nextCursor: null },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "https://ama.test/api/vaults/vault_123/credentials") {
+        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+        expect(body.secret.secretValue).toContain('"kty":"OKP"');
+        runtimePrivateKeyJwk = JSON.parse(body.secret.secretValue) as JsonWebKey;
+        return new Response(JSON.stringify({ id: "vaultcred_123", activeVersionId: "vaultver_123" }), { status: 201 });
+      }
+      if (url === "https://ama.test/api/agents") {
+        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+        expect(body.metadata).toMatchObject({ "ak.agentId": agentId });
+        expect(body.provider).toBe("provider_codex");
+        expect(body.model).toBe("gpt-5.3-codex");
+        return new Response(
+          JSON.stringify({
+            id: "ama_agent_123",
+            projectId: "project_123",
+            name: body.name,
+            provider: body.provider,
+            model: body.model,
+          }),
+          { status: 201 },
+        );
+      }
+      if (url === "https://ama.test/api/sessions") {
+        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+        expect(body.agentId).toBe("ama_agent_123");
+        expect(body.environmentId).toBe("env_123");
+        expect(body.runtimeEnv).toMatchObject({
+          AK_WORKER: "1",
+          AK_AGENT_ID: agentId,
+          AK_API_URL: "https://ak.test",
+        });
+        expect(body.runtimeEnv.AK_SESSION_ID).toEqual(expect.any(String));
+        expect(body.runtimeSecretEnv).toEqual([{ name: "AK_AGENT_KEY", ref: "vaultver_123" }]);
+        expect(body.initialPrompt).toContain(`Task detail:\n${taskDetail}`);
+        expect(JSON.stringify(body)).not.toContain("board_");
+        return new Response(
+          JSON.stringify({
+            id: "session_ama_123",
+            agentId: body.agentId,
+            environmentId: "env_123",
+            status: "pending",
+            statusReason: null,
+          }),
+          { status: 201 },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const jwt = await signSessionJWT();
+      const res = await apiRequest(
+        "POST",
+        "/api/tasks",
+        {
+          title: "AMA dispatched task",
+          board_id: boardId,
+          assigned_to: agentId,
+          detail: taskDetail,
+        },
+        jwt,
+      );
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as any;
+      expect(body.description).toBe(taskDetail);
+      expect(body.metadata.annotations).toMatchObject({
+        "ama.projectId": "project_123",
+        "ak.agentId": agentId,
+        "ama.agentId": "ama_agent_123",
+        "ama.environmentId": "env_123",
+        "ama.sessionId": "session_ama_123",
+        "ama.runtimeSecretEnv.AK_AGENT_KEY": "vaultver_123",
+        "ama.dispatch.result": "accepted",
+      });
+      expect(body.metadata.annotations["ak.runtimeSessionId"]).toEqual(expect.any(String));
+      const taskRow = await env.DB.prepare("SELECT description FROM tasks WHERE id = ?").bind(body.id).first<{ description: string }>();
+      expect(taskRow?.description).toBe(taskDetail);
+
+      const sessionRow = await env.DB.prepare("SELECT runtime_source, runtime_session_id, status FROM runtime_agent_sessions WHERE id = ?")
+        .bind(body.metadata.annotations["ak.runtimeSessionId"])
+        .first<{ runtime_source: string; runtime_session_id: string; status: string }>();
+      expect(sessionRow).toMatchObject({ runtime_source: "ama", runtime_session_id: "session_ama_123", status: "active" });
+      const bridgeMachine = await env.DB.prepare("SELECT id FROM machines WHERE device_id = 'ama-runtime-bridge'").first<{ id: string }>();
+      expect(bridgeMachine).toBeNull();
+      const calledUrls = fetchMock.mock.calls.map(([url]) => String(url));
+      expect(calledUrls).toContain("https://ama.test/api/environments/env_123");
+      expect(calledUrls).toContain("https://ama.test/api/providers?limit=100");
+
+      expect(runtimePrivateKeyJwk).toBeTruthy();
+      const runtimePrivateKey = await crypto.subtle.importKey("jwk", runtimePrivateKeyJwk!, { name: "Ed25519" } as any, true, ["sign"]);
+      const runtimeJwt = await new SignJWT({
+        sub: body.metadata.annotations["ak.runtimeSessionId"],
+        aid: agentId,
+        jti: randomUUID(),
+        aud: BETTER_AUTH_URL,
+      })
+        .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
+        .setIssuedAt()
+        .setExpirationTime("60s")
+        .sign(runtimePrivateKey);
+      const claimRes = await apiRequest("POST", `/api/tasks/${body.id}/claim`, undefined, runtimeJwt);
+      expect(claimRes.status).toBe(200);
+      const claimed = (await claimRes.json()) as any;
+      expect(claimed.status).toBe("in_progress");
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("cleans up local task and runtime session rows when initial AMA dispatch fails", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
+      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
+      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_PROJECT_ID: "project_123",
+      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
+      AMA_SESSION_SECRET_VAULT_ID: "vault_123",
+    });
+    const tempAgent = await createTestAgent(env.DB, userId, {
+      name: `Failed Dispatch Agent ${randomUUID()}`,
+      username: `failed-dispatch-${randomUUID()}`,
+      runtime: "codex",
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/environments/env_123") {
+        return new Response(JSON.stringify({ id: "env_123", runtime: "codex" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/providers?limit=100") {
+        return new Response(JSON.stringify({ data: [{ id: "provider_codex", status: "active" }] }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/providers/provider_codex/models?limit=100") {
+        return new Response(JSON.stringify({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] }), {
+          status: 200,
+        });
+      }
+      if (url === "https://ama.test/api/agents") {
+        return new Response(
+          JSON.stringify({ id: "ama_agent_123", projectId: "project_123", name: "agent", provider: "provider_codex", model: "gpt-5.3-codex" }),
+          { status: 201 },
+        );
+      }
+      if (url === "https://ama.test/api/vaults/vault_123/credentials") {
+        return new Response(JSON.stringify({ id: "vaultcred_123", activeVersionId: "vaultver_123" }), { status: 201 });
+      }
+      if (url === "https://ama.test/api/sessions") {
+        return new Response(JSON.stringify({ error: "runtime unavailable" }), { status: 503 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const jwt = await signSessionJWT();
+      const res = await apiRequest(
+        "POST",
+        "/api/tasks",
+        {
+          title: "Failed AMA dispatch task",
+          board_id: boardId,
+          assigned_to: tempAgent.id,
+          metadata: { annotations: { "ama.agentId": "ama_agent_123" } },
+        },
+        jwt,
+      );
+      expect(res.status).toBe(500);
+      const taskRow = await env.DB.prepare("SELECT id FROM tasks WHERE title = ?").bind("Failed AMA dispatch task").first();
+      expect(taskRow).toBeNull();
+      const activeSessions = await env.DB.prepare("SELECT COUNT(*) as count FROM runtime_agent_sessions WHERE agent_id = ? AND status = 'active'")
+        .bind(tempAgent.id)
+        .first<{ count: number }>();
+      expect(activeSessions?.count).toBe(0);
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("clears assignment when AMA dispatch fails after assigning an existing task", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
+      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
+      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_PROJECT_ID: "project_123",
+      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
+      AMA_SESSION_SECRET_VAULT_ID: "vault_123",
+    });
+    const tempAgent = await createTestAgent(env.DB, userId, {
+      name: `Assign Failure Agent ${randomUUID()}`,
+      username: `assign-failure-${randomUUID()}`,
+      runtime: "codex",
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/environments/env_123") {
+        return new Response(JSON.stringify({ id: "env_123", runtime: "codex" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/providers?limit=100") {
+        return new Response(JSON.stringify({ data: [{ id: "provider_codex", status: "active" }] }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/providers/provider_codex/models?limit=100") {
+        return new Response(JSON.stringify({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] }), {
+          status: 200,
+        });
+      }
+      if (url === "https://ama.test/api/agents") {
+        return new Response(
+          JSON.stringify({ id: "ama_agent_123", projectId: "project_123", name: "agent", provider: "provider_codex", model: "gpt-5.3-codex" }),
+          { status: 201 },
+        );
+      }
+      if (url === "https://ama.test/api/vaults/vault_123/credentials") {
+        return new Response(JSON.stringify({ id: "vaultcred_123", activeVersionId: "vaultver_123" }), { status: 201 });
+      }
+      if (url === "https://ama.test/api/sessions") {
+        return new Response(JSON.stringify({ error: "runtime unavailable" }), { status: 503 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { createTask } = await import("../apps/web/server/taskRepo");
+      const task = await createTask(env.DB, userId, { title: "Assign dispatch failure", board_id: boardId });
+      const leaderJwt = await signLeaderSessionJWT();
+      const res = await apiRequest("POST", `/api/tasks/${task.id}/assign`, { agent_id: tempAgent.id }, leaderJwt);
+      expect(res.status).toBe(500);
+      const row = await env.DB.prepare("SELECT assigned_to FROM tasks WHERE id = ?").bind(task.id).first<{ assigned_to: string | null }>();
+      expect(row?.assigned_to).toBeNull();
+      const action = await env.DB.prepare("SELECT action, detail FROM task_actions WHERE task_id = ? ORDER BY created_at DESC LIMIT 1")
+        .bind(task.id)
+        .first<{ action: string; detail: string }>();
+      expect(action).toMatchObject({ action: "released", detail: "Runtime dispatch failed; assignment was cleared." });
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("POST /api/tasks requires title", async () => {
     const jwt = await signSessionJWT();
     const res = await apiRequest("POST", "/api/tasks", { board_id: boardId }, jwt);
     expect(res.status).toBe(400);
+  });
+
+  it("POST /api/tasks keeps description when both description and detail are present", async () => {
+    const jwt = await signSessionJWT();
+    const res = await apiRequest(
+      "POST",
+      "/api/tasks",
+      {
+        title: "Description Wins Task",
+        board_id: boardId,
+        assigned_to: agentId,
+        description: "Use this description",
+        detail: "Ignore this detail alias",
+      },
+      jwt,
+    );
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.description).toBe("Use this description");
+    expect(body).not.toHaveProperty("detail");
+  });
+
+  it("POST /api/tasks rejects non-string detail", async () => {
+    const jwt = await signSessionJWT();
+    const res = await apiRequest(
+      "POST",
+      "/api/tasks",
+      { title: "Bad Detail", board_id: boardId, assigned_to: agentId, detail: { text: "not a string" } },
+      jwt,
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.error.message).toBe("detail must be a string");
   });
 
   it("POST /api/tasks rejects non-object input", async () => {
@@ -956,6 +1641,277 @@ describe("routes", () => {
     expect(body.sender_type).toBe("user");
   });
 
+  it("routes task messages, rejects, and cancels to bound AMA sessions", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
+      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
+      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_PROJECT_ID: "project_123",
+      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
+      AMA_SESSION_SECRET_VAULT_ID: "vault_123",
+    });
+
+    const runtimeMessages: string[] = [];
+    const stops: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/sessions/session_123/commands") {
+        const body = JSON.parse(String(init?.body)) as { message: string };
+        expect(init?.method).toBe("POST");
+        expect(body).toMatchObject({ type: "prompt" });
+        runtimeMessages.push(body.message);
+        return new Response(JSON.stringify({ accepted: true, runtime: "ama-cloud", sessionId: "session_123", path: "/rpc" }), { status: 202 });
+      }
+      if (url.startsWith("https://ama.test/api/sessions/session_123/stop")) {
+        stops.push(url);
+        return new Response(JSON.stringify({ id: "session_123", status: "stopped" }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { createTask } = await import("../apps/web/server/taskRepo");
+      const metadata = { annotations: { "ama.sessionId": "session_123" } };
+      const messageTask = await createTask(env.DB, userId, { title: "AMA message task", board_id: boardId, metadata });
+      const jwt = await signSessionJWT();
+      const messageRes = await apiRequest("POST", `/api/tasks/${messageTask.id}/messages`, { sender_type: "user", content: "Please continue" }, jwt);
+      expect(messageRes.status).toBe(201);
+
+      const rejectTask = await createTask(env.DB, userId, { title: "AMA reject task", board_id: boardId, assigned_to: agentId, metadata });
+      await env.DB.prepare("UPDATE tasks SET status = 'in_review' WHERE id = ?").bind(rejectTask.id).run();
+      const leaderJwt = await signLeaderSessionJWT();
+      const rejectRes = await apiRequest("POST", `/api/tasks/${rejectTask.id}/reject`, { reason: "Fix tests" }, leaderJwt);
+      expect(rejectRes.status).toBe(200);
+      const rejected = (await rejectRes.json()) as any;
+      expect(rejected.metadata.annotations).toMatchObject({ "ama.lastCommand": "reject_resume", "ama.lastCommand.result": "accepted" });
+
+      const cancelTask = await createTask(env.DB, userId, { title: "AMA cancel task", board_id: boardId, assigned_to: agentId, metadata });
+      await env.DB.prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ?").bind(cancelTask.id).run();
+      const cancelRes = await apiRequest("POST", `/api/tasks/${cancelTask.id}/cancel`, {}, leaderJwt);
+      expect(cancelRes.status).toBe(200);
+      const cancelled = (await cancelRes.json()) as any;
+      expect(cancelled.metadata.annotations).toMatchObject({ "ama.lastCommand": "stop", "ama.lastCommand.result": "accepted" });
+
+      expect(runtimeMessages).toEqual(["Please continue", expect.stringContaining("Task was rejected by reviewer. Reason: Fix tests")]);
+      expect(stops).toEqual(["https://ama.test/api/sessions/session_123/stop?reason=user_requested"]);
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not mutate task state when AMA reject or cancel command delivery fails", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
+      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_PROJECT_ID: "project_123",
+      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/sessions/session_failed/commands") {
+        return new Response(JSON.stringify({ error: "command failed" }), { status: 502 });
+      }
+      if (url.startsWith("https://ama.test/api/sessions/session_failed/stop")) {
+        return new Response(JSON.stringify({ error: "stop failed" }), { status: 502 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { createTask } = await import("../apps/web/server/taskRepo");
+      const metadata = { annotations: { "ama.sessionId": "session_failed" } };
+      const rejectTarget = await createTask(env.DB, userId, { title: "Failed reject command", board_id: boardId, assigned_to: agentId, metadata });
+      await env.DB.prepare("UPDATE tasks SET status = 'in_review' WHERE id = ?").bind(rejectTarget.id).run();
+      const cancelTarget = await createTask(env.DB, userId, { title: "Failed cancel command", board_id: boardId, assigned_to: agentId, metadata });
+      await env.DB.prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ?").bind(cancelTarget.id).run();
+
+      const leaderJwt = await signLeaderSessionJWT();
+      const rejectRes = await apiRequest("POST", `/api/tasks/${rejectTarget.id}/reject`, { reason: "try again" }, leaderJwt);
+      const cancelRes = await apiRequest("POST", `/api/tasks/${cancelTarget.id}/cancel`, {}, leaderJwt);
+      expect(rejectRes.status).toBe(500);
+      expect(cancelRes.status).toBe(500);
+
+      const rejectRow = await env.DB.prepare("SELECT status FROM tasks WHERE id = ?").bind(rejectTarget.id).first<{ status: string }>();
+      const cancelRow = await env.DB.prepare("SELECT status FROM tasks WHERE id = ?").bind(cancelTarget.id).first<{ status: string }>();
+      expect(rejectRow?.status).toBe("in_review");
+      expect(cancelRow?.status).toBe("in_progress");
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("updates AMA runtime session usage and closes runtime sessions on terminal lifecycle states", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_ACCESS_TOKEN: env.AMA_ACCESS_TOKEN,
+      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
+      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
+      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_ACCESS_TOKEN: "ama-token",
+      AMA_PROJECT_ID: "project_123",
+      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
+      AMA_SESSION_SECRET_VAULT_ID: "vault_123",
+    });
+
+    try {
+      const { createRuntimeAgentSession } = await import("../apps/web/server/agentSessionRepo");
+      const runtimeSessionId = randomUUID();
+      const keypair = await crypto.subtle.generateKey({ name: "Ed25519" } as any, true, ["sign", "verify"]);
+      const privateKey = (keypair as any).privateKey;
+      const pubJwk = await crypto.subtle.exportKey("jwk", (keypair as any).publicKey);
+      await createRuntimeAgentSession(env.DB, env, {
+        ownerId: userId,
+        agentId,
+        sessionId: runtimeSessionId,
+        sessionPublicKey: pubJwk.x!,
+        runtimeSource: "ama",
+        runtimeSessionId: "session_usage_123",
+      });
+      const runtimeJwt = await new SignJWT({ sub: runtimeSessionId, aid: agentId, jti: randomUUID(), aud: BETTER_AUTH_URL })
+        .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
+        .setIssuedAt()
+        .setExpirationTime("60s")
+        .sign(privateKey);
+      const usageRes = await apiRequest(
+        "PATCH",
+        `/api/agents/${agentId}/sessions/${runtimeSessionId}/usage`,
+        { input_tokens: 10, output_tokens: 20, cache_read_tokens: 3, cache_creation_tokens: 4, cost_micro_usd: 50 },
+        runtimeJwt,
+      );
+      expect(usageRes.status).toBe(200);
+      const usage = await env.DB.prepare("SELECT input_tokens, output_tokens, cost_micro_usd FROM runtime_agent_sessions WHERE id = ?")
+        .bind(runtimeSessionId)
+        .first<{ input_tokens: number; output_tokens: number; cost_micro_usd: number }>();
+      expect(usage).toMatchObject({ input_tokens: 10, output_tokens: 20, cost_micro_usd: 50 });
+
+      const { createTask } = await import("../apps/web/server/taskRepo");
+      const task = await createTask(env.DB, userId, {
+        title: "Close runtime on complete",
+        board_id: boardId,
+        assigned_to: agentId,
+        metadata: { annotations: { "ak.runtimeSessionId": runtimeSessionId, "ama.sessionId": "session_usage_123" } },
+      });
+      await env.DB.prepare("UPDATE tasks SET status = 'in_review' WHERE id = ?").bind(task.id).run();
+      const leaderJwt = await signLeaderSessionJWT();
+      const completeRes = await apiRequest("POST", `/api/tasks/${task.id}/complete`, {}, leaderJwt);
+      expect(completeRes.status).toBe(200);
+      const closed = await env.DB.prepare("SELECT status, closed_at FROM runtime_agent_sessions WHERE id = ?")
+        .bind(runtimeSessionId)
+        .first<{ status: string; closed_at: string | null }>();
+      expect(closed?.status).toBe("closed");
+      expect(closed?.closed_at).toEqual(expect.any(String));
+    } finally {
+      Object.assign(env, previousAma);
+    }
+  });
+
+  it("GET /api/tasks/:id/runtime reads bound AMA session and events through the SDK", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
+      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_PROJECT_ID: "project_123",
+      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
+    });
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/sessions/session_runtime_123") {
+        expect(init?.method).toBe("GET");
+        return new Response(JSON.stringify({ id: "session_runtime_123", status: "idle", statusReason: null }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/sessions/session_runtime_123/events?limit=100&order=asc") {
+        expect(init?.method).toBe("GET");
+        return new Response(
+          JSON.stringify({
+            data: [{ id: "event_1", type: "message_end", sequence: 1, payload: { text: "done" }, metadata: {} }],
+            pagination: { limit: 100, hasMore: false, nextCursor: null },
+          }),
+          { status: 200 },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { createTask } = await import("../apps/web/server/taskRepo");
+      const task = await createTask(env.DB, userId, {
+        title: "AMA runtime snapshot",
+        board_id: boardId,
+        metadata: { annotations: { "ama.sessionId": "session_runtime_123" } },
+      });
+      const res = await apiRequest("GET", `/api/tasks/${task.id}/runtime`, undefined, apiKey);
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toMatchObject({
+        task_id: task.id,
+        ama_session_id: "session_runtime_123",
+        taskSessionId: "session_runtime_123",
+        session: { id: "session_runtime_123", status: "idle" },
+        events: [{ id: "event_1", type: "message_end" }],
+        pagination: { hasMore: false },
+      });
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("GET /api/tasks/:id/runtime returns 404 when a task has no AMA session binding", async () => {
+    const { createTask } = await import("../apps/web/server/taskRepo");
+    const task = await createTask(env.DB, userId, { title: "No AMA runtime", board_id: boardId });
+    const res = await apiRequest("GET", `/api/tasks/${task.id}/runtime`, undefined, apiKey);
+    expect(res.status).toBe(404);
+    await expect(res.json()).resolves.toMatchObject({
+      error: { message: "Task is not bound to a session" },
+    });
+  });
+
   it("POST /api/tasks/:id/messages requires sender_type and content", async () => {
     const { createBoard } = await import("../apps/web/server/boardRepo");
     const { createTask } = await import("../apps/web/server/taskRepo");
@@ -1022,11 +1978,71 @@ describe("routes", () => {
     expect(res.headers.get("Content-Type")).toBe("text/event-stream");
   });
 
+  // ─── Legacy Runtime Tunnel ───
+
+  it("GET /api/tunnel/ws keeps the legacy relay available", async () => {
+    const previous = env.TUNNEL_RELAY;
+    const relayFetch = vi.fn(async () => new Response("ok"));
+    Object.assign(env, {
+      TUNNEL_RELAY: {
+        idFromName: vi.fn(() => "relay-id"),
+        get: vi.fn(() => ({ fetch: relayFetch })),
+      },
+    });
+
+    try {
+      const res = await apiRequest("GET", "/api/tunnel/ws?role=browser&sessionId=test-session", undefined, apiKey);
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Deprecation")).toBe("true");
+      expect(res.headers.get("X-AK-Runtime-Surface")).toBe("legacy-daemon");
+      expect(await res.text()).toBe("ok");
+      expect(relayFetch).toHaveBeenCalledOnce();
+    } finally {
+      env.TUNNEL_RELAY = previous;
+    }
+  });
+
+  it("legacy daemon APIs remain available once AMA dispatch is configured", async () => {
+    const previous = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_ACCESS_TOKEN: env.AMA_ACCESS_TOKEN,
+      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
+      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
+      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
+      AK_API_URL: env.AK_API_URL,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "http://ama.test",
+      AMA_ACCESS_TOKEN: "ama-token",
+      AMA_PROJECT_ID: "ama-project",
+      AMA_DEFAULT_ENVIRONMENT_ID: "ama-env",
+      AMA_SESSION_SECRET_VAULT_ID: "ama-vault",
+      AK_API_URL: "http://ak.test",
+    });
+
+    try {
+      const machinesRes = await apiRequest("GET", "/api/machines", undefined, apiKey);
+      const sessionsRes = await apiRequest("GET", `/api/agents/${agentId}/sessions`, undefined, apiKey);
+
+      expect(machinesRes.status).toBe(200);
+      expect(machinesRes.headers.get("X-AK-Runtime-Surface")).toBe("legacy-daemon");
+      expect(Array.isArray(await machinesRes.json())).toBe(true);
+      expect(sessionsRes.status).toBe(200);
+      expect(sessionsRes.headers.get("X-AK-Runtime-Surface")).toBe("legacy-daemon");
+      expect(Array.isArray(await sessionsRes.json())).toBe(true);
+    } finally {
+      Object.assign(env, previous);
+    }
+  });
+
   // ─── Machines ───
 
   it("GET /api/machines lists machines", async () => {
     const res = await apiRequest("GET", "/api/machines", undefined, apiKey);
     expect(res.status).toBe(200);
+    expect(res.headers.get("Deprecation")).toBe("true");
+    expect(res.headers.get("X-AK-Runtime-Surface")).toBe("legacy-daemon");
     const body = (await res.json()) as any;
     expect(Array.isArray(body)).toBe(true);
   });
@@ -1170,6 +2186,8 @@ describe("routes", () => {
   it("GET /api/agents/:agentId/sessions lists sessions", async () => {
     const res = await apiRequest("GET", `/api/agents/${agentId}/sessions`, undefined, apiKey);
     expect(res.status).toBe(200);
+    expect(res.headers.get("Deprecation")).toBe("true");
+    expect(res.headers.get("X-AK-Runtime-Surface")).toBe("legacy-daemon");
     const body = (await res.json()) as any;
     expect(Array.isArray(body)).toBe(true);
   });

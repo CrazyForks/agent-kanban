@@ -82,6 +82,71 @@ function LiveDuration({ startedAt, finishedMinutes }: { startedAt: string | null
   return <span className="font-mono text-[13px]">{formatElapsed(finishedMinutes! * 60_000)}</span>;
 }
 
+function annotationValue(task: any, key: string): string | null {
+  const annotations = task?.metadata?.annotations;
+  if (!annotations || typeof annotations !== "object" || Array.isArray(annotations)) return null;
+  const value = annotations[key];
+  return typeof value === "string" && value ? value : null;
+}
+
+function RuntimePanel({ runtime, loading }: { runtime: any; loading: boolean }) {
+  const session = runtime?.session ?? {};
+  const events = Array.isArray(runtime?.events) ? runtime.events : [];
+  const recentEvents = events.slice(-6);
+
+  return (
+    <div>
+      <FieldLabel>Runtime</FieldLabel>
+      <div className="rounded-md border border-border bg-surface-primary p-3">
+        {loading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-4 w-40" />
+            <Skeleton className="h-3 w-64" />
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <div>
+                <div className="text-[11px] font-medium uppercase tracking-wide text-content-tertiary">Status</div>
+                <div className="text-sm font-medium text-accent">{session.status ?? "unknown"}</div>
+              </div>
+              <div className="min-w-0">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-content-tertiary">Session</div>
+                <div className="truncate font-mono text-[12px] text-content-primary" title={runtime?.ama_session_id ?? runtime?.taskSessionId}>
+                  {runtime?.ama_session_id ?? runtime?.taskSessionId}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase tracking-wide text-content-tertiary">Started</div>
+                <div className="font-mono text-[12px] text-content-secondary">{session.startedAt ? formatRelative(session.startedAt) : "—"}</div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase tracking-wide text-content-tertiary">Events</div>
+                <div className="font-mono text-[12px] text-content-secondary">{events.length}</div>
+              </div>
+            </div>
+            {session.statusReason && <p className="text-[13px] text-content-secondary">{session.statusReason}</p>}
+            {recentEvents.length > 0 && (
+              <div className="space-y-1">
+                {recentEvents.map((event: any) => (
+                  <div
+                    key={event.id ?? `${event.sequence}-${event.type}`}
+                    className="flex items-center gap-2 font-mono text-[12px] text-content-secondary"
+                  >
+                    <span className="w-10 shrink-0 text-content-tertiary">#{event.sequence ?? "—"}</span>
+                    <span className="truncate">{event.type ?? "event"}</span>
+                    {event.role && <span className="text-content-tertiary">{event.role}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentClick: _onAgentClick }: TaskDetailProps) {
   const queryClient = useQueryClient();
   const [chatOpen, setChatOpen] = useState(false);
@@ -91,6 +156,13 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
   const { data: task, isLoading: loading } = useQuery({
     queryKey: ["task", taskId],
     queryFn: () => api.tasks.get(taskId),
+  });
+  const amaSessionId = annotationValue(task, "ama.sessionId");
+  const { data: runtime, isLoading: runtimeLoading } = useQuery({
+    queryKey: ["task-runtime", taskId, amaSessionId],
+    queryFn: () => api.tasks.runtime(taskId),
+    enabled: Boolean(amaSessionId),
+    staleTime: 5000,
   });
 
   const { data: repositories = [] } = useQuery({
@@ -253,6 +325,8 @@ export function TaskDetail({ taskId, labels = [], onClose, onRefresh, onAgentCli
           </pre>
         </div>
       )}
+
+      {amaSessionId && <RuntimePanel runtime={runtime} loading={runtimeLoading} />}
 
       {task.subtask_count > 0 && (
         <>

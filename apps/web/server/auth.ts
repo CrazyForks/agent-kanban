@@ -61,6 +61,9 @@ const ROUTE_RULES: { method: string; pattern: RegExp; rule: RouteRule }[] = [
   { method: "POST", pattern: /^\/api\/boards$/, rule: { allow: ["user", "agent:leader"] } },
   { method: "PATCH", pattern: /^\/api\/boards\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
   { method: "DELETE", pattern: /^\/api\/boards\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
+  { method: "POST", pattern: /^\/api\/boards\/[^/]+\/maintainers$/, rule: { allow: ["user", "agent:leader"] } },
+  { method: "PATCH", pattern: /^\/api\/boards\/[^/]+\/maintainers\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
+  { method: "DELETE", pattern: /^\/api\/boards\/[^/]+\/maintainers\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
 
   // Repositories — user and leader
   { method: "POST", pattern: /^\/api\/repositories$/, rule: { allow: ["user", "agent:leader"] } },
@@ -75,6 +78,9 @@ const ROUTE_RULES: { method: string; pattern: RegExp; rule: RouteRule }[] = [
 
   // Agent inbox — user only
   { method: "GET", pattern: /^\/api\/agents\/[^/]+\/inbox(\/[^/]+)?$/, rule: { allow: ["user"] } },
+
+  // Machine runner onboarding — AK credentials are exchanged for internal runtime credentials
+  { method: "POST", pattern: /^\/api\/runtime\/runners\/onboarding$/, rule: { allow: ["user", "machine"] } },
 
   // Admin — user identity only (Better Auth plugin enforces role internally)
   { method: "POST", pattern: /^\/api\/auth\/admin\//, rule: { allow: ["user"] } },
@@ -194,21 +200,35 @@ async function handleApiKey(c: Context<{ Bindings: Env }>, auth: any, token: str
 async function handleAgentIdentity(c: Context<{ Bindings: Env }>, identity: any, persistentAgentId: string | null, next: Next) {
   const sessionId = identity.agent.id;
 
-  // Single query: verify session→agent binding + resolve agent kind
-  const row = await c.env.DB.prepare("SELECT s.agent_id, a.kind FROM agent_sessions s JOIN agents a ON s.agent_id = a.id WHERE s.id = ?")
-    .bind(sessionId)
-    .first<{ agent_id: string; kind: string }>();
+  const row = await c.env.DB.prepare(
+    `SELECT s.agent_id, a.kind, NULL AS owner_id, 'legacy' AS source
+     FROM agent_sessions s
+     JOIN agents a ON s.agent_id = a.id
+     WHERE s.id = ? AND s.status = 'active'
+     UNION ALL
+     SELECT s.agent_id, a.kind, s.owner_id, s.runtime_source AS source
+     FROM runtime_agent_sessions s
+     JOIN agents a ON s.agent_id = a.id
+     WHERE s.id = ? AND s.status = 'active'
+     LIMIT 1`,
+  )
+    .bind(sessionId, sessionId)
+    .first<{ agent_id: string; kind: string; owner_id: string | null; source: string }>();
 
-  if (persistentAgentId && row && row.agent_id !== persistentAgentId) {
+  if (!row) {
+    return c.json({ error: { code: "FORBIDDEN", message: "Agent session is not registered" } }, 403);
+  }
+
+  if (persistentAgentId && row.agent_id !== persistentAgentId) {
     return c.json({ error: { code: "FORBIDDEN", message: "Agent ID mismatch" } }, 403);
   }
 
-  const agentId = persistentAgentId || sessionId;
-  c.set("ownerId", identity.host?.userId || identity.user?.id);
+  const agentId = row.agent_id;
+  c.set("ownerId", row.owner_id || identity.host?.userId || identity.user?.id);
   c.set("sessionId", sessionId);
   c.set("agentId", agentId);
-  c.set("machineId", identity.agent.hostId);
-  const kind = row?.kind === "leader" ? "leader" : "worker";
+  c.set("machineId", row.source === "legacy" ? identity.agent.hostId : undefined);
+  const kind = row.kind === "leader" ? "leader" : "worker";
   c.set("agentCapabilities", kind === "leader" ? LEADER_CAPABILITIES : WORKER_CAPABILITIES);
   c.set("identityType", kind === "leader" ? "agent:leader" : "agent:worker");
 

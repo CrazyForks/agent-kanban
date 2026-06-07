@@ -10,6 +10,7 @@ import {
   type MachineRuntime,
   parseScheduledAt,
   RESERVED_ROLES,
+  type Task,
 } from "@agent-kanban/shared";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -24,9 +25,32 @@ import {
   updateAgent,
   upsertLatestAgent,
 } from "./agentRepo";
-import { closeSession, createSession, listSessions, reopenSession, updateSessionUsage } from "./agentSessionRepo";
+import { closeRuntimeSessionForTask, closeSession, createSession, listSessions, reopenSession, updateSessionUsage } from "./agentSessionRepo";
+import { resolveAmaExternalTenantId, resolveAmaProjectId } from "./amaOwnerMappingRepo";
+import {
+  archiveAmaScheduledAgentTrigger,
+  createAmaExternalProjectBinding,
+  createAmaFederatedRunnerToken,
+  createAmaScheduledAgentTrigger,
+  createAmaSessionSecret,
+  defaultAmaRunnerCapabilities,
+  getAmaSessionRuntimeSnapshot,
+  isAmaTaskDispatchConfigured,
+  listAmaScheduledTriggerRuns,
+  updateAmaScheduledAgentTrigger,
+} from "./amaRuntime";
 import { authMiddleware } from "./auth";
 import { createAuth } from "./betterAuth";
+import {
+  createBoardMaintainer,
+  getBoardMaintainer,
+  getOwnedBoard,
+  getOwnedRepository,
+  listBoardMaintainerRuns,
+  listBoardMaintainers,
+  syncBoardMaintainerRuns,
+  updateBoardMaintainer,
+} from "./boardMaintainerRepo";
 import {
   createBoard,
   createBoardLabel,
@@ -64,26 +88,47 @@ import { createSSEResponse } from "./sse";
 import { getSystemStats } from "./statsRepo";
 import { createSubagent, deleteSubagent, getSubagent, listSubagents, updateSubagent } from "./subagentRepo";
 import {
+  apiUrl,
+  createAkAgentSessionIdentity,
+  dispatchTaskToAma,
+  ensureAmaAgentForAkAgent,
+  githubRepoRef,
+  secretReferenceName,
+  sendTaskMessageToAma,
+  sendTaskRejectToAma,
+  stopTaskAmaSession,
+} from "./taskDispatch";
+import {
   addTaskAction,
   assertTaskOwner,
   assignTask,
   cancelTask,
   claimTask,
+  clearTaskAssignmentAfterFailedDispatch,
   completeTask,
   createTask,
   deleteTask,
+  deleteTaskAfterFailedDispatch,
   getTask,
   getTaskActions,
   listTasks,
   rejectTask,
   releaseTask,
   reviewTask,
+  rollbackRejectedTask,
   updateTask,
 } from "./taskRepo";
 import type { Env } from "./types";
 
 const api = new Hono<{ Bindings: Env }>();
 const logger = createLogger("api");
+
+function markLegacyRuntimeSurface(c: { header: (name: string, value: string) => void }) {
+  c.header("Deprecation", "true");
+  c.header("Sunset", "2026-09-01T00:00:00Z");
+  c.header("X-AK-Runtime-Surface", "legacy-daemon");
+}
+
 const SUBAGENT_RUNTIMES = new Set(["claude", "codex", "gemini", "copilot"]);
 
 function assertValidSkillRefs(skills: unknown) {
@@ -151,6 +196,11 @@ function assertValidAgentRuntime(runtime: string | undefined): void {
   }
 }
 
+function withRuntimeSource<T extends Record<string, any>>(env: Env, agent: T): T {
+  if (!isAmaTaskDispatchConfigured(env)) return { ...agent, runtime_source: "ak-machine" };
+  return { ...agent, runtime_available: true, runtime_source: "ama" };
+}
+
 function parseOptionalBoolean(value: string | undefined, name: string): boolean | undefined {
   if (value === undefined) return undefined;
   if (value === "true") return true;
@@ -168,6 +218,17 @@ function parseOptionalAgentKind(value: string | undefined): "worker" | "leader" 
   if (value === undefined) return undefined;
   assertValidAgentKind(value);
   return value;
+}
+
+function normalizeTaskDetailAlias(body: Record<string, any>) {
+  if (body.detail === undefined) return;
+  if (typeof body.detail !== "string") {
+    throw new HTTPException(400, { message: "detail must be a string" });
+  }
+  if (body.description === undefined) {
+    body.description = body.detail;
+  }
+  delete body.detail;
 }
 
 async function assertRegisteredSubagents(
@@ -430,6 +491,7 @@ api.use("/api/*", metricsMiddleware);
 // ─── Machines ───
 
 api.post("/api/machines/:id/heartbeat", async (c) => {
+  markLegacyRuntimeSurface(c);
   const body = await c.req.json<{ version?: string; runtimes?: MachineRuntime[]; usage_info?: any }>();
   if (body.runtimes !== undefined) assertValidMachineRuntimes(body.runtimes);
   const machineId = c.req.param("id");
@@ -456,12 +518,14 @@ api.post("/api/machines/:id/heartbeat", async (c) => {
 });
 
 api.get("/api/machines", async (c) => {
+  markLegacyRuntimeSurface(c);
   await detectStaleMachines(c.env.DB);
   const machines = await listMachines(c.env.DB, c.get("ownerId"));
   return c.json(machines);
 });
 
 api.get("/api/machines/:id", async (c) => {
+  markLegacyRuntimeSurface(c);
   await detectStaleMachines(c.env.DB);
   const machine = await getMachine(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!machine) throw new HTTPException(404, { message: "Machine not found" });
@@ -469,6 +533,7 @@ api.get("/api/machines/:id", async (c) => {
 });
 
 api.post("/api/machines", async (c) => {
+  markLegacyRuntimeSurface(c);
   const body = await c.req.json<{ name: string; os: string; version: string; runtimes: MachineRuntime[]; device_id: string }>();
   if (!body.name || !body.os || !body.version || !body.runtimes || !body.device_id) {
     throw new HTTPException(400, { message: "name, os, version, runtimes, and device_id are required" });
@@ -508,6 +573,7 @@ api.post("/api/machines", async (c) => {
 });
 
 api.delete("/api/machines/:id", async (c) => {
+  markLegacyRuntimeSurface(c);
   const machineId = c.req.param("id");
   const deleted = await deleteMachine(c.env.DB, machineId, c.get("ownerId"));
   if (!deleted) throw new HTTPException(404, { message: "Machine not found" });
@@ -525,22 +591,25 @@ api.delete("/api/machines/:id", async (c) => {
 api.get("/api/agents", async (c) => {
   const role = c.req.query("role");
   const runtime = c.req.query("runtime") as AgentRuntime | undefined;
+  const available = parseOptionalBoolean(c.req.query("available"), "available");
+  const amaRuntime = isAmaTaskDispatchConfigured(c.env);
   assertValidAgentRole(role);
   assertValidAgentRuntime(runtime);
   const agents = await listAgents(c.env.DB, c.get("ownerId"), {
     kind: parseOptionalAgentKind(c.req.query("kind")),
     role,
     runtime,
-    available: parseOptionalBoolean(c.req.query("available"), "available"),
+    available: amaRuntime ? undefined : available,
   });
-  return c.json(agents);
+  const withSource = agents.map((agent) => withRuntimeSource(c.env, agent));
+  return c.json(available === undefined ? withSource : withSource.filter((agent) => agent.runtime_available === available));
 });
 
 api.get("/api/agents/:id", async (c) => {
   const agent = await getAgent(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!agent) throw new HTTPException(404, { message: "Agent not found" });
   const logs = await getAgentLogs(c.env.DB, c.req.param("id"));
-  return c.json({ ...agent, logs });
+  return c.json({ ...withRuntimeSource(c.env, agent), logs });
 });
 
 api.post("/api/agents", async (c) => {
@@ -730,6 +799,7 @@ api.delete("/api/subagents/:id", async (c) => {
 // ─── Agent Sessions ───
 
 api.post("/api/agents/:agentId/sessions", async (c) => {
+  markLegacyRuntimeSurface(c);
   const body = await c.req.json<{ session_id: string; session_public_key: string }>();
   if (!body.session_id || !body.session_public_key) {
     throw new HTTPException(400, { message: "session_id and session_public_key are required" });
@@ -742,18 +812,64 @@ api.post("/api/agents/:agentId/sessions", async (c) => {
 });
 
 api.delete("/api/agents/:agentId/sessions/:sessionId", async (c) => {
+  markLegacyRuntimeSurface(c);
   await closeSession(c.env.DB, c.req.param("sessionId"));
   return c.json({ ok: true });
 });
 
 api.post("/api/agents/:agentId/sessions/:sessionId/reopen", async (c) => {
+  markLegacyRuntimeSurface(c);
   await reopenSession(c.env.DB, c.req.param("sessionId"));
   return c.json({ ok: true });
 });
 
 api.get("/api/agents/:agentId/sessions", async (c) => {
+  markLegacyRuntimeSurface(c);
   const sessions = await listSessions(c.env.DB, c.req.param("agentId"));
   return c.json(sessions);
+});
+
+api.post("/api/runtime/runners/onboarding", async (c) => {
+  const body: { runnerName?: string } = await c.req.json<{ runnerName?: string }>().catch(() => ({}));
+  const runnerName = typeof body.runnerName === "string" && body.runnerName.trim() ? body.runnerName.trim() : "ak-runner";
+  const environmentId = c.env.AMA_DEFAULT_ENVIRONMENT_ID;
+  if (!environmentId) throw new HTTPException(400, { message: "environmentId is required" });
+  const ownerId = c.get("ownerId");
+  const projectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
+  const capabilities = await defaultAmaRunnerCapabilities(c.env, projectId, environmentId);
+  const externalTenantId = await resolveAmaExternalTenantId(c.env.DB, ownerId);
+  if (!c.env.AK_FEDERATED_RUNNER_ISSUER) {
+    throw new HTTPException(500, { message: "AK_FEDERATED_RUNNER_ISSUER is required for federated runner onboarding" });
+  }
+  const issuer = c.env.AK_FEDERATED_RUNNER_ISSUER.replace(/\/$/, "");
+  const runnerId = `runner_${crypto.randomUUID().replaceAll("-", "")}`;
+
+  await createAmaExternalProjectBinding(c.env, {
+    projectId,
+    issuer,
+    externalTenantId,
+    environmentId,
+    capabilities,
+  });
+  const token = await createAmaFederatedRunnerToken(c.env, {
+    projectId,
+    externalTenantId,
+    runnerId,
+    environmentId,
+    capabilities,
+  });
+
+  return c.json({
+    origin: c.env.AMA_ORIGIN,
+    projectId,
+    runnerId,
+    runnerName,
+    environmentId,
+    capabilities,
+    accessToken: token.accessToken,
+    tokenType: token.tokenType,
+    expiresIn: token.expiresIn,
+  });
 });
 
 api.patch("/api/agents/:agentId/sessions/:sessionId/usage", async (c) => {
@@ -777,11 +893,14 @@ api.use("/api/tasks/:id", async (c, next) => {
 
 api.post("/api/tasks", async (c) => {
   const body = await c.req.json();
+  normalizeTaskDetailAlias(body);
   if (!body.title) throw new HTTPException(400, { message: "title is required" });
-  if (!body.assigned_to) throw new HTTPException(400, { message: "assigned_to is required" });
 
   if (body.input !== undefined && body.input !== null && typeof body.input !== "object") {
     throw new HTTPException(400, { message: "input must be a JSON object or null" });
+  }
+  if (body.metadata !== undefined && body.metadata !== null && (typeof body.metadata !== "object" || Array.isArray(body.metadata))) {
+    throw new HTTPException(400, { message: "metadata must be a JSON object or null" });
   }
   if (body.scheduled_at !== undefined && body.scheduled_at !== null) {
     const normalized = parseScheduledAt(body.scheduled_at);
@@ -790,8 +909,20 @@ api.post("/api/tasks", async (c) => {
   }
 
   const { actorType, actorId } = resolveActor(c);
-  const task = await createTask(c.env.DB, c.get("ownerId"), { ...body, actorType, actorId });
-  return c.json(task, 201);
+  const task = await createTask(c.env.DB, c.get("ownerId"), {
+    ...body,
+    actorType,
+    actorId,
+    skipRuntimeAvailability: isAmaTaskDispatchConfigured(c.env),
+  });
+  let dispatched: Task;
+  try {
+    dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), task, { apiOrigin: new URL(c.req.url).origin });
+  } catch (error) {
+    await deleteTaskAfterFailedDispatch(c.env.DB, task.id);
+    throw error;
+  }
+  return c.json(dispatched, 201);
 });
 
 api.get("/api/tasks", async (c) => {
@@ -806,11 +937,32 @@ api.get("/api/tasks/:id", async (c) => {
   return c.json(task);
 });
 
+api.get("/api/tasks/:id/runtime", async (c) => {
+  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (!task) throw new HTTPException(404, { message: "Task not found" });
+  const annotations = task.metadata?.annotations;
+  const sessionId =
+    annotations && typeof annotations === "object" && !Array.isArray(annotations) ? (annotations as Record<string, unknown>)["ama.sessionId"] : null;
+  if (typeof sessionId !== "string" || !sessionId) {
+    throw new HTTPException(404, { message: "Task is not bound to a session" });
+  }
+  const runtime = await getAmaSessionRuntimeSnapshot(c.env, sessionId);
+  return c.json({
+    task_id: task.id,
+    ama_session_id: sessionId,
+    ...runtime,
+  });
+});
+
 api.patch("/api/tasks/:id", async (c) => {
   const body = await c.req.json();
+  normalizeTaskDetailAlias(body);
 
   if (body.input !== undefined && body.input !== null && typeof body.input !== "object") {
     throw new HTTPException(400, { message: "input must be a JSON object or null" });
+  }
+  if (body.metadata !== undefined && body.metadata !== null && (typeof body.metadata !== "object" || Array.isArray(body.metadata))) {
+    throw new HTTPException(400, { message: "metadata must be a JSON object or null" });
   }
   if (body.scheduled_at !== undefined && body.scheduled_at !== null) {
     const normalized = parseScheduledAt(body.scheduled_at);
@@ -857,12 +1009,14 @@ api.post("/api/tasks/:id/complete", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
 
   const task = await completeTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), sessionId);
+  if (task) await closeRuntimeSessionForTask(c.env.DB, task);
   return c.json(task);
 });
 
 api.post("/api/tasks/:id/release", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
   const task = await releaseTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), "released", sessionId);
+  if (task) await closeRuntimeSessionForTask(c.env.DB, task);
   return c.json(task);
 });
 
@@ -872,14 +1026,28 @@ api.post("/api/tasks/:id/assign", async (c) => {
   if (!targetAgentId) throw new HTTPException(400, { message: "agent_id is required" });
 
   const { actorType, actorId, sessionId } = resolveActor(c);
-  const task = await assignTask(c.env.DB, c.req.param("id"), targetAgentId, actorType, actorId, sessionId);
-  return c.json(task);
+  const task = await assignTask(c.env.DB, c.req.param("id"), targetAgentId, actorType, actorId, sessionId, {
+    skipRuntimeAvailability: isAmaTaskDispatchConfigured(c.env),
+  });
+  if (!task) throw new HTTPException(404, { message: "Task not found" });
+  let dispatched: Task;
+  try {
+    dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), task, { apiOrigin: new URL(c.req.url).origin });
+  } catch (error) {
+    await clearTaskAssignmentAfterFailedDispatch(c.env.DB, task.id, actorType, actorId, sessionId);
+    throw error;
+  }
+  return c.json(dispatched);
 });
 
 api.post("/api/tasks/:id/cancel", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
-  const task = await cancelTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), sessionId);
-  return c.json(task);
+  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (!task) throw new HTTPException(404, { message: "Task not found" });
+  await stopTaskAmaSession(c.env.DB, c.env, task);
+  const cancelled = await cancelTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), sessionId);
+  if (cancelled) await closeRuntimeSessionForTask(c.env.DB, cancelled);
+  return c.json(cancelled);
 });
 
 api.post("/api/tasks/:id/review", async (c) => {
@@ -894,7 +1062,13 @@ api.post("/api/tasks/:id/reject", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
   const body = await c.req.json<{ reason?: string }>().catch(() => ({}) as { reason?: string });
   const task = await rejectTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), body.reason, sessionId);
-  return c.json(task);
+  if (!task) throw new HTTPException(404, { message: "Task not found" });
+  try {
+    return c.json(await sendTaskRejectToAma(c.env.DB, c.env, task, body.reason));
+  } catch (error) {
+    await rollbackRejectedTask(c.env.DB, task.id);
+    throw error;
+  }
 });
 
 // ─── Task Notes ───
@@ -934,10 +1108,13 @@ api.post("/api/tasks/:id/messages", async (c) => {
   const senderId = body.sender_id || (body.sender_type === "agent" ? c.get("agentId") : c.get("ownerId"));
   if (!senderId) throw new HTTPException(400, { message: "sender_id is required" });
 
-  const task = await c.env.DB.prepare("SELECT id FROM tasks WHERE id = ?").bind(c.req.param("id")).first();
+  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) throw new HTTPException(404, { message: "Task not found" });
 
   const message = await createMessage(c.env.DB, c.req.param("id"), body.sender_type, senderId, body.content);
+  if (body.sender_type === "user") {
+    await sendTaskMessageToAma(c.env, task, body.content);
+  }
   return c.json(message, 201);
 });
 
@@ -953,13 +1130,19 @@ api.get("/api/tasks/:id/messages", async (c) => {
 // ─── WebSocket Relay ───
 
 api.get("/api/tunnel/ws", async (c) => {
+  markLegacyRuntimeSurface(c);
   const ownerId = c.get("ownerId");
   const id = c.env.TUNNEL_RELAY.idFromName(ownerId);
   const stub = c.env.TUNNEL_RELAY.get(id);
   const url = new URL(c.req.url);
   url.pathname = "/ws";
   url.searchParams.set("ownerId", ownerId);
-  return stub.fetch(new Request(url.toString(), c.req.raw));
+  const upstream = await stub.fetch(new Request(url.toString(), c.req.raw));
+  const response = new Response(upstream.body, upstream);
+  response.headers.set("Deprecation", "true");
+  response.headers.set("Sunset", "2026-09-01T00:00:00Z");
+  response.headers.set("X-AK-Runtime-Surface", "legacy-daemon");
+  return response;
 });
 
 // ─── SSE Stream ───
@@ -993,6 +1176,139 @@ api.get("/api/boards", async (c) => {
   }
   const boards = await listBoards(c.env.DB, ownerId);
   return c.json(boards);
+});
+
+api.post("/api/boards/:id/maintainers", async (c) => {
+  if (!isAmaTaskDispatchConfigured(c.env)) {
+    throw new HTTPException(500, { message: "Task dispatch runtime is not configured" });
+  }
+
+  const ownerId = c.get("ownerId");
+  const boardId = c.req.param("id");
+  const body = await c.req.json<{
+    name?: string;
+    prompt: string;
+    agent_id?: string;
+    repository_id?: string | null;
+    interval_seconds?: number;
+    status?: "active" | "paused";
+  }>();
+  const maintainerAgentId = body.agent_id;
+  if (!maintainerAgentId) throw new HTTPException(400, { message: "agent_id is required" });
+  if (!body.prompt || typeof body.prompt !== "string") throw new HTTPException(400, { message: "prompt is required" });
+  const intervalSeconds = body.interval_seconds ?? 86400;
+  if (!Number.isInteger(intervalSeconds) || intervalSeconds < 60) {
+    throw new HTTPException(400, { message: "interval_seconds must be an integer >= 60" });
+  }
+  if (body.status !== undefined && body.status !== "active" && body.status !== "paused") {
+    throw new HTTPException(400, { message: "status must be active or paused" });
+  }
+
+  const board = await getOwnedBoard(c.env.DB, ownerId, boardId);
+  if (!board) throw new HTTPException(404, { message: "Board not found" });
+  const repository = body.repository_id ? await getOwnedRepository(c.env.DB, ownerId, body.repository_id) : null;
+  if (body.repository_id && !repository) throw new HTTPException(404, { message: "Repository not found" });
+
+  const amaEnvironmentId = c.env.AMA_DEFAULT_ENVIRONMENT_ID;
+  if (!amaEnvironmentId) throw new HTTPException(500, { message: "Maintainer runtime is not configured" });
+  const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
+  const amaAgent = await ensureAmaAgentForAkAgent(c.env.DB, c.env, ownerId, maintainerAgentId, amaProjectId, amaEnvironmentId);
+  const sessionIdentity = await createAkAgentSessionIdentity(c.env.DB, c.env, ownerId, maintainerAgentId);
+  const secret = await createAmaSessionSecret(c.env, {
+    name: secretReferenceName(sessionIdentity.sessionId),
+    secretValue: JSON.stringify(sessionIdentity.privateKeyJwk),
+    metadata: { purpose: "ak-maintainer-session", agentId: maintainerAgentId },
+  });
+  const resourceRef = repository ? githubRepoRef(repository.url) : null;
+  const resourceRefs = resourceRef ? [resourceRef] : [];
+  const name = body.name?.trim() || `${board.name} maintainer`;
+  const schedule = await createAmaScheduledAgentTrigger(c.env, {
+    agentId: amaAgent.id,
+    environmentId: amaEnvironmentId,
+    name,
+    promptTemplate: boardMaintainerPrompt(boardId, body.prompt),
+    intervalSeconds,
+    status: body.status ?? "active",
+    resourceRefs,
+    runtimeEnv: {
+      AK_WORKER: "1",
+      AK_AGENT_ID: maintainerAgentId,
+      AK_SESSION_ID: sessionIdentity.sessionId,
+      AK_BOARD_ID: boardId,
+      AK_API_URL: apiUrl(c.env, new URL(c.req.url).origin),
+    },
+    runtimeSecretEnv: [{ name: "AK_AGENT_KEY", ref: secret.activeVersionId }],
+  });
+
+  const maintainer = await createBoardMaintainer(c.env.DB, ownerId, {
+    boardId,
+    repositoryId: repository?.id ?? null,
+    akAgentId: maintainerAgentId,
+    amaAgentId: schedule.agentId,
+    amaEnvironmentId: schedule.environmentId,
+    amaScheduleId: schedule.id,
+    name,
+    prompt: body.prompt,
+    intervalSeconds,
+    status: schedule.status === "paused" ? "paused" : "active",
+  });
+  return c.json(maintainer, 201);
+});
+
+api.get("/api/boards/:id/maintainers", async (c) => {
+  const board = await getOwnedBoard(c.env.DB, c.get("ownerId"), c.req.param("id"));
+  if (!board) throw new HTTPException(404, { message: "Board not found" });
+  return c.json(await listBoardMaintainers(c.env.DB, c.get("ownerId"), c.req.param("id")));
+});
+
+api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
+  const ownerId = c.get("ownerId");
+  const boardId = c.req.param("id");
+  const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
+  if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
+  const body = await c.req.json<{ name?: string; prompt?: string; interval_seconds?: number; status?: "active" | "paused" }>();
+  if (body.interval_seconds !== undefined && (!Number.isInteger(body.interval_seconds) || body.interval_seconds < 60)) {
+    throw new HTTPException(400, { message: "interval_seconds must be an integer >= 60" });
+  }
+  if (body.status !== undefined && body.status !== "active" && body.status !== "paused") {
+    throw new HTTPException(400, { message: "status must be active or paused" });
+  }
+  const schedule = await updateAmaScheduledAgentTrigger(c.env, maintainer.ama_schedule_id, {
+    name: body.name,
+    promptTemplate: body.prompt ? boardMaintainerPrompt(boardId, body.prompt) : undefined,
+    intervalSeconds: body.interval_seconds,
+    status: body.status,
+  });
+  const updated = await updateBoardMaintainer(c.env.DB, ownerId, boardId, maintainer.id, {
+    name: body.name ?? schedule.name,
+    prompt: body.prompt,
+    intervalSeconds: body.interval_seconds ?? schedule.schedule.intervalSeconds,
+    status: schedule.status === "archived" ? "archived" : schedule.status,
+  });
+  if (!updated) throw new HTTPException(404, { message: "Board maintainer not found" });
+  return c.json(updated);
+});
+
+api.delete("/api/boards/:id/maintainers/:maintainerId", async (c) => {
+  const ownerId = c.get("ownerId");
+  const boardId = c.req.param("id");
+  const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
+  if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
+  await archiveAmaScheduledAgentTrigger(c.env, maintainer.ama_schedule_id);
+  const updated = await updateBoardMaintainer(c.env.DB, ownerId, boardId, maintainer.id, { status: "archived" });
+  return c.json(updated);
+});
+
+api.get("/api/boards/:id/maintainers/:maintainerId/runs", async (c) => {
+  const ownerId = c.get("ownerId");
+  const boardId = c.req.param("id");
+  const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
+  if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
+  if (isAmaTaskDispatchConfigured(c.env)) {
+    const runs = await listAmaScheduledTriggerRuns(c.env, maintainer.ama_schedule_id);
+    return c.json(await syncBoardMaintainerRuns(c.env.DB, maintainer, runs));
+  }
+  return c.json(await listBoardMaintainerRuns(c.env.DB, ownerId, boardId, maintainer.id));
 });
 
 api.get("/api/boards/:id", async (c) => {
@@ -1034,6 +1350,17 @@ api.delete("/api/boards/:id", async (c) => {
   return c.json({ ok: true });
 });
 
+function boardMaintainerPrompt(boardId: string, prompt: string) {
+  return [
+    `You are the maintainer for AK board ${boardId}.`,
+    "Use the AK CLI/API as the source of truth for board workflow, tasks, reviews, and follow-up work.",
+    "On each heartbeat, inspect the board state, decide whether any tasks, proposals, reviews, or follow-up actions are needed, and act through AK commands.",
+    "Keep long-term memory in the agent memory store when the runtime exposes it. Do not store secrets in notes, tasks, or messages.",
+    "",
+    prompt,
+  ].join("\n");
+}
+
 // ─── Admin ───
 
 function requireAdmin(c: { get: (key: string) => any }) {
@@ -1049,6 +1376,7 @@ api.get("/api/admin/stats", async (c) => {
 });
 
 api.get("/api/admin/machines", async (c) => {
+  markLegacyRuntimeSurface(c);
   requireAdmin(c);
   const machines = await listAllMachines(c.env.DB);
   const metrics = await getMachineMetrics(c.env);

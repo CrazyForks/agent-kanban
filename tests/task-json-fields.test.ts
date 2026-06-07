@@ -32,6 +32,9 @@ async function applyMigrations(db: D1Database) {
     "0019_agent_versions.sql",
     "0020_board_labels.sql",
     "0021_subagents.sql",
+    "0022_task_metadata.sql",
+    "0023_board_maintainers.sql",
+    "0024_runtime_agent_sessions.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
@@ -58,7 +61,7 @@ afterAll(async () => {
   await mf.dispose();
 });
 
-describe("task JSON field parsing (labels, input)", () => {
+describe("task JSON field parsing (labels, input, metadata)", () => {
   const ownerId = "user-json-task";
   let boardId: string;
   let taskId: string;
@@ -98,6 +101,7 @@ describe("task JSON field parsing (labels, input)", () => {
       board_id: boardId,
       labels: ["bug", "urgent"],
       input: { prompt: "fix the thing", context: { file: "main.ts", line: 42 } },
+      metadata: { annotations: { "ama.sessionId": "session_123", "ama.dispatch.result": "accepted" } },
     });
     taskId = task.id;
 
@@ -105,6 +109,7 @@ describe("task JSON field parsing (labels, input)", () => {
     expect(task.labels).toEqual(["bug", "urgent"]);
     expect(typeof task.input).toBe("object");
     expect(task.input).toEqual({ prompt: "fix the thing", context: { file: "main.ts", line: 42 } });
+    expect(task.metadata).toEqual({ annotations: { "ama.sessionId": "session_123", "ama.dispatch.result": "accepted" } });
   });
 
   it("createTask rejects labels that are not defined on the board", async () => {
@@ -127,6 +132,7 @@ describe("task JSON field parsing (labels, input)", () => {
 
     expect(task.labels).toBeNull();
     expect(task.input).toBeNull();
+    expect(task.metadata).toEqual({});
   });
 
   it("listTasks returns parsed labels and input", async () => {
@@ -138,6 +144,7 @@ describe("task JSON field parsing (labels, input)", () => {
     expect(task.labels).toEqual(["bug", "urgent"]);
     expect(typeof task.input).toBe("object");
     expect(task.input!.prompt).toBe("fix the thing");
+    expect(task.metadata).toEqual({ annotations: { "ama.sessionId": "session_123", "ama.dispatch.result": "accepted" } });
   });
 
   it("getTask returns parsed labels and input", async () => {
@@ -149,6 +156,7 @@ describe("task JSON field parsing (labels, input)", () => {
     expect(task!.labels).toEqual(["bug", "urgent"]);
     expect(typeof task!.input).toBe("object");
     expect(task!.input!.context).toEqual({ file: "main.ts", line: 42 });
+    expect(task!.metadata).toEqual({ annotations: { "ama.sessionId": "session_123", "ama.dispatch.result": "accepted" } });
   });
 
   it("updateTask accepts arrays/objects and returns parsed values", async () => {
@@ -156,11 +164,13 @@ describe("task JSON field parsing (labels, input)", () => {
     const task = await updateTask(db, taskId, {
       labels: ["feature"],
       input: { prompt: "new prompt" },
+      metadata: { annotations: { "ama.sessionId": "session_456", "ama.dispatch.result": "resumed" } },
     });
 
     expect(task).toBeTruthy();
     expect(task!.labels).toEqual(["feature"]);
     expect(task!.input).toEqual({ prompt: "new prompt" });
+    expect(task!.metadata).toEqual({ annotations: { "ama.sessionId": "session_456", "ama.dispatch.result": "resumed" } });
   });
 
   it("updated values persist through getTask", async () => {
@@ -169,6 +179,7 @@ describe("task JSON field parsing (labels, input)", () => {
 
     expect(task!.labels).toEqual(["feature"]);
     expect(task!.input).toEqual({ prompt: "new prompt" });
+    expect(task!.metadata).toEqual({ annotations: { "ama.sessionId": "session_456", "ama.dispatch.result": "resumed" } });
   });
 
   it("getBoard returns tasks with parsed labels and input", async () => {
@@ -181,6 +192,7 @@ describe("task JSON field parsing (labels, input)", () => {
     expect(task.labels).toEqual(["feature"]);
     expect(typeof task.input).toBe("object");
     expect(task.input).toEqual({ prompt: "new prompt" });
+    expect(task.metadata).toEqual({ annotations: { "ama.sessionId": "session_456", "ama.dispatch.result": "resumed" } });
   });
 
   it("lifecycle functions preserve parsed JSON fields", async () => {
@@ -193,10 +205,12 @@ describe("task JSON field parsing (labels, input)", () => {
     const claimed = await claimTask(db, taskId, agent.id, "agent:worker");
     expect(Array.isArray(claimed!.labels)).toBe(true);
     expect(typeof claimed!.input).toBe("object");
+    expect(claimed!.metadata).toEqual({ annotations: { "ama.sessionId": "session_456", "ama.dispatch.result": "resumed" } });
 
     const reviewed = await reviewTask(db, taskId, "agent:worker", agent.id, "https://github.com/pr/1", "agent:worker");
     expect(Array.isArray(reviewed!.labels)).toBe(true);
     expect(typeof reviewed!.input).toBe("object");
+    expect(reviewed!.metadata).toEqual({ annotations: { "ama.sessionId": "session_456", "ama.dispatch.result": "resumed" } });
   });
 
   it("deleteBoardLabel removes the label from tasks on the same board", async () => {

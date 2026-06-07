@@ -73,6 +73,9 @@ export abstract class ApiClient {
   getTask(id: string) {
     return this.request("GET", `/api/tasks/${id}`);
   }
+  getTaskRuntime(id: string) {
+    return this.request("GET", `/api/tasks/${id}/runtime`);
+  }
   claimTask(id: string) {
     return this.request("POST", `/api/tasks/${id}/claim`);
   }
@@ -215,6 +218,15 @@ export abstract class ApiClient {
   }
   deleteBoard(boardId: string) {
     return this.request("DELETE", `/api/boards/${boardId}`);
+  }
+  createBoardMaintainer(boardId: string, input: Record<string, unknown>) {
+    return this.request("POST", `/api/boards/${boardId}/maintainers`, input);
+  }
+  listBoardMaintainers(boardId: string) {
+    return this.request<any[]>("GET", `/api/boards/${boardId}/maintainers`);
+  }
+  getBoardMaintainerRuns(boardId: string, maintainerId: string) {
+    return this.request<any[]>("GET", `/api/boards/${boardId}/maintainers/${maintainerId}/runs`);
   }
 
   // Repositories

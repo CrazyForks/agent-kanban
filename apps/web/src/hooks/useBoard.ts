@@ -92,6 +92,52 @@ export function useCreateBoardLabel() {
   });
 }
 
+export function useBoardMaintainers(boardId: string | undefined) {
+  const {
+    data: maintainers = [],
+    isLoading: loading,
+    refetch,
+  } = useQuery({
+    queryKey: ["board-maintainers", boardId],
+    queryFn: () => api.boards.maintainers(boardId!),
+    enabled: !!boardId,
+    refetchInterval: 30_000,
+  });
+
+  return { maintainers, loading, refresh: refetch };
+}
+
+export function useCreateBoardMaintainer(boardId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Record<string, unknown>) => api.boards.createMaintainer(boardId, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["board-maintainers", boardId] });
+    },
+  });
+}
+
+export function useUpdateBoardMaintainer(boardId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ maintainerId, body }: { maintainerId: string; body: Record<string, unknown> }) =>
+      api.boards.updateMaintainer(boardId, maintainerId, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["board-maintainers", boardId] });
+    },
+  });
+}
+
+export function useDeleteBoardMaintainer(boardId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (maintainerId: string) => api.boards.deleteMaintainer(boardId, maintainerId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["board-maintainers", boardId] });
+    },
+  });
+}
+
 export function useUpdateBoardLabel() {
   const queryClient = useQueryClient();
 

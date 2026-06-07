@@ -49,6 +49,7 @@ export const api = {
       return request<any[]>("GET", `/tasks${qs}`);
     },
     get: (id: string) => request<any>("GET", `/tasks/${id}`),
+    runtime: (id: string) => request<any>("GET", `/tasks/${id}/runtime`),
     create: (input: Record<string, unknown>) => request<any>("POST", "/tasks", input),
     update: (id: string, body: Record<string, unknown>) => request<any>("PATCH", `/tasks/${id}`, body),
     delete: (id: string) => request<void>("DELETE", `/tasks/${id}`),
@@ -89,9 +90,14 @@ export const api = {
     }) => request<any>("POST", "/agents", input),
     update: (id: string, body: Record<string, unknown>) => request<any>("PATCH", `/agents/${id}`, body),
     delete: (id: string) => request<void>("DELETE", `/agents/${id}`),
-    sessions: (agentId: string) => request<any[]>("GET", `/agents/${agentId}/sessions`),
     inbox: (agentId: string) => request<{ emails: any[] }>("GET", `/agents/${agentId}/inbox`),
     inboxEmail: (agentId: string, emailId: string) => request<any>("GET", `/agents/${agentId}/inbox/${emailId}`),
+    sessions: (agentId: string) => request<any[]>("GET", `/agents/${agentId}/sessions`),
+  },
+  machines: {
+    list: () => request<any[]>("GET", "/machines"),
+    get: (id: string) => request<any>("GET", `/machines/${id}`),
+    delete: (id: string) => request<void>("DELETE", `/machines/${id}`),
   },
   subagents: {
     list: () => request<any[]>("GET", "/subagents"),
@@ -99,11 +105,6 @@ export const api = {
     create: (input: CreateSubagentInput) => request<any>("POST", "/subagents", input),
     update: (id: string, body: Partial<CreateSubagentInput>) => request<any>("PATCH", `/subagents/${id}`, body),
     delete: (id: string) => request<void>("DELETE", `/subagents/${id}`),
-  },
-  machines: {
-    list: () => request<any[]>("GET", "/machines"),
-    get: (id: string) => request<any>("GET", `/machines/${id}`),
-    delete: (id: string) => request<void>("DELETE", `/machines/${id}`),
   },
   boards: {
     list: () => request<any[]>("GET", "/boards"),
@@ -115,6 +116,12 @@ export const api = {
     updateLabel: (id: string, name: string, body: { name?: string; color?: string; description?: string }) =>
       request<any>("PATCH", `/boards/${id}/labels/${encodeURIComponent(name)}`, body),
     deleteLabel: (id: string, name: string) => request<any>("DELETE", `/boards/${id}/labels/${encodeURIComponent(name)}`),
+    maintainers: (id: string) => request<any[]>("GET", `/boards/${id}/maintainers`),
+    createMaintainer: (id: string, body: Record<string, unknown>) => request<any>("POST", `/boards/${id}/maintainers`, body),
+    updateMaintainer: (id: string, maintainerId: string, body: Record<string, unknown>) =>
+      request<any>("PATCH", `/boards/${id}/maintainers/${maintainerId}`, body),
+    deleteMaintainer: (id: string, maintainerId: string) => request<any>("DELETE", `/boards/${id}/maintainers/${maintainerId}`),
+    maintainerRuns: (id: string, maintainerId: string) => request<any[]>("GET", `/boards/${id}/maintainers/${maintainerId}/runs`),
     delete: (id: string) => request<void>("DELETE", `/boards/${id}`),
   },
   share: {

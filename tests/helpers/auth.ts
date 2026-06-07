@@ -6,16 +6,12 @@ import { expect, Page } from "@playwright/test";
 const d1Dir = join(process.cwd(), "apps/web/.wrangler/state/v3/d1/miniflare-D1DatabaseObject");
 
 /**
- * Signs up a new user and completes the onboarding flow (2 steps),
+ * Signs up a new user and completes the onboarding flow,
  * then navigates to the actual board page at /boards/:id.
  *
  * Onboarding steps:
  *   0 - DemoBoard (skip to board creation)
- *   1 - Create Board (board name input + "Create Board" button, also creates API key)
- *   2 - AddMachineSteps (shows API key + "Waiting for connection..." - no skip)
- *
- * After step 0 completes, the board exists. We fetch the board list via the API
- * and navigate directly instead of waiting for a machine to connect.
+ *   1 - Create Board (board name input + "Create Board" button)
  */
 export async function signUpAndGetBoard(page: Page, email: string, name = "Test User"): Promise<void> {
   await page.goto("/auth");
@@ -54,7 +50,7 @@ export async function signUpAndGetBoard(page: Page, email: string, name = "Test 
   await page.getByRole("button", { name: "Skip demo" }).click();
   await expect(page).toHaveURL(/\/boards\/new/);
 
-  // Step 1: create the board (also creates API key, advances to step 2)
+  // Step 1: create the board and navigate to it.
   await page.getByRole("button", { name: "Create Board" }).click();
 
   await expect.poll(() => firstBoardId(page)).not.toBeNull();

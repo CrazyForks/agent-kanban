@@ -17,7 +17,7 @@ interface TaskChatDrawerProps {
 }
 
 export function TaskChatDrawer({ open, onOpenChange, taskId, task, showOverlay = true, className }: TaskChatDrawerProps) {
-  const requiresFetch = open && !!taskId && task?.active_session_id === undefined;
+  const requiresFetch = open && !!taskId && !task;
   const {
     data: fetchedTask,
     error,
@@ -30,7 +30,7 @@ export function TaskChatDrawer({ open, onOpenChange, taskId, task, showOverlay =
 
   if (!taskId) return null;
 
-  const currentTask = requiresFetch ? fetchedTask : task;
+  const currentTask = fetchedTask ?? task;
   const agentName = currentTask?.agent_name ?? "agent";
 
   return (
@@ -63,7 +63,6 @@ export function TaskChatDrawer({ open, onOpenChange, taskId, task, showOverlay =
             <ChatPanel
               taskId={taskId}
               agentId={currentTask?.assigned_to ?? null}
-              sessionId={currentTask?.active_session_id ?? null}
               taskDone={currentTask?.status === "done" || currentTask?.status === "cancelled"}
             />
           )}

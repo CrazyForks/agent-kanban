@@ -14,9 +14,10 @@ interface TasksByStatus {
 interface AdminStats {
   users: { total: number; recent: number };
   agents: { total: number; online: number };
+  machines: { total: number; online: number };
   tasks: TasksByStatus;
   boards: { total: number };
-  machines: { total: number; online: number };
+  runtime_sessions: { total: number; active: number };
 }
 
 const STATUS_BAR_CLASS: Record<string, string> = {
@@ -118,17 +119,19 @@ export function AdminDashboardPage() {
       <h1 className="text-2xl font-semibold text-content-primary tracking-tight mb-8">Dashboard</h1>
 
       {loading ? (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {[0, 1, 2, 3].map((i) => (
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+          {[0, 1, 2, 3, 4, 5].map((i) => (
             <StatCardSkeleton key={i} />
           ))}
         </div>
       ) : stats ? (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
             <StatCard label="Users" value={stats.users.total} subtitle={`${stats.users.recent} new this week`} />
             <StatCard label="Agents" value={stats.agents.total} subtitle={`${stats.agents.online} online`} />
+            <StatCard label="Machines" value={stats.machines.total} subtitle={`${stats.machines.online} online`} />
             <StatCard label="Tasks" value={taskTotal} subtitle={`${activeTaskCount} active`} />
+            <StatCard label="Sessions" value={stats.runtime_sessions.total} subtitle={`${stats.runtime_sessions.active} active`} />
             <StatCard label="Boards" value={stats.boards.total} subtitle="" />
           </div>
           <TaskStatusBar byStatus={tasksByStatus} />

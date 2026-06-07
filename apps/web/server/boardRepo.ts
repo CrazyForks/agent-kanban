@@ -84,7 +84,7 @@ export async function getBoard(db: D1, boardId: string): Promise<BoardWithTasks 
     }
   }
 
-  return parseBoard({ ...board, tasks: tasks.results.map((t) => parseJsonFields(t, ["labels", "input"])) });
+  return parseBoard({ ...board, tasks: tasks.results.map((t) => parseJsonFields(t, ["labels", "input", "metadata"])) });
 }
 
 export async function getDefaultBoard(db: D1, ownerId: string): Promise<Board | null> {
@@ -227,7 +227,7 @@ export async function getBoardBySlug(db: D1, slug: string): Promise<BoardWithTas
     .bind(board.id)
     .all<Task>();
 
-  return parseBoard({ ...board, tasks: tasks.results.map((t) => parseJsonFields(t, ["labels", "input"])) });
+  return parseBoard({ ...board, tasks: tasks.results.map((t) => parseJsonFields(t, ["labels", "input", "metadata"])) });
 }
 
 export async function deleteBoard(db: D1, boardId: string): Promise<boolean> {
