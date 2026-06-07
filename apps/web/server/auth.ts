@@ -79,9 +79,6 @@ const ROUTE_RULES: { method: string; pattern: RegExp; rule: RouteRule }[] = [
   // Agent inbox — user only
   { method: "GET", pattern: /^\/api\/agents\/[^/]+\/inbox(\/[^/]+)?$/, rule: { allow: ["user"] } },
 
-  // Machine runner onboarding — AK credentials are exchanged for internal runtime credentials
-  { method: "POST", pattern: /^\/api\/runtime\/runners\/onboarding$/, rule: { allow: ["user", "machine"] } },
-
   // Admin — user identity only (Better Auth plugin enforces role internally)
   { method: "POST", pattern: /^\/api\/auth\/admin\//, rule: { allow: ["user"] } },
   { method: "GET", pattern: /^\/api\/auth\/admin\//, rule: { allow: ["user"] } },

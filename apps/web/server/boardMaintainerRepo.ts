@@ -1,4 +1,4 @@
-import { type D1, newLongId, parseJsonFields } from "./db";
+import { type D1, newLongId } from "./db";
 
 export interface BoardMaintainer {
   id: string;
@@ -15,22 +15,6 @@ export interface BoardMaintainer {
   status: "active" | "paused" | "archived";
   last_run_at: string | null;
   last_ama_session_id: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface BoardMaintainerRun {
-  id: string;
-  maintainer_id: string;
-  board_id: string;
-  ama_schedule_run_id: string;
-  ama_session_id: string | null;
-  scheduled_for: string;
-  heartbeat_at: string;
-  status: "claimed" | "session_created" | "failed";
-  correlation_id: string;
-  error_message: string | null;
-  metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }
@@ -53,23 +37,6 @@ export interface UpdateBoardMaintainerInput {
   prompt?: string;
   intervalSeconds?: number;
   status?: "active" | "paused" | "archived";
-}
-
-export interface AmaRunSnapshot {
-  id: string;
-  scheduledFor: string;
-  heartbeatAt: string;
-  status: "claimed" | "session_created" | "failed";
-  sessionId: string | null;
-  correlationId: string;
-  errorMessage: string | null;
-  metadata: Record<string, unknown>;
-  createdAt: string;
-  updatedAt: string;
-}
-
-function parseRun<T extends BoardMaintainerRun>(row: T): T {
-  return parseJsonFields(row, ["metadata"]);
 }
 
 export async function getOwnedBoard(db: D1, ownerId: string, boardId: string) {
@@ -163,61 +130,4 @@ export async function updateBoardMaintainer(
     .bind(...values)
     .run();
   return await getBoardMaintainer(db, ownerId, boardId, maintainerId);
-}
-
-export async function syncBoardMaintainerRuns(db: D1, maintainer: BoardMaintainer, runs: AmaRunSnapshot[]): Promise<BoardMaintainerRun[]> {
-  const statements = runs.map((run) =>
-    db
-      .prepare(
-        `INSERT INTO board_maintainer_runs (
-          id, maintainer_id, board_id, ama_schedule_run_id, ama_session_id, scheduled_for, heartbeat_at,
-          status, correlation_id, error_message, metadata, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(ama_schedule_run_id) DO UPDATE SET
-          ama_session_id = excluded.ama_session_id,
-          status = excluded.status,
-          error_message = excluded.error_message,
-          metadata = excluded.metadata,
-          updated_at = excluded.updated_at`,
-      )
-      .bind(
-        `bmr_${run.id}`,
-        maintainer.id,
-        maintainer.board_id,
-        run.id,
-        run.sessionId,
-        run.scheduledFor,
-        run.heartbeatAt,
-        run.status,
-        run.correlationId,
-        run.errorMessage,
-        JSON.stringify(run.metadata ?? {}),
-        run.createdAt,
-        run.updatedAt,
-      ),
-  );
-  if (statements.length > 0) await db.batch(statements);
-
-  const lastSession = runs.find((run) => run.sessionId)?.sessionId ?? maintainer.last_ama_session_id;
-  const lastRunAt = runs[0]?.heartbeatAt ?? maintainer.last_run_at;
-  await db
-    .prepare("UPDATE board_maintainers SET last_run_at = ?, last_ama_session_id = ?, updated_at = ? WHERE id = ?")
-    .bind(lastRunAt, lastSession, new Date().toISOString(), maintainer.id)
-    .run();
-
-  return await listBoardMaintainerRuns(db, maintainer.owner_id, maintainer.board_id, maintainer.id);
-}
-
-export async function listBoardMaintainerRuns(db: D1, ownerId: string, boardId: string, maintainerId: string): Promise<BoardMaintainerRun[]> {
-  const rows = await db
-    .prepare(
-      `SELECT r.*
-       FROM board_maintainer_runs r
-       JOIN board_maintainers m ON m.id = r.maintainer_id
-       WHERE m.owner_id = ? AND r.board_id = ? AND r.maintainer_id = ?
-       ORDER BY r.created_at DESC`,
-    )
-    .bind(ownerId, boardId, maintainerId)
-    .all<BoardMaintainerRun>();
-  return rows.results.map(parseRun);
 }

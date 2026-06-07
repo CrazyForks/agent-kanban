@@ -24,20 +24,13 @@ function env(overrides: Partial<Env> = {}): Env {
     MAILS_ADMIN_TOKEN: "",
     CF_ACCOUNT_ID: "cf-account",
     CF_API_TOKEN: "cf-token",
+    AK_API_URL: "https://ak.example.com",
     AMA_ORIGIN: "https://ama.test/",
     AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
     AMA_OAUTH_CLIENT_ID: "ak-app",
     AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     AMA_OAUTH_SCOPE: "ama:project",
-    AMA_PROJECT_ID: "project_123",
-    AMA_AUDIENCE: "https://ama.test",
-    AMA_TOKEN_EXCHANGE_URL: "https://auth.test/oauth/token",
-    AMA_TOKEN_EXCHANGE_CLIENT_ID: "ak-runner-client",
-    AMA_TOKEN_EXCHANGE_CLIENT_SECRET: "runner-client-secret",
-    AK_FEDERATED_RUNNER_ISSUER: "https://ak.example.com",
     AK_FEDERATED_RUNNER_SUBJECT_SECRET: "ak-subject-secret",
-    AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
-    AMA_SESSION_SECRET_VAULT_ID: "vault_123",
     ...overrides,
   };
 }
@@ -50,8 +43,7 @@ describe("AMA runtime adapter", () => {
   it("reports configured when origin, environment, and a token source exist", () => {
     expect(isAmaRuntimeConfigured(env())).toBe(true);
     expect(isAmaRuntimeConfigured(env({ AMA_OAUTH_CLIENT_SECRET: undefined }))).toBe(false);
-    expect(isAmaRuntimeConfigured(env({ AMA_ACCESS_TOKEN: "dev-token", AMA_OAUTH_CLIENT_SECRET: undefined }))).toBe(true);
-    expect(isAmaRuntimeConfigured(env({ AMA_PROJECT_ID: undefined }))).toBe(true);
+    expect(isAmaRuntimeConfigured(env())).toBe(true);
   });
 
   it("creates sessions through AMA SDK without sending AK product correlation", async () => {
@@ -71,6 +63,7 @@ describe("AMA runtime adapter", () => {
         expect(body).toEqual({
           agentId: "agent_123",
           environmentId: "env_123",
+          runtime: "codex",
           title: "Implement metadata",
           resourceRefs: [{ type: "github_repository", owner: "saltbo", repo: "agent-kanban" }],
           runtimeEnv: { AK_API_URL: "https://ak.example.com", AK_AGENT_ID: "agent_123" },
@@ -95,7 +88,10 @@ describe("AMA runtime adapter", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const dispatch = await createAmaTaskSession(env(), {
+      projectId: "project_123",
       agentId: "agent_123",
+      environmentId: "env_123",
+      runtime: "codex",
       title: "Implement metadata",
       initialPrompt: "Use AK CLI to claim and review the task.",
       resourceRefs: [{ type: "github_repository", owner: "saltbo", repo: "agent-kanban" }],
@@ -142,9 +138,11 @@ describe("AMA runtime adapter", () => {
 
     await expect(
       createAmaSessionSecret(env(), {
+        projectId: "project_123",
+        vaultId: "vault_123",
         name: "AK_AGENT_KEY_session_123",
         secretValue: '{"kty":"OKP"}',
-        metadata: { purpose: "ak-agent-session" },
+        metadata: { purpose: "agent-session" },
       }),
     ).resolves.toEqual({ credentialId: "vaultcred_123", activeVersionId: "vaultver_123" });
   });
@@ -168,7 +166,7 @@ describe("AMA runtime adapter", () => {
         return new Response(JSON.stringify({ id: "epb_123" }), { status: 201 });
       }
       if (url === "https://auth.test/oauth/token" && String(init?.body).includes("token-exchange")) {
-        expect((init?.headers as Record<string, string>).authorization).toBe(`Basic ${btoa("ak-runner-client:runner-client-secret")}`);
+        expect((init?.headers as Record<string, string>).authorization).toBe(`Basic ${btoa("ak-app:ak-secret")}`);
         const form = new URLSearchParams(String(init?.body));
         expect(form.get("grant_type")).toBe("urn:ietf:params:oauth:grant-type:token-exchange");
         expect(form.get("audience")).toBe("https://ama.test");

@@ -139,6 +139,7 @@ export interface Machine {
   version: string;
   runtimes: MachineRuntime[];
   usage_info: UsageInfo | null;
+  ama_environment_id: string | null;
   last_heartbeat_at: string | null;
   created_at: string;
 }

@@ -174,17 +174,6 @@ export function formatMaintainerList(maintainers: any[]): string {
     .join("\n");
 }
 
-export function formatMaintainerRuns(runs: any[]): string {
-  if (runs.length === 0) return "No maintainer runs found.";
-  return runs
-    .map((run) => {
-      const session = run.ama_session_id ? ` session=${run.ama_session_id}` : "";
-      const error = run.error_message ? ` error=${run.error_message}` : "";
-      return `  ${run.ama_schedule_run_id}  [${run.status}] scheduled=${run.scheduled_for}${session}${error}`;
-    })
-    .join("\n");
-}
-
 export function formatRepository(repo: any): string {
   const lines: string[] = [];
   lines.push(`${repo.name}`);

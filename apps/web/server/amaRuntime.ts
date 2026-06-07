@@ -8,9 +8,10 @@ export interface AmaRuntimeSecretEnvRef {
 }
 
 export interface AmaTaskSessionInput {
-  projectId?: string;
+  projectId: string;
   agentId: string;
-  environmentId?: string | null;
+  environmentId: string;
+  runtime: string;
   title: string;
   initialPrompt?: string | null;
   resourceRefs?: AmaResourceRef[];
@@ -19,7 +20,7 @@ export interface AmaTaskSessionInput {
 }
 
 export interface AmaAgentInput {
-  projectId?: string;
+  projectId: string;
   name: string;
   description?: string | null;
   instructions?: string | null;
@@ -39,7 +40,6 @@ export interface AmaAgent {
 
 export interface AmaEnvironment {
   id: string;
-  runtime: string;
 }
 
 export interface AmaProviderModelProfile {
@@ -58,7 +58,8 @@ export interface AmaSessionDispatch {
 }
 
 export interface AmaSessionSecretInput {
-  projectId?: string;
+  projectId: string;
+  vaultId: string;
   name: string;
   secretValue: string;
   metadata?: Record<string, unknown>;
@@ -70,8 +71,10 @@ export interface AmaSessionSecret {
 }
 
 export interface AmaScheduledTriggerInput {
+  projectId: string;
   agentId: string;
-  environmentId?: string | null;
+  environmentId: string;
+  runtime: string;
   name: string;
   promptTemplate: string;
   intervalSeconds: number;
@@ -84,6 +87,7 @@ export interface AmaScheduledTriggerInput {
 export interface AmaScheduledTriggerUpdate {
   agentId?: string;
   environmentId?: string | null;
+  runtime?: string;
   name?: string;
   promptTemplate?: string;
   intervalSeconds?: number;
@@ -100,19 +104,6 @@ export interface AmaScheduledTrigger {
   status: "active" | "paused" | "archived";
   lastDispatchedAt: string | null;
   lastRunId: string | null;
-}
-
-export interface AmaScheduledTriggerRun {
-  id: string;
-  scheduledFor: string;
-  heartbeatAt: string;
-  status: "claimed" | "session_created" | "failed";
-  sessionId: string | null;
-  correlationId: string;
-  errorMessage: string | null;
-  metadata: Record<string, unknown>;
-  createdAt: string;
-  updatedAt: string;
 }
 
 export interface AmaRuntimeCommandResult {
@@ -154,7 +145,6 @@ interface AmaAgentResponse {
 
 interface AmaEnvironmentResponse {
   id: string;
-  runtime: string;
 }
 
 interface AmaProviderResponse {
@@ -197,26 +187,46 @@ export interface AmaRunnerToken {
   expiresIn: number | null;
 }
 
+export interface AmaProject {
+  id: string;
+  name: string;
+}
+
+export interface AmaVaultInput {
+  projectId: string;
+  name: string;
+  description?: string;
+  scope: "project" | "organization";
+  metadata?: Record<string, unknown>;
+}
+
+export interface AmaVault {
+  id: string;
+}
+
+export interface AmaEnvironmentInput {
+  projectId: string;
+  name: string;
+  description?: string;
+  hostingMode: "self_hosted" | "cloud";
+  metadata?: Record<string, unknown>;
+}
+
 export function isAmaRuntimeConfigured(env: Env): boolean {
-  return Boolean(env.AMA_ORIGIN && defaultEnvironmentId(env) && hasTokenSource(env));
+  return Boolean(env.AMA_ORIGIN && hasTokenSource(env));
 }
 
 export function isAmaTaskDispatchConfigured(env: Env): boolean {
-  return isAmaRuntimeConfigured(env) && Boolean(env.AMA_SESSION_SECRET_VAULT_ID);
+  return isAmaRuntimeConfigured(env);
 }
 
 export async function createAmaTaskSession(env: Env, input: AmaTaskSessionInput): Promise<AmaSessionDispatch> {
-  const projectId = input.projectId ?? requireEnv(env.AMA_PROJECT_ID, "AMA_PROJECT_ID");
-  const environmentId = input.environmentId ?? defaultEnvironmentId(env);
-  if (!environmentId) {
-    throw new Error("AMA_DEFAULT_ENVIRONMENT_ID is required when task input does not specify an AMA environment");
-  }
-
-  const client = await createAmaClient(env, projectId);
+  const client = await createAmaClient(env, input.projectId);
   const session = await client.request<AmaSessionResponse>("createSession", {
     body: {
       agentId: input.agentId,
-      environmentId,
+      environmentId: input.environmentId,
+      runtime: input.runtime,
       title: input.title,
       resourceRefs: input.resourceRefs ?? [],
       ...(input.runtimeEnv ? { runtimeEnv: input.runtimeEnv } : {}),
@@ -226,9 +236,9 @@ export async function createAmaTaskSession(env: Env, input: AmaTaskSessionInput)
   });
 
   return {
-    projectId,
+    projectId: input.projectId,
     agentId: session.agentId,
-    environmentId: session.environmentId ?? environmentId,
+    environmentId: session.environmentId ?? input.environmentId,
     sessionId: session.id,
     status: session.status,
     statusReason: session.statusReason,
@@ -236,8 +246,7 @@ export async function createAmaTaskSession(env: Env, input: AmaTaskSessionInput)
 }
 
 export async function createAmaAgent(env: Env, input: AmaAgentInput): Promise<AmaAgent> {
-  const projectId = input.projectId ?? requireEnv(env.AMA_PROJECT_ID, "AMA_PROJECT_ID");
-  const client = await createAmaClient(env, projectId);
+  const client = await createAmaClient(env, input.projectId);
   const agent = await withAmaErrorDetails("create runtime agent", () =>
     client.request<AmaAgentResponse>("createAgent", {
       body: {
@@ -259,6 +268,44 @@ export async function createAmaAgent(env: Env, input: AmaAgentInput): Promise<Am
     provider: agent.provider,
     model: agent.model,
   };
+}
+
+export async function createAmaProject(env: Env, input: { name: string }): Promise<AmaProject> {
+  const client = await createAmaClient(env);
+  const project = await withAmaErrorDetails("create project", () =>
+    client.request<{ id: string; name: string }>("createProject", { body: { name: input.name } }),
+  );
+  return { id: project.id, name: project.name };
+}
+
+export async function createAmaVault(env: Env, input: AmaVaultInput): Promise<AmaVault> {
+  const client = await createAmaClient(env, input.projectId);
+  const vault = await withAmaErrorDetails("create vault", () =>
+    client.request<{ id: string }>("createVault", {
+      body: {
+        name: input.name,
+        description: input.description,
+        scope: input.scope,
+        metadata: input.metadata ?? {},
+      },
+    }),
+  );
+  return { id: vault.id };
+}
+
+export async function createAmaEnvironment(env: Env, input: AmaEnvironmentInput): Promise<AmaEnvironment> {
+  const client = await createAmaClient(env, input.projectId);
+  const environment = await withAmaErrorDetails("create environment", () =>
+    client.request<AmaEnvironmentResponse>("createEnvironment", {
+      body: {
+        name: input.name,
+        description: input.description,
+        hostingMode: input.hostingMode,
+        metadata: input.metadata ?? {},
+      },
+    }),
+  );
+  return { id: environment.id };
 }
 
 async function withAmaErrorDetails<T>(operation: string, fn: () => Promise<T>): Promise<T> {
@@ -292,28 +339,32 @@ export async function readAmaAgent(env: Env, projectId: string, agentId: string)
 export async function readAmaEnvironment(env: Env, projectId: string, environmentId: string): Promise<AmaEnvironment> {
   const client = await createAmaClient(env, projectId);
   const environment = await client.request<AmaEnvironmentResponse>("readEnvironment", { path: { environmentId } });
-  return { id: environment.id, runtime: environment.runtime };
+  return { id: environment.id };
 }
 
 export async function resolveAmaProviderModelProfile(
   env: Env,
   projectId: string,
-  input: { environmentId: string; preferredModel?: string | null },
+  input: { runtime: string; preferredModel?: string | null },
 ): Promise<AmaProviderModelProfile> {
-  const environment = await readAmaEnvironment(env, projectId, input.environmentId);
-  const profiles = await listAmaProviderModelProfiles(env, projectId, environment.runtime);
+  const profiles = await listAmaProviderModelProfiles(env, projectId, input.runtime);
   const preferred = input.preferredModel ? profiles.find((profile) => profile.model === input.preferredModel) : null;
   const profile = preferred ?? profiles[0];
   if (!profile) {
-    throw new Error(`No available runtime provider model for runtime ${environment.runtime}`);
+    throw new Error(`No available runtime provider model for runtime ${input.runtime}`);
   }
   return profile;
 }
 
-export async function defaultAmaRunnerCapabilities(env: Env, projectId: string, environmentId: string): Promise<string[]> {
-  const environment = await readAmaEnvironment(env, projectId, environmentId);
-  const profiles = await listAmaProviderModelProfiles(env, projectId, environment.runtime);
-  return ["sandbox.exec", ...profiles.map((profile) => runtimeProviderModelCapability(profile.runtime, profile.provider, profile.model))];
+export async function defaultAmaRunnerCapabilities(env: Env, projectId: string, runtimes: string[]): Promise<string[]> {
+  const capabilities = new Set(["sandbox.exec"]);
+  for (const runtime of runtimes) {
+    const profiles = await listAmaProviderModelProfiles(env, projectId, runtime);
+    for (const profile of profiles) {
+      capabilities.add(runtimeProviderModelCapability(profile.runtime, profile.provider, profile.model));
+    }
+  }
+  return [...capabilities];
 }
 
 export function runtimeProviderModelCapability(runtime: string, provider: string, model: string) {
@@ -364,11 +415,11 @@ export async function createAmaExternalProjectBinding(env: Env, input: AmaExtern
 }
 
 export async function createAmaFederatedRunnerToken(env: Env, input: AmaRunnerTokenInput): Promise<AmaRunnerToken> {
-  const tokenUrl = requireEnv(env.AMA_TOKEN_EXCHANGE_URL, "AMA_TOKEN_EXCHANGE_URL");
-  const clientId = requireEnv(env.AMA_TOKEN_EXCHANGE_CLIENT_ID, "AMA_TOKEN_EXCHANGE_CLIENT_ID");
-  const clientSecret = requireEnv(env.AMA_TOKEN_EXCHANGE_CLIENT_SECRET, "AMA_TOKEN_EXCHANGE_CLIENT_SECRET");
-  const audience = requireEnv(env.AMA_AUDIENCE, "AMA_AUDIENCE");
-  const issuer = requireEnv(env.AK_FEDERATED_RUNNER_ISSUER, "AK_FEDERATED_RUNNER_ISSUER").replace(/\/$/, "");
+  const tokenUrl = requireEnv(env.AMA_OAUTH_TOKEN_URL, "AMA_OAUTH_TOKEN_URL");
+  const clientId = requireEnv(env.AMA_OAUTH_CLIENT_ID, "AMA_OAUTH_CLIENT_ID");
+  const clientSecret = requireEnv(env.AMA_OAUTH_CLIENT_SECRET, "AMA_OAUTH_CLIENT_SECRET");
+  const audience = requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN").replace(/\/$/, "");
+  const issuer = apiUrl(env, "http://localhost").replace(/\/$/, "");
   const subjectSecret = requireEnv(env.AK_FEDERATED_RUNNER_SUBJECT_SECRET, "AK_FEDERATED_RUNNER_SUBJECT_SECRET");
   const subjectToken = await signSubjectToken(subjectSecret, {
     iss: issuer,
@@ -411,10 +462,9 @@ export async function createAmaFederatedRunnerToken(env: Env, input: AmaRunnerTo
 }
 
 export async function createAmaSessionSecret(env: Env, input: AmaSessionSecretInput): Promise<AmaSessionSecret> {
-  const vaultId = requireEnv(env.AMA_SESSION_SECRET_VAULT_ID, "AMA_SESSION_SECRET_VAULT_ID");
   const client = await createAmaClient(env, input.projectId);
   const credential = await client.request<AmaCredentialResponse>("createVaultCredential", {
-    path: { vaultId },
+    path: { vaultId: input.vaultId },
     body: {
       name: input.name,
       type: "session_env_secret",
@@ -478,15 +528,12 @@ export async function stopAmaSession(env: Env, sessionId: string, reason: "user_
 }
 
 export async function createAmaScheduledAgentTrigger(env: Env, input: AmaScheduledTriggerInput): Promise<AmaScheduledTrigger> {
-  const environmentId = input.environmentId ?? defaultEnvironmentId(env);
-  if (!environmentId) {
-    throw new Error("AMA_DEFAULT_ENVIRONMENT_ID is required when scheduled trigger input does not specify an AMA environment");
-  }
-  const client = await createAmaClient(env);
+  const client = await createAmaClient(env, input.projectId);
   return await client.request<AmaScheduledTrigger>("createScheduledAgentTrigger", {
     body: {
       agentId: input.agentId,
-      environmentId,
+      environmentId: input.environmentId,
+      runtime: input.runtime,
       name: input.name,
       promptTemplate: input.promptTemplate,
       resourceRefs: input.resourceRefs ?? [],
@@ -501,7 +548,8 @@ export async function createAmaScheduledAgentTrigger(env: Env, input: AmaSchedul
 export async function updateAmaScheduledAgentTrigger(env: Env, scheduleId: string, input: AmaScheduledTriggerUpdate): Promise<AmaScheduledTrigger> {
   const body: Record<string, unknown> = {};
   if (input.agentId !== undefined) body.agentId = input.agentId;
-  if (input.environmentId !== undefined) body.environmentId = input.environmentId ?? defaultEnvironmentId(env);
+  if (input.environmentId !== undefined) body.environmentId = input.environmentId;
+  if (input.runtime !== undefined) body.runtime = input.runtime;
   if (input.name !== undefined) body.name = input.name;
   if (input.promptTemplate !== undefined) body.promptTemplate = input.promptTemplate;
   if (input.intervalSeconds !== undefined) body.schedule = { type: "interval", intervalSeconds: input.intervalSeconds };
@@ -518,27 +566,15 @@ export async function archiveAmaScheduledAgentTrigger(env: Env, scheduleId: stri
   await client.request("archiveScheduledAgentTrigger", { path: { triggerId: scheduleId } });
 }
 
-export async function listAmaScheduledTriggerRuns(env: Env, scheduleId: string): Promise<AmaScheduledTriggerRun[]> {
-  const client = await createAmaClient(env);
-  const response = await client.request<{ data: AmaScheduledTriggerRun[] }>("listScheduledTriggerRuns", {
-    path: { triggerId: scheduleId },
-    query: { limit: 100 },
-  });
-  return response.data;
-}
-
 async function createAmaClient(env: Env, projectId?: string) {
   return new AmaClient({
     origin: requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN"),
     accessToken: await accessToken(env),
-    projectId: projectId ?? env.AMA_PROJECT_ID,
+    projectId,
   });
 }
 
 async function accessToken(env: Env) {
-  if (env.AMA_ACCESS_TOKEN) {
-    return env.AMA_ACCESS_TOKEN;
-  }
   const tokenUrl = requireEnv(env.AMA_OAUTH_TOKEN_URL, "AMA_OAUTH_TOKEN_URL");
   const clientId = requireEnv(env.AMA_OAUTH_CLIENT_ID, "AMA_OAUTH_CLIENT_ID");
   const clientSecret = requireEnv(env.AMA_OAUTH_CLIENT_SECRET, "AMA_OAUTH_CLIENT_SECRET");
@@ -566,12 +602,12 @@ async function accessToken(env: Env) {
   return token.access_token;
 }
 
-function defaultEnvironmentId(env: Env) {
-  return env.AMA_DEFAULT_ENVIRONMENT_ID || null;
+function hasTokenSource(env: Env) {
+  return Boolean(env.AMA_OAUTH_TOKEN_URL && env.AMA_OAUTH_CLIENT_ID && env.AMA_OAUTH_CLIENT_SECRET);
 }
 
-function hasTokenSource(env: Env) {
-  return Boolean(env.AMA_ACCESS_TOKEN || (env.AMA_OAUTH_TOKEN_URL && env.AMA_OAUTH_CLIENT_ID && env.AMA_OAUTH_CLIENT_SECRET));
+function apiUrl(env: Env, requestOrigin: string) {
+  return (env.AK_API_URL || requestOrigin).replace(/\/$/, "");
 }
 
 function requireEnv(value: string | undefined, name: string): string {

@@ -121,7 +121,6 @@ export const api = {
     updateMaintainer: (id: string, maintainerId: string, body: Record<string, unknown>) =>
       request<any>("PATCH", `/boards/${id}/maintainers/${maintainerId}`, body),
     deleteMaintainer: (id: string, maintainerId: string) => request<any>("DELETE", `/boards/${id}/maintainers/${maintainerId}`),
-    maintainerRuns: (id: string, maintainerId: string) => request<any[]>("GET", `/boards/${id}/maintainers/${maintainerId}/runs`),
     delete: (id: string) => request<void>("DELETE", `/boards/${id}`),
   },
   share: {

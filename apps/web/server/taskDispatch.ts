@@ -2,7 +2,7 @@ import { generateKeypair, type Task } from "@agent-kanban/shared";
 import { HTTPException } from "hono/http-exception";
 import { getAgent } from "./agentRepo";
 import { bindRuntimeAgentSession, closeSession, createRuntimeAgentSession } from "./agentSessionRepo";
-import { resolveAmaProjectId } from "./amaOwnerMappingRepo";
+import { resolveAmaProjectId, resolveAmaSessionSecretVaultId } from "./amaOwnerMappingRepo";
 import {
   createAmaAgent,
   createAmaSessionSecret,
@@ -15,6 +15,7 @@ import {
   stopAmaSession,
 } from "./amaRuntime";
 import type { D1 } from "./db";
+import { getReadyMachineEnvironmentForRuntime } from "./machineRepo";
 import { getRuntimeAgentMapping, upsertRuntimeAgentMapping } from "./runtimeAgentMappingRepo";
 import { updateTask } from "./taskRepo";
 import type { Env } from "./types";
@@ -26,31 +27,33 @@ export async function dispatchTaskToAma(db: D1, env: Env, ownerId: string, task:
     return task;
   }
 
-  const amaEnvironmentId = env.AMA_DEFAULT_ENVIRONMENT_ID;
   const amaProjectId = await resolveAmaProjectId(db, env, ownerId);
-  if (!amaEnvironmentId) {
-    throw new HTTPException(500, { message: "Task dispatch runtime is not configured" });
-  }
-  const amaAgent = await ensureAmaAgentForAkAgent(db, env, ownerId, task.assigned_to, amaProjectId, amaEnvironmentId);
+  const akAgent = await getAgent(db, task.assigned_to, ownerId);
+  if (!akAgent) throw new HTTPException(404, { message: "Assigned agent not found" });
+  const machineRuntime = await getReadyMachineEnvironmentForRuntime(db, ownerId, akAgent.runtime);
+  if (!machineRuntime) throw new HTTPException(409, { message: `Runtime "${akAgent.runtime}" is not available on any online machine` });
+  const amaEnvironmentId = machineRuntime.environmentId;
+  const amaRuntime = amaRuntimeName(akAgent.runtime);
+  const amaAgent = await ensureAmaAgentForAkAgent(db, env, ownerId, task.assigned_to, amaProjectId, amaRuntime);
 
   const sessionIdentity = await createAkAgentSessionIdentity(db, env, ownerId, task.assigned_to);
+  const vaultId = await resolveAmaSessionSecretVaultId(db, env, ownerId);
   let secret: Awaited<ReturnType<typeof createAmaSessionSecret>> | null = null;
   let dispatch: Awaited<ReturnType<typeof createAmaTaskSession>> | null = null;
   try {
     secret = await createAmaSessionSecret(env, {
       projectId: amaProjectId,
+      vaultId,
       name: secretReferenceName(sessionIdentity.sessionId),
       secretValue: JSON.stringify(sessionIdentity.privateKeyJwk),
-      metadata: {
-        purpose: "ak-agent-session",
-        agentId: task.assigned_to,
-      },
+      metadata: { purpose: "agent-session" },
     });
 
     dispatch = await createAmaTaskSession(env, {
       projectId: amaProjectId,
       agentId: amaAgent.id,
       environmentId: amaEnvironmentId,
+      runtime: amaRuntime,
       title: `AK task ${task.id}: ${task.title}`,
       initialPrompt: taskInitialPrompt(task),
       resourceRefs: await taskResourceRefs(db, task),
@@ -73,6 +76,7 @@ export async function dispatchTaskToAma(db: D1, env: Env, ownerId: string, task:
     "ak.agentId": task.assigned_to,
     "ama.agentId": amaAgent.id,
     "ama.environmentId": dispatch.environmentId,
+    "ama.runtime": amaRuntime,
     "ama.sessionId": dispatch.sessionId,
     "ama.session.status": dispatch.status,
     "ama.session.statusReason": dispatch.statusReason,
@@ -82,7 +86,7 @@ export async function dispatchTaskToAma(db: D1, env: Env, ownerId: string, task:
   });
 }
 
-export async function ensureAmaAgentForAkAgent(db: D1, env: Env, ownerId: string, akAgentId: string, projectId: string, environmentId: string) {
+export async function ensureAmaAgentForAkAgent(db: D1, env: Env, ownerId: string, akAgentId: string, projectId: string, runtime: string) {
   const existing = await getRuntimeAgentMapping(db, { ownerId, akAgentId, runtimeSource: "ama" });
   if (existing) {
     const live = await readAmaAgent(env, projectId, existing.runtimeAgentId);
@@ -92,7 +96,7 @@ export async function ensureAmaAgentForAkAgent(db: D1, env: Env, ownerId: string
   const akAgent = await getAgent(db, akAgentId, ownerId);
   if (!akAgent) throw new HTTPException(404, { message: "Assigned agent not found" });
   const runtimeProfile = await resolveAmaProviderModelProfile(env, projectId, {
-    environmentId,
+    runtime,
     preferredModel: akAgent.model,
   });
   const agent = await createAmaAgent(env, {
@@ -103,13 +107,7 @@ export async function ensureAmaAgentForAkAgent(db: D1, env: Env, ownerId: string
     role: akAgent.role,
     provider: runtimeProfile.provider,
     model: runtimeProfile.model,
-    metadata: {
-      source: "agent-kanban",
-      "ak.agentId": akAgent.id,
-      "ak.agentUsername": akAgent.username,
-      "ak.runtime": akAgent.runtime,
-      "ama.environmentRuntime": runtimeProfile.runtime,
-    },
+    metadata: { runtime: runtimeProfile.runtime },
   });
   await upsertRuntimeAgentMapping(db, {
     ownerId,
@@ -123,6 +121,10 @@ export async function ensureAmaAgentForAkAgent(db: D1, env: Env, ownerId: string
     },
   });
   return agent;
+}
+
+export function amaRuntimeName(runtime: string): string {
+  return runtime === "claude" ? "claude-code" : runtime;
 }
 
 export async function sendTaskMessageToAma(env: Env, task: Task, message: string): Promise<Task> {

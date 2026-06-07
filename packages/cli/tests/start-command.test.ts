@@ -14,6 +14,35 @@ const assertDaemonDependenciesMock = vi.fn();
 vi.mock("node:child_process", () => ({ spawn: spawnMock }));
 vi.mock("../src/daemon/preflight.js", () => ({ assertDaemonDependencies: assertDaemonDependenciesMock }));
 vi.mock("../src/providers/registry.js", () => ({ getAvailableProviders: () => [{ name: "codex" }] }));
+vi.mock("../src/device.js", () => ({ generateDeviceId: () => "device-test" }));
+vi.mock("../src/machineName.js", () => ({ resolveMachineName: () => "test-machine" }));
+
+function mockMachineRunnerFetch(origin = "https://runner-control.test", runnerName = "ak-runner") {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "https://ak.test/api/machines") {
+      return new Response(
+        JSON.stringify({
+          id: "machine_1",
+          name: "test-machine",
+          runner: {
+            origin,
+            projectId: "project_1",
+            runnerId: "runner_from_token",
+            runnerName,
+            environmentId: "env_1",
+            capabilities: ["sandbox.exec"],
+            accessToken: "runner-token",
+            tokenType: "Bearer",
+            expiresIn: 3600,
+          },
+        }),
+        { status: 201, headers: { "content-type": "application/json" } },
+      );
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  });
+}
 
 vi.mock("../src/paths.js", async () => {
   const actual = await vi.importActual<typeof import("../src/paths.js")>("../src/paths.js");
@@ -77,32 +106,43 @@ describe("start runtime command", () => {
     const program = new Command();
     registerStartCommand(program);
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          origin: "https://runner-control.test",
-          projectId: "project_1",
-          runnerId: "runner_from_token",
-          runnerName: "ak-runner",
-          environmentId: "env_1",
-          capabilities: ["sandbox.exec"],
-          accessToken: "runner-token",
-          tokenType: "Bearer",
-          expiresIn: 3600,
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      ),
-    );
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://ak.test/api/machines") {
+        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+        expect(body.runtimes).toEqual([{ name: "codex", status: "ready", checked_at: expect.any(String) }]);
+        return new Response(
+          JSON.stringify({
+            id: "machine_1",
+            name: "test-machine",
+            runner: {
+              origin: "https://runner-control.test",
+              projectId: "project_1",
+              runnerId: "runner_from_token",
+              runnerName: "ak-runner",
+              environmentId: "env_1",
+              capabilities: ["sandbox.exec"],
+              accessToken: "runner-token",
+              tokenType: "Bearer",
+              expiresIn: 3600,
+            },
+          }),
+          { status: 201, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
 
     await program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://ak.test/api/runtime/runners/onboarding",
+      "https://ak.test/api/machines",
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({ authorization: "Bearer ak_test_key" }),
       }),
     );
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(spawnMock).toHaveBeenCalledWith(
       "ama-runner",
       [
@@ -110,6 +150,8 @@ describe("start runtime command", () => {
         "https://runner-control.test",
         "--project-id",
         "project_1",
+        "--runner-id",
+        "runner_from_token",
         "--runner-name",
         "ak-runner",
         "--environment-id",
@@ -131,22 +173,7 @@ describe("start runtime command", () => {
     const program = new Command();
     registerStartCommand(program);
     vi.spyOn(console, "log").mockImplementation(() => {});
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          origin: "https://ama.test",
-          projectId: "project_1",
-          runnerId: "runner_from_token",
-          runnerName: "local-runner",
-          environmentId: "env_1",
-          capabilities: ["sandbox.exec"],
-          accessToken: "runner-token",
-          tokenType: "Bearer",
-          expiresIn: 3600,
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      ),
-    );
+    mockMachineRunnerFetch("https://ama.test", "local-runner");
 
     await program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
 
@@ -157,6 +184,8 @@ describe("start runtime command", () => {
         "https://ama.test",
         "--project-id",
         "project_1",
+        "--runner-id",
+        "runner_from_token",
         "--runner-name",
         "local-runner",
         "--environment-id",
@@ -177,20 +206,7 @@ describe("restart runtime command", () => {
     const program = new Command();
     registerRestartCommand(program);
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          origin: "https://runner-control.test",
-          projectId: "project_1",
-          runnerId: "runner_from_token",
-          runnerName: "ak-runner",
-          environmentId: "env_1",
-          capabilities: ["sandbox.exec"],
-          accessToken: "runner-token",
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      ),
-    );
+    mockMachineRunnerFetch();
 
     await program.parseAsync(["restart", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
 
@@ -201,6 +217,8 @@ describe("restart runtime command", () => {
         "https://runner-control.test",
         "--project-id",
         "project_1",
+        "--runner-id",
+        "runner_from_token",
         "--runner-name",
         "ak-runner",
         "--environment-id",

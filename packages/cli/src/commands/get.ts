@@ -8,7 +8,6 @@ import {
   formatLabelList,
   formatMaintainer,
   formatMaintainerList,
-  formatMaintainerRuns,
   formatModelList,
   formatRepository,
   formatRepositoryList,
@@ -146,22 +145,12 @@ export function registerGetCommand(program: Command) {
 
   getCmd
     .command("maintainer [id]")
-    .description("Get board maintainers or maintainer runs")
+    .description("Get board maintainers")
     .requiredOption("--board <id>", "Board ID")
-    .option("--runs", "List heartbeat runs for a maintainer")
     .option("-o, --output <format>", "Output format (json, yaml, text)")
     .action(async (id: string | undefined, opts) => {
       const client = await createClient();
       const fmt = getOutputFormat(opts.output);
-      if (opts.runs) {
-        if (!id) {
-          console.error("Usage: ak get maintainer <id> --board <board-id> --runs");
-          process.exit(1);
-        }
-        const runs = await client.getBoardMaintainerRuns(opts.board, id);
-        output(runs, fmt, formatMaintainerRuns, { kind: "maintainerRun" });
-        return;
-      }
       const maintainers = await client.listBoardMaintainers(opts.board);
       if (id) {
         const maintainer = maintainers.find((candidate) => candidate.id === id);

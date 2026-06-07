@@ -38,9 +38,6 @@ interface BoardMaintainer {
   prompt: string;
   status: "active" | "paused" | "archived";
   ak_agent_id?: string;
-  ama_agent_id: string;
-  ama_environment_id: string;
-  ama_schedule_id: string;
   repository_id: string | null;
   interval_seconds: number;
   last_run_at: string | null;
@@ -216,7 +213,6 @@ function BoardMaintainersSection({ boardId }: { boardId: string }) {
   const deleteMaintainer = useDeleteBoardMaintainer(boardId);
   const [createOpen, setCreateOpen] = useState(false);
   const [editMaintainer, setEditMaintainer] = useState<BoardMaintainer | null>(null);
-  const [runsMaintainer, setRunsMaintainer] = useState<BoardMaintainer | null>(null);
 
   async function toggleStatus(maintainer: BoardMaintainer) {
     const status = maintainer.status === "active" ? "paused" : "active";
@@ -277,9 +273,6 @@ function BoardMaintainersSection({ boardId }: { boardId: string }) {
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  <Button variant="outline" size="xs" onClick={() => setRunsMaintainer(maintainer)}>
-                    Runs
-                  </Button>
                   <Button variant="outline" size="xs" onClick={() => setEditMaintainer(maintainer)}>
                     Edit
                   </Button>
@@ -304,16 +297,6 @@ function BoardMaintainersSection({ boardId }: { boardId: string }) {
           open
           onOpenChange={(open) => {
             if (!open) setEditMaintainer(null);
-          }}
-        />
-      )}
-      {runsMaintainer && (
-        <MaintainerRunsDialog
-          boardId={boardId}
-          maintainer={runsMaintainer}
-          open
-          onOpenChange={(open) => {
-            if (!open) setRunsMaintainer(null);
           }}
         />
       )}
@@ -479,63 +462,6 @@ function MaintainerDialog({
             {pending ? "Saving..." : isEditing ? "Save changes" : "Create maintainer"}
           </Button>
         </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function MaintainerRunsDialog({
-  boardId,
-  maintainer,
-  open,
-  onOpenChange,
-}: {
-  boardId: string;
-  maintainer: BoardMaintainer;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const runsQuery = useQuery({
-    queryKey: ["board-maintainer-runs", boardId, maintainer.id],
-    queryFn: () => api.boards.maintainerRuns(boardId, maintainer.id),
-    enabled: open,
-  });
-  const runs = (runsQuery.data ?? []) as Array<{
-    id: string;
-    status: string;
-    heartbeat_at: string;
-    ama_session_id: string | null;
-    error_message: string | null;
-  }>;
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Heartbeat runs</DialogTitle>
-          <DialogDescription>{maintainer.name}</DialogDescription>
-        </DialogHeader>
-        {runsQuery.isLoading ? (
-          <div className="space-y-2">
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-          </div>
-        ) : runs.length === 0 ? (
-          <p className="text-sm text-content-tertiary">No heartbeat runs recorded.</p>
-        ) : (
-          <div className="max-h-80 divide-y divide-border overflow-auto">
-            {runs.map((run) => (
-              <div key={run.id} className="py-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-mono text-xs text-content-primary">{run.status}</span>
-                  <span className="font-mono text-[11px] text-content-tertiary">{formatRelative(run.heartbeat_at)}</span>
-                </div>
-                {run.ama_session_id && <p className="mt-1 truncate font-mono text-[11px] text-content-secondary">session={run.ama_session_id}</p>}
-                {run.error_message && <p className="mt-1 text-xs text-error">{run.error_message}</p>}
-              </div>
-            ))}
-          </div>
-        )}
       </DialogContent>
     </Dialog>
   );

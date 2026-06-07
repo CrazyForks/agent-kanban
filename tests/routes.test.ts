@@ -59,6 +59,40 @@ describe("routes", () => {
     return { token: result.token, userId: result.user.id };
   }
 
+  async function configureAmaOwnerRuntime(ownerId: string, runtime: string, environmentId: string, projectId = "project_123", vaultId = "vault_123") {
+    const now = new Date().toISOString();
+    await env.DB.prepare(
+      `INSERT INTO ama_owner_runtime_bindings (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
+       VALUES (?, ?, ?, ?, '{}')
+       ON CONFLICT(owner_id) DO UPDATE SET
+         ama_project_id = excluded.ama_project_id,
+         external_tenant_id = excluded.external_tenant_id,
+         session_secret_vault_id = excluded.session_secret_vault_id`,
+    )
+      .bind(ownerId, projectId, ownerId, vaultId)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO machines (id, owner_id, device_id, name, os, version, runtimes, status, last_heartbeat_at, created_at, ama_environment_id)
+       VALUES (?, ?, ?, ?, 'test', '1.0.0', ?, 'online', ?, ?, ?)
+       ON CONFLICT(owner_id, device_id) DO UPDATE SET
+         runtimes = excluded.runtimes,
+         status = 'online',
+         last_heartbeat_at = excluded.last_heartbeat_at,
+         ama_environment_id = excluded.ama_environment_id`,
+    )
+      .bind(
+        `machine-${ownerId}-${runtime}`,
+        ownerId,
+        `ama-test-${ownerId}-${runtime}`,
+        `ama-test-${runtime}`,
+        JSON.stringify([{ name: runtime, status: "ready", checked_at: now }]),
+        now,
+        now,
+        environmentId,
+      )
+      .run();
+  }
+
   async function signSessionJWT(): Promise<string> {
     return new SignJWT({ sub: sessionId, aid: agentId, jti: randomUUID(), aud: BETTER_AUTH_URL })
       .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
@@ -191,15 +225,12 @@ describe("routes", () => {
     expect(body.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("creates board maintainers through AMA scheduled triggers and lists heartbeat runs", async () => {
+  it("creates board maintainers through AMA scheduled triggers", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
       AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
       AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
       AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
-      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
-      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
-      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
       AK_API_URL: env.AK_API_URL,
     };
     Object.assign(env, {
@@ -207,11 +238,9 @@ describe("routes", () => {
       AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
       AMA_OAUTH_CLIENT_ID: "ak-app",
       AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-      AMA_PROJECT_ID: "project_123",
-      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
-      AMA_SESSION_SECRET_VAULT_ID: "vault_123",
       AK_API_URL: "https://ak.test",
     });
+    await configureAmaOwnerRuntime(userTokenOwnerId, "codex", "env_123");
 
     const { createBoard } = await import("../apps/web/server/boardRepo");
     const maintainerBoard = await createBoard(env.DB, userTokenOwnerId, `maintainer-board-${crypto.randomUUID()}`, "ops");
@@ -309,27 +338,6 @@ describe("routes", () => {
         archiveRequests.push(url);
         return new Response(null, { status: 204 });
       }
-      if (url === "https://ama.test/api/scheduled-agent-triggers/sched_maintainer/runs?limit=100") {
-        return new Response(
-          JSON.stringify({
-            data: [
-              {
-                id: "schedrun_1",
-                scheduledFor: "2026-06-06T12:00:00.000Z",
-                heartbeatAt: "2026-06-06T12:01:00.000Z",
-                status: "session_created",
-                sessionId: "session_maintainer_1",
-                correlationId: "schedule:sched_maintainer:2026-06-06T12:00:00.000Z",
-                errorMessage: null,
-                metadata: { sessionMetadata: { source: "scheduled-agent-trigger" } },
-                createdAt: "2026-06-06T12:01:00.000Z",
-                updatedAt: "2026-06-06T12:01:01.000Z",
-              },
-            ],
-          }),
-          { status: 200 },
-        );
-      }
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -379,17 +387,8 @@ describe("routes", () => {
 
       const listRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers`, undefined, userToken);
       expect(listRes.status).toBe(200);
-      await expect(listRes.json()).resolves.toEqual([expect.objectContaining({ id: maintainer.id, ama_schedule_id: "sched_maintainer" })]);
-
-      const runsRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/runs`, undefined, userToken);
-      expect(runsRes.status).toBe(200);
-      await expect(runsRes.json()).resolves.toEqual([
-        expect.objectContaining({
-          maintainer_id: maintainer.id,
-          ama_schedule_run_id: "schedrun_1",
-          ama_session_id: "session_maintainer_1",
-          status: "session_created",
-        }),
+      await expect(listRes.json()).resolves.toEqual([
+        expect.objectContaining({ id: maintainer.id, ama_schedule_id: "sched_maintainer", last_run_at: null, last_ama_session_id: null }),
       ]);
 
       const pauseRes = await apiRequest("PATCH", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`, { status: "paused" }, userToken);
@@ -575,17 +574,15 @@ describe("routes", () => {
   it("GET /api/agents uses AMA as runtime availability source when AMA dispatch is configured", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_ACCESS_TOKEN: env.AMA_ACCESS_TOKEN,
-      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
-      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
-      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_ACCESS_TOKEN: "test-token",
-      AMA_PROJECT_ID: "project_123",
-      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
-      AMA_SESSION_SECRET_VAULT_ID: "vault_123",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     });
     try {
       await createTestAgent(env.DB, userId, { username: "ama-available-agent", runtime: "claude", role: "ama-runtime-source" });
@@ -1046,17 +1043,15 @@ describe("routes", () => {
   it("POST /api/tasks keeps unassigned task creation compatible when AMA dispatch is configured", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_ACCESS_TOKEN: env.AMA_ACCESS_TOKEN,
-      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
-      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
-      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_ACCESS_TOKEN: "ama-token",
-      AMA_PROJECT_ID: "project_123",
-      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
-      AMA_SESSION_SECRET_VAULT_ID: "vault_123",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     });
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -1084,9 +1079,6 @@ describe("routes", () => {
       AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
       AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
       AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
-      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
-      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
-      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
       AK_API_URL: env.AK_API_URL,
     };
     Object.assign(env, {
@@ -1094,11 +1086,9 @@ describe("routes", () => {
       AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
       AMA_OAUTH_CLIENT_ID: "ak-app",
       AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-      AMA_PROJECT_ID: "project_123",
-      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
-      AMA_SESSION_SECRET_VAULT_ID: "vault_123",
       AK_API_URL: "https://ak.test",
     });
+    await configureAmaOwnerRuntime(userId, "claude", "env_123");
 
     const taskDetail = "Use the detail alias in the task dispatch prompt.";
     let runtimePrivateKeyJwk: JsonWebKey | null = null;
@@ -1107,22 +1097,19 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/environments/env_123") {
-        return new Response(JSON.stringify({ id: "env_123", runtime: "codex" }), { status: 200 });
-      }
       if (url === "https://ama.test/api/providers?limit=100") {
         return new Response(
           JSON.stringify({
-            data: [{ id: "provider_codex", status: "active" }],
+            data: [{ id: "provider_claude", status: "active" }],
             pagination: { limit: 100, hasMore: false, nextCursor: null },
           }),
           { status: 200 },
         );
       }
-      if (url === "https://ama.test/api/providers/provider_codex/models?limit=100") {
+      if (url === "https://ama.test/api/providers/provider_claude/models?limit=100") {
         return new Response(
           JSON.stringify({
-            data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }],
+            data: [{ modelId: "claude-sonnet-4.5", availability: "available", metadata: { runtime: "claude-code" } }],
             pagination: { limit: 100, hasMore: false, nextCursor: null },
           }),
           { status: 200 },
@@ -1136,9 +1123,9 @@ describe("routes", () => {
       }
       if (url === "https://ama.test/api/agents") {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
-        expect(body.metadata).toMatchObject({ "ak.agentId": agentId });
-        expect(body.provider).toBe("provider_codex");
-        expect(body.model).toBe("gpt-5.3-codex");
+        expect(body.metadata).toMatchObject({ runtime: "claude-code" });
+        expect(body.provider).toBe("provider_claude");
+        expect(body.model).toBe("claude-sonnet-4.5");
         return new Response(
           JSON.stringify({
             id: "ama_agent_123",
@@ -1154,6 +1141,7 @@ describe("routes", () => {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         expect(body.agentId).toBe("ama_agent_123");
         expect(body.environmentId).toBe("env_123");
+        expect(body.runtime).toBe("claude-code");
         expect(body.runtimeEnv).toMatchObject({
           AK_WORKER: "1",
           AK_AGENT_ID: agentId,
@@ -1199,6 +1187,7 @@ describe("routes", () => {
         "ak.agentId": agentId,
         "ama.agentId": "ama_agent_123",
         "ama.environmentId": "env_123",
+        "ama.runtime": "claude-code",
         "ama.sessionId": "session_ama_123",
         "ama.runtimeSecretEnv.AK_AGENT_KEY": "vaultver_123",
         "ama.dispatch.result": "accepted",
@@ -1214,7 +1203,6 @@ describe("routes", () => {
       const bridgeMachine = await env.DB.prepare("SELECT id FROM machines WHERE device_id = 'ama-runtime-bridge'").first<{ id: string }>();
       expect(bridgeMachine).toBeNull();
       const calledUrls = fetchMock.mock.calls.map(([url]) => String(url));
-      expect(calledUrls).toContain("https://ama.test/api/environments/env_123");
       expect(calledUrls).toContain("https://ama.test/api/providers?limit=100");
 
       expect(runtimePrivateKeyJwk).toBeTruthy();
@@ -1245,19 +1233,14 @@ describe("routes", () => {
       AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
       AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
       AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
-      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
-      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
-      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
       AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
       AMA_OAUTH_CLIENT_ID: "ak-app",
       AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-      AMA_PROJECT_ID: "project_123",
-      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
-      AMA_SESSION_SECRET_VAULT_ID: "vault_123",
     });
+    await configureAmaOwnerRuntime(userId, "codex", "env_123");
     const tempAgent = await createTestAgent(env.DB, userId, {
       name: `Failed Dispatch Agent ${randomUUID()}`,
       username: `failed-dispatch-${randomUUID()}`,
@@ -1327,19 +1310,14 @@ describe("routes", () => {
       AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
       AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
       AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
-      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
-      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
-      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
       AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
       AMA_OAUTH_CLIENT_ID: "ak-app",
       AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-      AMA_PROJECT_ID: "project_123",
-      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
-      AMA_SESSION_SECRET_VAULT_ID: "vault_123",
     });
+    await configureAmaOwnerRuntime(userId, "codex", "env_123");
     const tempAgent = await createTestAgent(env.DB, userId, {
       name: `Assign Failure Agent ${randomUUID()}`,
       username: `assign-failure-${randomUUID()}`,
@@ -1647,18 +1625,12 @@ describe("routes", () => {
       AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
       AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
       AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
-      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
-      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
-      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
       AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
       AMA_OAUTH_CLIENT_ID: "ak-app",
       AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-      AMA_PROJECT_ID: "project_123",
-      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
-      AMA_SESSION_SECRET_VAULT_ID: "vault_123",
     });
 
     const runtimeMessages: string[] = [];
@@ -1720,16 +1692,12 @@ describe("routes", () => {
       AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
       AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
       AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
-      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
-      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
       AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
       AMA_OAUTH_CLIENT_ID: "ak-app",
       AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-      AMA_PROJECT_ID: "project_123",
-      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -1773,17 +1741,15 @@ describe("routes", () => {
   it("updates AMA runtime session usage and closes runtime sessions on terminal lifecycle states", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_ACCESS_TOKEN: env.AMA_ACCESS_TOKEN,
-      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
-      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
-      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_ACCESS_TOKEN: "ama-token",
-      AMA_PROJECT_ID: "project_123",
-      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
-      AMA_SESSION_SECRET_VAULT_ID: "vault_123",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     });
 
     try {
@@ -1844,16 +1810,12 @@ describe("routes", () => {
       AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
       AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
       AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
-      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
-      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
       AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
       AMA_OAUTH_CLIENT_ID: "ak-app",
       AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-      AMA_PROJECT_ID: "project_123",
-      AMA_DEFAULT_ENVIRONMENT_ID: "env_123",
     });
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -2006,18 +1968,16 @@ describe("routes", () => {
   it("legacy daemon APIs remain available once AMA dispatch is configured", async () => {
     const previous = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_ACCESS_TOKEN: env.AMA_ACCESS_TOKEN,
-      AMA_PROJECT_ID: env.AMA_PROJECT_ID,
-      AMA_DEFAULT_ENVIRONMENT_ID: env.AMA_DEFAULT_ENVIRONMENT_ID,
-      AMA_SESSION_SECRET_VAULT_ID: env.AMA_SESSION_SECRET_VAULT_ID,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
       AK_API_URL: env.AK_API_URL,
     };
     Object.assign(env, {
       AMA_ORIGIN: "http://ama.test",
-      AMA_ACCESS_TOKEN: "ama-token",
-      AMA_PROJECT_ID: "ama-project",
-      AMA_DEFAULT_ENVIRONMENT_ID: "ama-env",
-      AMA_SESSION_SECRET_VAULT_ID: "ama-vault",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
       AK_API_URL: "http://ak.test",
     });
 

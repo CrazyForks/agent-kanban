@@ -13,11 +13,16 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { arch, platform, release } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
+import type { MachineRuntime } from "@agent-kanban/shared";
 import type { Command } from "commander";
 import { getCredentials, saveCredentials, setCurrent } from "../config.js";
+import { generateDeviceId } from "../device.js";
+import { resolveMachineName } from "../machineName.js";
 import { DAEMON_STATE_FILE, LOGS_DIR, PID_FILE, SESSIONS_DIR, STATE_DIR } from "../paths.js";
+import { getAvailableProviders } from "../providers/registry.js";
 import { listSessions } from "../session/store.js";
 import { getVersion } from "../version.js";
 
@@ -40,6 +45,12 @@ interface AmaRunnerOnboardingResponse {
   environmentId: string;
   capabilities: string[];
   accessToken: string;
+}
+
+interface RegisteredMachine {
+  id: string;
+  name: string;
+  runner?: AmaRunnerOnboardingResponse | null;
 }
 
 function rotateLogs(): void {
@@ -163,6 +174,13 @@ function amaRunnerOrigin(opts: Record<string, unknown>) {
   return (typeof opts.amaOrigin === "string" && opts.amaOrigin) || "machine-runner";
 }
 
+function machineRuntimes(): MachineRuntime[] {
+  const providers = getAvailableProviders();
+  if (providers.length === 0) throw new Error("No local runtime provider is available");
+  const checkedAt = new Date().toISOString();
+  return providers.map((provider) => ({ name: provider.name, status: "ready", checked_at: checkedAt }));
+}
+
 async function waitForSpawn(child: ReturnType<typeof spawn>, runnerBin: string): Promise<number> {
   return await new Promise((resolve, reject) => {
     if (typeof child.once !== "function") {
@@ -254,23 +272,33 @@ async function applyAmaRunnerOnboarding(opts: Record<string, unknown>) {
     }
   }
 
-  const response = await fetch(`${creds.apiUrl.replace(/\/$/, "")}/api/runtime/runners/onboarding`, {
+  const runtimes = machineRuntimes();
+  const machineResponse = await fetch(`${creds.apiUrl.replace(/\/$/, "")}/api/machines`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${creds.apiKey}`,
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      runnerName: opts.runnerName,
+      name: resolveMachineName(),
+      os: `${platform()} ${arch()} ${release()}`,
+      version: getVersion(),
+      runtimes,
+      device_id: generateDeviceId(),
     }),
   });
-  if (!response.ok) {
-    throw new Error(`Machine runner onboarding failed with HTTP ${response.status}: ${await response.text()}`);
+  if (!machineResponse.ok) {
+    throw new Error(`Machine registration failed with HTTP ${machineResponse.status}: ${await machineResponse.text()}`);
   }
-  const onboarding = (await response.json()) as AmaRunnerOnboardingResponse;
+  const machine = (await machineResponse.json()) as RegisteredMachine;
+  const onboarding = machine.runner;
+  if (!onboarding?.accessToken) {
+    throw new Error("Machine registration did not return AMA runner onboarding credentials");
+  }
   opts.amaOrigin = onboarding.origin;
   opts.amaToken = onboarding.accessToken;
   opts.amaProjectId = onboarding.projectId;
+  opts.amaRunnerId = onboarding.runnerId;
   opts.amaRunnerName = onboarding.runnerName;
   opts.amaEnvironmentId = onboarding.environmentId;
   opts.amaCapabilities = onboarding.capabilities.join(",");

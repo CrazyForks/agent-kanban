@@ -225,9 +225,6 @@ export abstract class ApiClient {
   listBoardMaintainers(boardId: string) {
     return this.request<any[]>("GET", `/api/boards/${boardId}/maintainers`);
   }
-  getBoardMaintainerRuns(boardId: string, maintainerId: string) {
-    return this.request<any[]>("GET", `/api/boards/${boardId}/maintainers/${maintainerId}/runs`);
-  }
 
   // Repositories
   createRepository(input: { name: string; url: string }) {

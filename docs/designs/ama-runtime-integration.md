@@ -41,7 +41,8 @@ configuration in order to use AK.
 Assigned AK tasks dispatch through AMA:
 
 1. AK receives a task create or assignment with an AK agent id.
-2. AK resolves the owning AMA project and default AMA environment server-side.
+2. AK resolves the owning AMA project and an online AK machine runtime mapped
+   to an AMA environment server-side.
 3. AK ensures the AK agent has a mapped AMA AgentDefinition.
 4. AK creates a short-lived AK agent session identity.
 5. AK stores the private runtime credential in AMA vault as a session secret.
@@ -58,7 +59,10 @@ assignment do not require AMA agent, environment, or runner flags.
 `ak start` keeps the existing AK credential flow:
 
 - the CLI reads or saves AK API credentials
-- it calls `/api/runtime/runners/onboarding`
+- it registers an AK machine with the runtime the runner will actually serve
+- AK creates or reuses the machine's AMA environment during machine
+  registration
+- AK returns runner onboarding data in the machine registration response
 - AK resolves AMA project, environment, capabilities, and runner federation
   server-side
 - AK creates/refreshes the generic AMA external project binding
@@ -135,7 +139,8 @@ AgentDefinitions internally.
   CLI arguments.
 - Added board maintainer APIs, CLI commands, settings UI, scheduled trigger
   integration, and heartbeat run listing.
-- Added server-side AMA project mapping and AK-agent-to-AMA-agent mapping.
+- Added server-side owner runtime bindings, machine-to-AMA-environment mappings,
+  and AK-agent-to-AMA-agent mappings.
 - Kept repositories as AK product records while translating GitHub repositories
   to AMA resource refs during dispatch.
 

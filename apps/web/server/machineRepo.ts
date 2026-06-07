@@ -30,6 +30,44 @@ export async function upsertMachine(db: D1, ownerId: string, info: CreateMachine
   return parseMachine(row!);
 }
 
+export async function updateMachineAmaEnvironment(db: D1, machineId: string, ownerId: string, amaEnvironmentId: string): Promise<Machine | null> {
+  const result = await db
+    .prepare("UPDATE machines SET ama_environment_id = ? WHERE id = ? AND owner_id = ?")
+    .bind(amaEnvironmentId, machineId, ownerId)
+    .run();
+  if (result.meta.changes === 0) return null;
+  const row = await db.prepare("SELECT * FROM machines WHERE id = ?").bind(machineId).first<Machine>();
+  return parseMachine(row!);
+}
+
+export async function getReadyMachineEnvironmentForRuntime(
+  db: D1,
+  ownerId: string,
+  runtime: string,
+): Promise<{ machineId: string; environmentId: string } | null> {
+  const cutoff = new Date(Date.now() - MACHINE_STALE_TIMEOUT_MS).toISOString();
+  const values = runtimeMatchValues(runtime);
+  const placeholders = values.map(() => "?").join(", ");
+  const row = await db
+    .prepare(
+      `
+      SELECT m.id, m.ama_environment_id AS environment_id
+      FROM machines m, json_each(m.runtimes) rt
+      WHERE m.owner_id = ?
+        AND m.status = 'online'
+        AND m.last_heartbeat_at >= ?
+        AND json_extract(rt.value, '$.status') = 'ready'
+        AND json_extract(rt.value, '$.name') IN (${placeholders})
+        AND m.ama_environment_id IS NOT NULL
+      ORDER BY m.last_heartbeat_at DESC
+      LIMIT 1
+    `,
+    )
+    .bind(ownerId, cutoff, ...values)
+    .first<{ id: string; environment_id: string }>();
+  return row ? { machineId: row.id, environmentId: row.environment_id } : null;
+}
+
 export async function deleteMachine(db: D1, machineId: string, ownerId: string): Promise<boolean> {
   const result = await db.prepare("DELETE FROM machines WHERE id = ? AND owner_id = ?").bind(machineId, ownerId).run();
   return result.meta.changes > 0;

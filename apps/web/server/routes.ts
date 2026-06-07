@@ -7,6 +7,7 @@ import {
   isBoardType,
   isValidAgentRole,
   isValidUsername,
+  type Machine,
   type MachineRuntime,
   parseScheduledAt,
   RESERVED_ROLES,
@@ -26,9 +27,10 @@ import {
   upsertLatestAgent,
 } from "./agentRepo";
 import { closeRuntimeSessionForTask, closeSession, createSession, listSessions, reopenSession, updateSessionUsage } from "./agentSessionRepo";
-import { resolveAmaExternalTenantId, resolveAmaProjectId } from "./amaOwnerMappingRepo";
+import { ensureAmaOwnerRuntimeBinding, resolveAmaExternalTenantId, resolveAmaProjectId, resolveAmaSessionSecretVaultId } from "./amaOwnerMappingRepo";
 import {
   archiveAmaScheduledAgentTrigger,
+  createAmaEnvironment,
   createAmaExternalProjectBinding,
   createAmaFederatedRunnerToken,
   createAmaScheduledAgentTrigger,
@@ -36,7 +38,6 @@ import {
   defaultAmaRunnerCapabilities,
   getAmaSessionRuntimeSnapshot,
   isAmaTaskDispatchConfigured,
-  listAmaScheduledTriggerRuns,
   updateAmaScheduledAgentTrigger,
 } from "./amaRuntime";
 import { authMiddleware } from "./auth";
@@ -46,9 +47,7 @@ import {
   getBoardMaintainer,
   getOwnedBoard,
   getOwnedRepository,
-  listBoardMaintainerRuns,
   listBoardMaintainers,
-  syncBoardMaintainerRuns,
   updateBoardMaintainer,
 } from "./boardMaintainerRepo";
 import {
@@ -73,10 +72,12 @@ import {
   deleteMachine,
   detectStaleMachines,
   getMachine,
+  getReadyMachineEnvironmentForRuntime,
   listAllMachines,
   listMachines,
   normalizeMachineRuntimes,
   updateMachine,
+  updateMachineAmaEnvironment,
   upsertMachine,
 } from "./machineRepo";
 import { createMailbox, deleteMailbox, getEmail, getInbox } from "./mailsService";
@@ -88,6 +89,7 @@ import { createSSEResponse } from "./sse";
 import { getSystemStats } from "./statsRepo";
 import { createSubagent, deleteSubagent, getSubagent, listSubagents, updateSubagent } from "./subagentRepo";
 import {
+  amaRuntimeName,
   apiUrl,
   createAkAgentSessionIdentity,
   dispatchTaskToAma,
@@ -276,6 +278,63 @@ function assertValidMachineRuntimes(runtimes: unknown): void {
   } catch (err) {
     throw new HTTPException(400, { message: err instanceof Error ? err.message : "Invalid runtimes" });
   }
+}
+
+function readyAmaRuntimeNames(runtimes: MachineRuntime[]): string[] {
+  return runtimes.filter((runtime) => runtime.status === "ready").map((runtime) => amaRuntimeName(runtime.name));
+}
+
+async function ensureMachineAmaEnvironment(db: D1, env: Env, ownerId: string, machine: Machine): Promise<string> {
+  if (machine.ama_environment_id) return machine.ama_environment_id;
+  const binding = await ensureAmaOwnerRuntimeBinding(db, env, ownerId);
+  const environment = await createAmaEnvironment(env, {
+    projectId: binding.amaProjectId,
+    name: machine.name,
+    description: `Self-hosted environment for AK machine ${machine.id}.`,
+    hostingMode: "self_hosted",
+    metadata: { machineId: machine.id },
+  });
+  return environment.id;
+}
+
+async function createMachineRunnerOnboarding(env: Env, machine: Machine, ownerId: string, requestOrigin: string) {
+  const environmentId = machine.ama_environment_id;
+  if (!environmentId) return null;
+  const readyRuntimes = readyAmaRuntimeNames(machine.runtimes);
+  if (readyRuntimes.length === 0) return null;
+
+  const projectId = await resolveAmaProjectId(env.DB, env, ownerId);
+  const capabilities = await defaultAmaRunnerCapabilities(env, projectId, readyRuntimes);
+  const externalTenantId = await resolveAmaExternalTenantId(env.DB, env, ownerId);
+  const issuer = apiUrl(env, requestOrigin);
+  const runnerId = `runner_${crypto.randomUUID().replaceAll("-", "")}`;
+
+  await createAmaExternalProjectBinding(env, {
+    projectId,
+    issuer,
+    externalTenantId,
+    environmentId,
+    capabilities,
+  });
+  const token = await createAmaFederatedRunnerToken(env, {
+    projectId,
+    externalTenantId,
+    runnerId,
+    environmentId,
+    capabilities,
+  });
+
+  return {
+    origin: env.AMA_ORIGIN,
+    projectId,
+    runnerId,
+    runnerName: machine.name,
+    environmentId,
+    capabilities,
+    accessToken: token.accessToken,
+    tokenType: token.tokenType,
+    expiresIn: token.expiresIn,
+  };
 }
 
 function resolveActor(c: { get: (key: string) => any }): { actorType: string; actorId: string; sessionId: string | null } {
@@ -539,7 +598,11 @@ api.post("/api/machines", async (c) => {
     throw new HTTPException(400, { message: "name, os, version, runtimes, and device_id are required" });
   }
   assertValidMachineRuntimes(body.runtimes);
-  const machine = await upsertMachine(c.env.DB, c.get("ownerId"), body);
+  let machine = await upsertMachine(c.env.DB, c.get("ownerId"), body);
+  if (isAmaTaskDispatchConfigured(c.env)) {
+    const environmentId = await ensureMachineAmaEnvironment(c.env.DB, c.env, c.get("ownerId"), machine);
+    machine = (await updateMachineAmaEnvironment(c.env.DB, machine.id, c.get("ownerId"), environmentId)) ?? machine;
+  }
 
   // Registration always binds the API key to the upserted machine
   const auth = createAuth(c.env);
@@ -569,7 +632,10 @@ api.post("/api/machines", async (c) => {
     });
   }
 
-  return c.json(machine, 201);
+  const runner = isAmaTaskDispatchConfigured(c.env)
+    ? await createMachineRunnerOnboarding(c.env, machine, c.get("ownerId"), new URL(c.req.url).origin)
+    : null;
+  return c.json({ ...machine, runner }, 201);
 });
 
 api.delete("/api/machines/:id", async (c) => {
@@ -827,49 +893,6 @@ api.get("/api/agents/:agentId/sessions", async (c) => {
   markLegacyRuntimeSurface(c);
   const sessions = await listSessions(c.env.DB, c.req.param("agentId"));
   return c.json(sessions);
-});
-
-api.post("/api/runtime/runners/onboarding", async (c) => {
-  const body: { runnerName?: string } = await c.req.json<{ runnerName?: string }>().catch(() => ({}));
-  const runnerName = typeof body.runnerName === "string" && body.runnerName.trim() ? body.runnerName.trim() : "ak-runner";
-  const environmentId = c.env.AMA_DEFAULT_ENVIRONMENT_ID;
-  if (!environmentId) throw new HTTPException(400, { message: "environmentId is required" });
-  const ownerId = c.get("ownerId");
-  const projectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
-  const capabilities = await defaultAmaRunnerCapabilities(c.env, projectId, environmentId);
-  const externalTenantId = await resolveAmaExternalTenantId(c.env.DB, ownerId);
-  if (!c.env.AK_FEDERATED_RUNNER_ISSUER) {
-    throw new HTTPException(500, { message: "AK_FEDERATED_RUNNER_ISSUER is required for federated runner onboarding" });
-  }
-  const issuer = c.env.AK_FEDERATED_RUNNER_ISSUER.replace(/\/$/, "");
-  const runnerId = `runner_${crypto.randomUUID().replaceAll("-", "")}`;
-
-  await createAmaExternalProjectBinding(c.env, {
-    projectId,
-    issuer,
-    externalTenantId,
-    environmentId,
-    capabilities,
-  });
-  const token = await createAmaFederatedRunnerToken(c.env, {
-    projectId,
-    externalTenantId,
-    runnerId,
-    environmentId,
-    capabilities,
-  });
-
-  return c.json({
-    origin: c.env.AMA_ORIGIN,
-    projectId,
-    runnerId,
-    runnerName,
-    environmentId,
-    capabilities,
-    accessToken: token.accessToken,
-    tokenType: token.tokenType,
-    expiresIn: token.expiresIn,
-  });
 });
 
 api.patch("/api/agents/:agentId/sessions/:sessionId/usage", async (c) => {
@@ -1209,22 +1232,31 @@ api.post("/api/boards/:id/maintainers", async (c) => {
   const repository = body.repository_id ? await getOwnedRepository(c.env.DB, ownerId, body.repository_id) : null;
   if (body.repository_id && !repository) throw new HTTPException(404, { message: "Repository not found" });
 
-  const amaEnvironmentId = c.env.AMA_DEFAULT_ENVIRONMENT_ID;
-  if (!amaEnvironmentId) throw new HTTPException(500, { message: "Maintainer runtime is not configured" });
   const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
-  const amaAgent = await ensureAmaAgentForAkAgent(c.env.DB, c.env, ownerId, maintainerAgentId, amaProjectId, amaEnvironmentId);
+  const maintainerAgent = await getAgent(c.env.DB, maintainerAgentId, ownerId);
+  if (!maintainerAgent) throw new HTTPException(404, { message: "Agent not found" });
+  const machineRuntime = await getReadyMachineEnvironmentForRuntime(c.env.DB, ownerId, maintainerAgent.runtime);
+  if (!machineRuntime) throw new HTTPException(409, { message: `Runtime "${maintainerAgent.runtime}" is not available on any online machine` });
+  const amaEnvironmentId = machineRuntime.environmentId;
+  const amaRuntime = amaRuntimeName(maintainerAgent.runtime);
+  const amaAgent = await ensureAmaAgentForAkAgent(c.env.DB, c.env, ownerId, maintainerAgentId, amaProjectId, amaRuntime);
   const sessionIdentity = await createAkAgentSessionIdentity(c.env.DB, c.env, ownerId, maintainerAgentId);
+  const vaultId = await resolveAmaSessionSecretVaultId(c.env.DB, c.env, ownerId);
   const secret = await createAmaSessionSecret(c.env, {
+    projectId: amaProjectId,
+    vaultId,
     name: secretReferenceName(sessionIdentity.sessionId),
     secretValue: JSON.stringify(sessionIdentity.privateKeyJwk),
-    metadata: { purpose: "ak-maintainer-session", agentId: maintainerAgentId },
+    metadata: { purpose: "agent-session" },
   });
   const resourceRef = repository ? githubRepoRef(repository.url) : null;
   const resourceRefs = resourceRef ? [resourceRef] : [];
   const name = body.name?.trim() || `${board.name} maintainer`;
   const schedule = await createAmaScheduledAgentTrigger(c.env, {
+    projectId: amaProjectId,
     agentId: amaAgent.id,
     environmentId: amaEnvironmentId,
+    runtime: amaRuntime,
     name,
     promptTemplate: boardMaintainerPrompt(boardId, body.prompt),
     intervalSeconds,
@@ -1297,18 +1329,6 @@ api.delete("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   await archiveAmaScheduledAgentTrigger(c.env, maintainer.ama_schedule_id);
   const updated = await updateBoardMaintainer(c.env.DB, ownerId, boardId, maintainer.id, { status: "archived" });
   return c.json(updated);
-});
-
-api.get("/api/boards/:id/maintainers/:maintainerId/runs", async (c) => {
-  const ownerId = c.get("ownerId");
-  const boardId = c.req.param("id");
-  const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
-  if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
-  if (isAmaTaskDispatchConfigured(c.env)) {
-    const runs = await listAmaScheduledTriggerRuns(c.env, maintainer.ama_schedule_id);
-    return c.json(await syncBoardMaintainerRuns(c.env.DB, maintainer, runs));
-  }
-  return c.json(await listBoardMaintainerRuns(c.env.DB, ownerId, boardId, maintainer.id));
 });
 
 api.get("/api/boards/:id", async (c) => {
