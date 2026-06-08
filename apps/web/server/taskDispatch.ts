@@ -15,10 +15,11 @@ import {
   resolveAmaProviderModelProfile,
   sendAmaSessionMessage,
   stopAmaSession,
-  updateAmaAgentMemoryPolicy,
+  updateAmaAgentConfig,
 } from "./amaRuntime";
 import type { D1 } from "./db";
 import { listMachineEnvironmentCandidatesForRuntime } from "./machineRepo";
+import { getSubagent } from "./subagentRepo";
 import { updateTask } from "./taskRepo";
 import type { Env } from "./types";
 
@@ -97,23 +98,12 @@ export async function ensureAmaAgentForAkAgent(
 ) {
   const akAgent = await getAgent(db, akAgentId, ownerId);
   if (!akAgent) throw new HTTPException(404, { message: "Assigned agent not found" });
-  const annotations = metadataObject(metadataObject(akAgent.metadata).annotations);
-  const existingAmaAgentId = stringAnnotation(annotations, "ama.agentId");
-  if (existingAmaAgentId) {
-    const live = await readAmaAgent(env, projectId, existingAmaAgentId);
-    if (live) {
-      if (options.memoryEnabled) {
-        await updateAmaAgentMemoryPolicy(env, projectId, live.id, amaAgentMemoryPolicy(true));
-      }
-      return live;
-    }
-  }
-
   const runtimeProfile = await resolveAmaProviderModelProfile(env, projectId, {
     runtime,
     preferredModel: akAgent.model,
   });
-  const agent = await createAmaAgent(env, {
+  const subagents = await Promise.all((akAgent.subagents ?? []).map((id) => getSubagent(db, id, ownerId)));
+  const amaAgentInput = {
     projectId,
     name: akAgent.name || akAgent.username,
     description: akAgent.bio,
@@ -121,9 +111,30 @@ export async function ensureAmaAgentForAkAgent(
     role: akAgent.role,
     provider: runtimeProfile.provider,
     model: runtimeProfile.model,
+    skills: akAgent.skills ?? [],
+    subagents: subagents.flatMap((subagent) => (subagent ? [amaSubagentProfile(subagent)] : [])),
+    capabilityTags: amaAgentCapabilityTags(akAgent.role, akAgent.skills),
+    handoffPolicy: amaAgentHandoffPolicy(akAgent.handoff_to),
     metadata: { runtime: runtimeProfile.runtime },
     memoryPolicy: amaAgentMemoryPolicy(options.memoryEnabled === true),
-  });
+  };
+  const annotations = metadataObject(metadataObject(akAgent.metadata).annotations);
+  const existingAmaAgentId = stringAnnotation(annotations, "ama.agentId");
+  if (existingAmaAgentId) {
+    const live = await readAmaAgent(env, projectId, existingAmaAgentId);
+    if (live) {
+      await updateAmaAgentConfig(env, projectId, live.id, amaAgentInput);
+      await updateAgentMetadataAnnotations(db, ownerId, akAgentId, {
+        "ama.projectId": projectId,
+        "ama.agentId": live.id,
+        "ama.provider": runtimeProfile.provider,
+        ...(runtimeProfile.model ? { "ama.model": runtimeProfile.model } : { "ama.model": null }),
+      });
+      return live;
+    }
+  }
+
+  const agent = await createAmaAgent(env, amaAgentInput);
   await updateAgentMetadataAnnotations(db, ownerId, akAgentId, {
     "ama.projectId": projectId,
     "ama.agentId": agent.id,
@@ -135,6 +146,28 @@ export async function ensureAmaAgentForAkAgent(
 
 function amaAgentMemoryPolicy(enabled: boolean) {
   return enabled ? { enabled: true, mode: "notebook", scope: "project_agent" } : { enabled: false };
+}
+
+function amaSubagentProfile(subagent: NonNullable<Awaited<ReturnType<typeof getSubagent>>>) {
+  return {
+    id: subagent.id,
+    username: subagent.username,
+    name: subagent.name,
+    bio: subagent.bio,
+    instructions: subagent.soul,
+    role: subagent.role,
+    modelPreferences: subagent.models ?? [],
+    skills: subagent.skills ?? [],
+  };
+}
+
+function amaAgentCapabilityTags(role: string | null | undefined, skills: string[] | null | undefined) {
+  return [...new Set([role, ...(skills ?? []).map((skill) => `skill:${skill}`)].filter((value): value is string => Boolean(value)))];
+}
+
+function amaAgentHandoffPolicy(handoffTo: string[] | null | undefined) {
+  const roles = (handoffTo ?? []).filter((role) => role.trim().length > 0);
+  return roles.length > 0 ? { enabled: true, targets: roles.map((role) => ({ role })) } : {};
 }
 
 export function amaRuntimeName(runtime: string): string {

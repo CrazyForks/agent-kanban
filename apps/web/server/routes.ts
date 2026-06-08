@@ -130,7 +130,7 @@ function markLegacyRuntimeSurface(c: { header: (name: string, value: string) => 
   c.header("X-AK-Runtime-Surface", "legacy-daemon");
 }
 
-const SUBAGENT_RUNTIMES = new Set(["claude", "codex", "gemini", "copilot"]);
+const SUBAGENT_RUNTIMES = new Set(["claude", "codex", "copilot"]);
 
 function assertValidSkillRefs(skills: unknown) {
   if (skills === undefined) return;

@@ -24,7 +24,7 @@ describe("daemon smoke script", () => {
     expect(script).toContain("CREATED_AGENT_IDS=()");
     expect(script).toContain("trap cleanup EXIT");
     expect(script).toContain('ak delete agent "$agent_id"');
-    expect(script).toContain("codex, claude, gemini, or copilot");
+    expect(script).toContain("codex, claude, or copilot");
   });
 
   it("creates smoke agents for each supported runtime", () => {
@@ -34,8 +34,6 @@ describe("daemon smoke script", () => {
     expect(script).toContain('username="codex-smoke-$TIMESTAMP"');
     expect(script).toContain("claude)");
     expect(script).toContain('username="claude-smoke-$TIMESTAMP"');
-    expect(script).toContain("gemini)");
-    expect(script).toContain('username="gemini-smoke-$TIMESTAMP"');
     expect(script).toContain("copilot)");
     expect(script).toContain('username="copilot-smoke-$TIMESTAMP"');
   });
@@ -45,6 +43,5 @@ describe("daemon smoke script", () => {
 
     expect(script).toContain('codex) expected=".codex/agents/$SUBAGENT_USERNAME.toml"');
     expect(script).toContain('claude | copilot) expected=".claude/agents/$SUBAGENT_USERNAME.md"');
-    expect(script).toContain('gemini) expected=".gemini/agents/$SUBAGENT_USERNAME.md"');
   });
 });

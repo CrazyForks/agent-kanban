@@ -250,6 +250,8 @@ describe("routes", () => {
       runtime: "codex",
       kind: "leader",
       role: "board-maintainer",
+      handoff_to: ["worker"],
+      skills: ["saltbo/agent-kanban@agent-kanban"],
     });
     const scheduleRequests: any[] = [];
     const updateRequests: any[] = [];
@@ -292,6 +294,10 @@ describe("routes", () => {
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
       if (url === "https://ama.test/api/agents") {
+        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+        expect(body.skills).toEqual(["saltbo/agent-kanban@agent-kanban"]);
+        expect(body.handoffPolicy).toEqual({ enabled: true, targets: [{ role: "worker" }] });
+        expect(body.memoryPolicy).toEqual({ enabled: true, mode: "notebook", scope: "project_agent" });
         return new Response(
           JSON.stringify({ id: "ama_agent_maintainer", projectId: "project_123", name: "agent", provider: "provider_codex", model: "gpt-5.3-codex" }),
           { status: 201 },
@@ -829,7 +835,7 @@ describe("routes", () => {
     expect(body.subagents).toEqual([subagent.id]);
   });
 
-  it.each(["gemini", "copilot"] as const)("POST /api/agents allows %s agents with subagents", async (runtime) => {
+  it.each(["copilot"] as const)("POST /api/agents allows %s agents with subagents", async (runtime) => {
     const subagent = await createTestSubagent(env.DB, userId, {
       name: `Create ${runtime} Route Subagent`,
       username: `create-${runtime}-route-subagent`,
@@ -909,20 +915,20 @@ describe("routes", () => {
     expect(body.error.message).toContain("is not registered");
   });
 
-  it("POST /api/agents rejects unsupported runtimes with subagents", async () => {
+  it.each(["gemini", "hermes"] as const)("POST /api/agents rejects unsupported %s subagents", async (runtime) => {
     const subagent = await createTestSubagent(env.DB, userId, {
-      name: "Unsupported Runtime Subagent",
-      username: "unsupported-runtime-subagent",
+      name: `Unsupported ${runtime} Runtime Subagent`,
+      username: `unsupported-${runtime}-runtime-subagent`,
     });
     const res = await apiRequest(
       "POST",
       "/api/agents",
-      { name: "Hermes Subagents", username: "hermes-subagents", runtime: "hermes", subagents: [subagent.id] },
+      { name: `${runtime} Subagents`, username: `${runtime}-subagents`, runtime, subagents: [subagent.id] },
       apiKey,
     );
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
-    expect(body.error.message).toContain('Runtime "hermes" does not support subagents yet');
+    expect(body.error.message).toContain(`Runtime "${runtime}" does not support subagents yet`);
   });
 
   it("PATCH /api/agents/:id rejects malformed skill refs", async () => {
@@ -994,7 +1000,7 @@ describe("routes", () => {
     expect(body.error.message).toContain("snapshots cannot be modified");
   });
 
-  it.each(["gemini", "copilot"] as const)("PATCH /api/agents/:id allows %s agents with subagents", async (runtime) => {
+  it.each(["copilot"] as const)("PATCH /api/agents/:id allows %s agents with subagents", async (runtime) => {
     const jwt = await signLeaderSessionJWT();
     const agent = await createTestAgent(env.DB, userId, {
       name: `Patch ${runtime} Route Agent`,
@@ -1011,6 +1017,24 @@ describe("routes", () => {
     const body = (await res.json()) as any;
     expect(body.runtime).toBe(runtime);
     expect(body.subagents).toEqual([subagent.id]);
+  });
+
+  it.each(["gemini", "hermes"] as const)("PATCH /api/agents/:id rejects unsupported %s subagents", async (runtime) => {
+    const jwt = await signLeaderSessionJWT();
+    const agent = await createTestAgent(env.DB, userId, {
+      name: `Patch Unsupported ${runtime} Route Agent`,
+      username: `patch-unsupported-${runtime}-route-agent`,
+      runtime,
+    });
+    const subagent = await createTestSubagent(env.DB, userId, {
+      name: `Patch Unsupported ${runtime} Route Subagent`,
+      username: `patch-unsupported-${runtime}-route-subagent`,
+    });
+    const res = await apiRequest("PATCH", `/api/agents/${agent.id}`, { subagents: [subagent.id] }, jwt);
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.error.message).toContain(`Runtime "${runtime}" does not support subagents yet`);
   });
 
   it("PATCH /api/agents/:id rejects worker agent IDs as subagents", async () => {
@@ -1094,6 +1118,21 @@ describe("routes", () => {
       AK_API_URL: "https://ak.test",
     });
     await configureAmaOwnerRuntime(userId, "claude", "env_123");
+    const { updateAgent } = await import("../apps/web/server/agentRepo");
+    const { createSubagent } = await import("../apps/web/server/subagentRepo");
+    const reviewer = await createSubagent(env.DB, userId, {
+      name: "Review Agent",
+      username: "reviewer",
+      role: "reviewer",
+      soul: "Review implementation quality.",
+      models: { claude: "claude-sonnet-4-6" },
+      skills: ["saltbo/agent-kanban@agent-kanban"],
+    });
+    await updateAgent(env.DB, agentId, {
+      handoff_to: ["enduser"],
+      skills: ["saltbo/agent-kanban@agent-kanban"],
+      subagents: [reviewer.id],
+    });
 
     const taskDetail = "Use the detail alias in the task dispatch prompt.";
     let runtimePrivateKeyJwk: JsonWebKey | null = null;
@@ -1151,6 +1190,20 @@ describe("routes", () => {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         expect(body.metadata).toMatchObject({ runtime: "claude-code" });
         expect(body.provider).toBe("provider_claude");
+        expect(body.skills).toEqual(["saltbo/agent-kanban@agent-kanban"]);
+        expect(body.subagents).toEqual([
+          {
+            id: reviewer.id,
+            username: "reviewer",
+            name: "Review Agent",
+            bio: null,
+            instructions: "Review implementation quality.",
+            role: "reviewer",
+            modelPreferences: { claude: "claude-sonnet-4-6" },
+            skills: ["saltbo/agent-kanban@agent-kanban"],
+          },
+        ]);
+        expect(body.handoffPolicy).toEqual({ enabled: true, targets: [{ role: "enduser" }] });
         expect(body).not.toHaveProperty("model");
         return new Response(
           JSON.stringify({

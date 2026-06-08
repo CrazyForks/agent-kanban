@@ -77,14 +77,20 @@ trap cleanup EXIT
 create_task() {
   local title="$1"
   local desc="$2"
-  local id
-  id=$(ak create task \
+  local id output
+  if ! output=$(ak create task \
     --board "$BOARD_ID" \
     --title "$title" \
     --description "$desc" \
     --repo "$REPO_ID" \
-    --assign-to "$AGENT_ID" 2>&1 | sed -n 's/Created task \([^: ]*\).*/\1/p')
+    --assign-to "$AGENT_ID" 2>&1); then
+    echo "$output" >&2
+    echo "  FATAL: failed to create task"
+    exit 1
+  fi
+  id=$(printf '%s\n' "$output" | sed -n 's/Created task \([^: ]*\).*/\1/p')
   if [ -z "$id" ]; then
+    echo "$output" >&2
     echo "  FATAL: failed to create task"
     exit 1
   fi
@@ -156,11 +162,6 @@ create_agent() {
       username="claude-smoke-$TIMESTAMP"
       bio="Claude worker for daemon smoke tests"
       ;;
-    gemini)
-      name="Gemini Smoke $TIMESTAMP"
-      username="gemini-smoke-$TIMESTAMP"
-      bio="Gemini worker for daemon smoke tests"
-      ;;
     copilot)
       name="Copilot Smoke $TIMESTAMP"
       username="copilot-smoke-$TIMESTAMP"
@@ -226,7 +227,6 @@ wait_subagent_file() {
   case "$AGENT_RUNTIME" in
     codex) expected=".codex/agents/$SUBAGENT_USERNAME.toml" ;;
     claude | copilot) expected=".claude/agents/$SUBAGENT_USERNAME.md" ;;
-    gemini) expected=".gemini/agents/$SUBAGENT_USERNAME.md" ;;
     *) fail "unsupported smoke runtime for subagent file check: $AGENT_RUNTIME"; return 1 ;;
   esac
 
@@ -321,8 +321,8 @@ if [ -z "$SMOKE_RUNTIME" ]; then
   exit 1
 fi
 case "$SMOKE_RUNTIME" in
-  codex | claude | gemini | copilot) ;;
-  *) echo "FATAL: smoke runtime must support subagents (codex, claude, gemini, or copilot), got: $SMOKE_RUNTIME"; exit 1 ;;
+  codex | claude | copilot) ;;
+  *) echo "FATAL: smoke runtime must support AMA runner subagents (codex, claude, or copilot), got: $SMOKE_RUNTIME"; exit 1 ;;
 esac
 AGENT_ID="$(create_agent "$SMOKE_RUNTIME")"
 CREATED_AGENT_IDS+=("$AGENT_ID")
@@ -335,8 +335,8 @@ if [ -z "$BOARD_ID" ] || [ -z "$REPO_ID" ] || [ -z "$AGENT_ID" ]; then
 fi
 
 AGENT_RUNTIME="$(agent_field "$AGENT_ID" runtime)"
-if [ "$AGENT_RUNTIME" != "codex" ] && [ "$AGENT_RUNTIME" != "claude" ] && [ "$AGENT_RUNTIME" != "gemini" ] && [ "$AGENT_RUNTIME" != "copilot" ]; then
-  echo "FATAL: smoke agent runtime must support subagents (codex, claude, gemini, or copilot), got: $AGENT_RUNTIME"
+if [ "$AGENT_RUNTIME" != "codex" ] && [ "$AGENT_RUNTIME" != "claude" ] && [ "$AGENT_RUNTIME" != "copilot" ]; then
+  echo "FATAL: smoke agent runtime must support AMA runner subagents (codex, claude, or copilot), got: $AGENT_RUNTIME"
   exit 1
 fi
 ensure_smoke_subagent "$AGENT_RUNTIME"

@@ -27,6 +27,10 @@ export interface AmaAgentInput {
   provider: string;
   model?: string | null;
   role?: string | null;
+  skills?: string[] | null;
+  subagents?: Record<string, unknown>[] | null;
+  capabilityTags?: string[] | null;
+  handoffPolicy?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   memoryPolicy?: Record<string, unknown>;
 }
@@ -301,11 +305,16 @@ export async function createAmaAgent(env: Env, input: AmaAgentInput): Promise<Am
     client.request<AmaAgentResponse>("createAgent", {
       body: {
         name: input.name,
-        ...(input.description ? { description: input.description } : {}),
-        ...(input.instructions ? { instructions: input.instructions, systemPrompt: input.instructions } : {}),
+        description: input.description ?? null,
+        instructions: input.instructions ?? null,
+        systemPrompt: input.instructions ?? null,
         provider: input.provider,
         ...(input.model ? { model: input.model } : {}),
         ...(input.role ? { role: input.role } : {}),
+        skills: input.skills ?? [],
+        subagents: input.subagents ?? [],
+        capabilityTags: input.capabilityTags ?? [],
+        handoffPolicy: input.handoffPolicy ?? {},
         metadata: input.metadata ?? {},
         memoryPolicy: input.memoryPolicy ?? { enabled: false },
       },
@@ -386,12 +395,26 @@ export async function readAmaAgent(env: Env, projectId: string, agentId: string)
   }
 }
 
-export async function updateAmaAgentMemoryPolicy(env: Env, projectId: string, agentId: string, memoryPolicy: Record<string, unknown>): Promise<void> {
+export async function updateAmaAgentConfig(env: Env, projectId: string, agentId: string, input: AmaAgentInput): Promise<void> {
   const client = await createAmaClient(env, projectId);
-  await withAmaErrorDetails("update runtime agent memory policy", () =>
+  await withAmaErrorDetails("update runtime agent config", () =>
     client.request("updateAgent", {
       path: { agentId },
-      body: { memoryPolicy },
+      body: {
+        name: input.name,
+        description: input.description ?? null,
+        instructions: input.instructions ?? null,
+        systemPrompt: input.instructions ?? null,
+        provider: input.provider,
+        model: input.model ?? null,
+        role: input.role ?? null,
+        skills: input.skills ?? [],
+        subagents: input.subagents ?? [],
+        capabilityTags: input.capabilityTags ?? [],
+        handoffPolicy: input.handoffPolicy ?? {},
+        metadata: input.metadata ?? {},
+        memoryPolicy: input.memoryPolicy ?? { enabled: false },
+      },
     }),
   );
 }
