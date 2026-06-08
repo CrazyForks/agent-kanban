@@ -1476,6 +1476,9 @@ describe("routes", () => {
       if (url === "https://ama.test/api/vaults/vault_123/credentials") {
         return new Response(JSON.stringify({ id: "vaultcred_release", activeVersionId: "vaultver_release" }), { status: 201 });
       }
+      if (url === "https://ama.test/api/sessions/session_release_old/stop?reason=user_requested") {
+        return new Response(JSON.stringify({ id: "session_release_old", status: "stopped" }), { status: 200 });
+      }
       if (url === "https://ama.test/api/sessions") {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         expect(body.agentId).toBe("ama_agent_release");

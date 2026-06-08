@@ -147,6 +147,8 @@ export function registerGetCommand(program: Command) {
     .command("maintainer [id]")
     .description("Get board maintainers")
     .requiredOption("--board <id>", "Board ID")
+    .option("--runs", "Show heartbeat run history for one maintainer")
+    .option("--limit <n>", "Maximum run history entries", "20")
     .option("-o, --output <format>", "Output format (json, yaml, text)")
     .action(async (id: string | undefined, opts) => {
       const client = await createClient();
@@ -158,8 +160,28 @@ export function registerGetCommand(program: Command) {
           console.error(`Maintainer not found: ${id}`);
           process.exit(1);
         }
+        if (opts.runs) {
+          const limit = Number.parseInt(opts.limit, 10);
+          const runs = await client.listBoardMaintainerRuns(opts.board, id, { limit: Number.isFinite(limit) ? limit : 20 });
+          output(runs, fmt, (page) => {
+            const data = Array.isArray(page.data) ? page.data : [];
+            if (data.length === 0) return "No maintainer runs found.";
+            return data
+              .map((run: any) => {
+                const session = run.sessionId ? ` session=${run.sessionId}` : "";
+                const error = run.errorMessage ? ` error=${run.errorMessage}` : "";
+                return `  ${run.id}  [${run.status}] scheduled=${run.scheduledFor}${session}${error}`;
+              })
+              .join("\n");
+          });
+          return;
+        }
         output(maintainer, fmt, formatMaintainer, { kind: "maintainer" });
       } else {
+        if (opts.runs) {
+          console.error("--runs requires a maintainer id");
+          process.exit(1);
+        }
         output(maintainers, fmt, formatMaintainerList, { kind: "maintainer" });
       }
     });

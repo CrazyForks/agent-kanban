@@ -1,6 +1,8 @@
 import type { BoardWithTasks, MachineRuntime, UsageInfo } from "@agent-kanban/shared";
 import { getVersion } from "../version.js";
 
+const API_REQUEST_TIMEOUT_MS = 60_000;
+
 export class ApiError extends Error {
   public code: string;
 
@@ -34,7 +36,7 @@ export abstract class ApiClient {
           Authorization: authorization,
         },
         body: body ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(API_REQUEST_TIMEOUT_MS),
       });
 
     let res: Response;
@@ -224,6 +226,12 @@ export abstract class ApiClient {
   }
   listBoardMaintainers(boardId: string) {
     return this.request<any[]>("GET", `/api/boards/${boardId}/maintainers`);
+  }
+  listBoardMaintainerRuns(boardId: string, maintainerId: string, options: { limit?: number } = {}) {
+    const params = new URLSearchParams();
+    if (options.limit) params.set("limit", String(options.limit));
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return this.request<any>("GET", `/api/boards/${boardId}/maintainers/${maintainerId}/runs${qs}`);
   }
 
   // Repositories

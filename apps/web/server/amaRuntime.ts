@@ -28,6 +28,7 @@ export interface AmaAgentInput {
   model?: string | null;
   role?: string | null;
   metadata?: Record<string, unknown>;
+  memoryPolicy?: Record<string, unknown>;
 }
 
 export interface AmaAgent {
@@ -106,6 +107,20 @@ export interface AmaScheduledTrigger {
   lastRunId: string | null;
 }
 
+export interface AmaScheduledTriggerRun {
+  id: string;
+  projectId: string;
+  triggerId: string;
+  scheduledFor: string;
+  heartbeatAt: string;
+  status: string;
+  sessionId: string | null;
+  errorMessage: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AmaRuntimeCommandResult {
   accepted: boolean;
 }
@@ -171,6 +186,7 @@ interface AmaProviderConfigResponse {
 
 interface OAuthTokenResponse {
   access_token?: string;
+  refresh_token?: string;
   token_type?: string;
   expires_in?: number;
 }
@@ -193,6 +209,7 @@ export interface AmaRunnerTokenInput {
 
 export interface AmaRunnerToken {
   accessToken: string;
+  refreshToken: string;
   tokenType: string;
   expiresIn: number | null;
 }
@@ -290,7 +307,7 @@ export async function createAmaAgent(env: Env, input: AmaAgentInput): Promise<Am
         ...(input.model ? { model: input.model } : {}),
         ...(input.role ? { role: input.role } : {}),
         metadata: input.metadata ?? {},
-        memoryPolicy: { enabled: false },
+        memoryPolicy: input.memoryPolicy ?? { enabled: false },
       },
     }),
   );
@@ -367,6 +384,16 @@ export async function readAmaAgent(env: Env, projectId: string, agentId: string)
     if ((error as { status?: unknown }).status === 404) return null;
     throw error;
   }
+}
+
+export async function updateAmaAgentMemoryPolicy(env: Env, projectId: string, agentId: string, memoryPolicy: Record<string, unknown>): Promise<void> {
+  const client = await createAmaClient(env, projectId);
+  await withAmaErrorDetails("update runtime agent memory policy", () =>
+    client.request("updateAgent", {
+      path: { agentId },
+      body: { memoryPolicy },
+    }),
+  );
 }
 
 export async function readAmaEnvironment(env: Env, projectId: string, environmentId: string): Promise<AmaEnvironment> {
@@ -470,7 +497,7 @@ export async function createAmaFederatedRunnerToken(env: Env, input: AmaRunnerTo
     subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
     requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
     audience,
-    scope: env.AMA_OAUTH_SCOPE ?? "runner:connect",
+    scope: "runner:connect offline_access",
   });
   const response = await fetch(tokenUrl, {
     method: "POST",
@@ -488,8 +515,12 @@ export async function createAmaFederatedRunnerToken(env: Env, input: AmaRunnerTo
   if (!token.access_token) {
     throw new Error("AMA token exchange response did not include access_token");
   }
+  if (!token.refresh_token) {
+    throw new Error("AMA token exchange response did not include refresh_token");
+  }
   return {
     accessToken: token.access_token,
+    refreshToken: token.refresh_token,
     tokenType: token.token_type ?? "Bearer",
     expiresIn: token.expires_in ?? null,
   };
@@ -542,6 +573,16 @@ export async function getAmaSessionRuntimeSnapshot(env: Env, sessionId: string, 
   };
 }
 
+export async function readAmaSession(env: Env, sessionId: string, projectId?: string): Promise<Record<string, unknown> | null> {
+  const client = await createAmaClient(env, projectId);
+  try {
+    return await client.request<Record<string, unknown>>("readSession", { path: { sessionId } });
+  } catch (error) {
+    if ((error as { status?: unknown }).status === 404) return null;
+    throw error;
+  }
+}
+
 export async function listAmaAgents(env: Env): Promise<AmaListResponse<Record<string, unknown>>> {
   const client = await createAmaClient(env);
   return await client.request<AmaListResponse<Record<string, unknown>>>("listAgents", {
@@ -560,6 +601,19 @@ export async function listAmaRunners(env: Env, projectId: string, environmentId:
   const client = await createAmaClient(env, projectId);
   return await client.request<AmaListResponse<AmaRunner>>("listRunners", {
     query: { environmentId, limit: 100 },
+  });
+}
+
+export async function listAmaScheduledTriggerRuns(
+  env: Env,
+  projectId: string,
+  triggerId: string,
+  options: { limit?: number } = {},
+): Promise<AmaListResponse<AmaScheduledTriggerRun>> {
+  const client = await createAmaClient(env, projectId);
+  return await client.request<AmaListResponse<AmaScheduledTriggerRun>>("listScheduledTriggerRuns", {
+    path: { triggerId },
+    query: { limit: options.limit ?? 20 },
   });
 }
 

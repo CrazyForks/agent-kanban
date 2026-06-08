@@ -160,6 +160,9 @@ export function formatMaintainer(maintainer: any): string {
   lines.push(`  Status:       ${maintainer.status}`);
   lines.push(`  Interval:     ${maintainer.interval_seconds}s`);
   if (maintainer.last_run_at) lines.push(`  Last run:     ${maintainer.last_run_at}`);
+  if (maintainer.latest_run?.status) lines.push(`  Last status:  ${maintainer.latest_run.status}`);
+  if (maintainer.latest_run?.session_id) lines.push(`  Last session: ${maintainer.latest_run.session_id}`);
+  if (maintainer.last_error_message) lines.push(`  Last error:   ${maintainer.last_error_message}`);
   return lines.join("\n");
 }
 

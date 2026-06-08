@@ -170,7 +170,7 @@ describe("AMA runtime adapter", () => {
         const form = new URLSearchParams(String(init?.body));
         expect(form.get("grant_type")).toBe("urn:ietf:params:oauth:grant-type:token-exchange");
         expect(form.get("audience")).toBe("https://ama.test");
-        expect(form.get("scope")).toBe("ama:project");
+        expect(form.get("scope")).toBe("runner:connect offline_access");
         const tokenBody = form.get("subject_token")!.split(".")[1].replaceAll("-", "+").replaceAll("_", "/");
         const payload = JSON.parse(atob(tokenBody + "=".repeat((4 - (tokenBody.length % 4)) % 4)));
         expect(payload).toMatchObject({
@@ -182,9 +182,15 @@ describe("AMA runtime adapter", () => {
         });
         expect(payload).not.toHaveProperty("ama_runner_id");
         expect(payload).not.toHaveProperty("runner_capabilities");
-        return new Response(JSON.stringify({ access_token: "runner-token", token_type: "Bearer", expires_in: 3600 }), {
-          status: 200,
-        });
+        return new Response(
+          JSON.stringify({
+            access_token: "runner-token",
+            refresh_token: "runner-refresh-token",
+            token_type: "Bearer",
+            expires_in: 3600,
+          }),
+          { status: 200 },
+        );
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -204,6 +210,11 @@ describe("AMA runtime adapter", () => {
         subject: "machine:machine_123",
         environmentId: "env_123",
       }),
-    ).resolves.toEqual({ accessToken: "runner-token", tokenType: "Bearer", expiresIn: 3600 });
+    ).resolves.toEqual({
+      accessToken: "runner-token",
+      refreshToken: "runner-refresh-token",
+      tokenType: "Bearer",
+      expiresIn: 3600,
+    });
   });
 });

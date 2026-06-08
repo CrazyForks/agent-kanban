@@ -30,6 +30,7 @@ function mockMachineRunnerFetch(origin = "https://runner-control.test") {
             projectId: "project_1",
             environmentId: "env_1",
             accessToken: "runner-token",
+            refreshToken: "runner-refresh-token",
             tokenType: "Bearer",
             expiresIn: 3600,
           },
@@ -117,6 +118,7 @@ describe("start runtime command", () => {
               projectId: "project_1",
               environmentId: "env_1",
               accessToken: "runner-token",
+              refreshToken: "runner-refresh-token",
               tokenType: "Bearer",
               expiresIn: 3600,
             },
@@ -140,6 +142,8 @@ describe("start runtime command", () => {
     expect(spawnMock).toHaveBeenCalledWith(
       "ama-runner",
       [
+        "--config",
+        join(testSessionsDir, "ama-runner-config.json"),
         "--api-server",
         "https://runner-control.test",
         "--project-id",
@@ -150,8 +154,18 @@ describe("start runtime command", () => {
         "1",
         "--allow-unsafe-process",
       ],
-      expect.objectContaining({ detached: true, env: expect.objectContaining({ AMA_TOKEN: "runner-token" }) }),
+      expect.objectContaining({ detached: true }),
     );
+    const runnerConfig = JSON.parse(readFileSync(join(testSessionsDir, "ama-runner-config.json"), "utf-8"));
+    expect(runnerConfig).toMatchObject({
+      apiServer: "https://runner-control.test",
+      accessToken: "runner-token",
+      refreshToken: "runner-refresh-token",
+      tokenType: "Bearer",
+      projectId: "project_1",
+      environmentId: "env_1",
+    });
+    expect(spawnMock.mock.calls[0]?.[2]?.env).not.toMatchObject({ AMA_TOKEN: "runner-token" });
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Machine runner started"));
     const state = JSON.parse(readFileSync(join(testSessionsDir, "daemon-state.json"), "utf-8"));
     expect(state).toMatchObject({ runtime: "ama-runner", apiUrl: "https://ak.test", providers: ["machine-runner"] });
@@ -168,6 +182,8 @@ describe("start runtime command", () => {
     expect(spawnMock).toHaveBeenCalledWith(
       "ama-runner",
       [
+        "--config",
+        join(testSessionsDir, "ama-runner-config.json"),
         "--api-server",
         "https://ama.test",
         "--project-id",
@@ -178,7 +194,7 @@ describe("start runtime command", () => {
         "1",
         "--allow-unsafe-process",
       ],
-      expect.objectContaining({ detached: true, env: expect.objectContaining({ AMA_TOKEN: "runner-token" }) }),
+      expect.objectContaining({ detached: true }),
     );
   });
 });
@@ -195,6 +211,8 @@ describe("restart runtime command", () => {
     expect(spawnMock).toHaveBeenCalledWith(
       "ama-runner",
       [
+        "--config",
+        join(testSessionsDir, "ama-runner-config.json"),
         "--api-server",
         "https://runner-control.test",
         "--project-id",
@@ -205,7 +223,7 @@ describe("restart runtime command", () => {
         "1",
         "--allow-unsafe-process",
       ],
-      expect.objectContaining({ detached: true, env: expect.objectContaining({ AMA_TOKEN: "runner-token" }) }),
+      expect.objectContaining({ detached: true }),
     );
     expect(logSpy).toHaveBeenCalledWith("○ Machine runner was not running");
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Machine runner started"));

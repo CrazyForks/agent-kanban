@@ -127,7 +127,7 @@ else console.log(result);
 }
 
 discover_board() {
-  ak get board -o json | json_query "data.find((b) => b.id === 'k847fy7k')?.id || data.find((b) => b.name === 'Demo')?.id || data[0]?.id"
+  ak get board -o json | json_query "data.find((b) => b.id === 'k847fy7k' && b.type === 'dev')?.id || data.find((b) => b.name === 'Demo' && b.type === 'dev')?.id || data.find((b) => b.type === 'dev')?.id"
 }
 
 create_board() {

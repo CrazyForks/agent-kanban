@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Agent, AgentRuntime } from "@agent-kanban/shared";
 import { AgentClient } from "../client/agent.js";
-import type { ApiClient } from "../client/base.js";
+import { type ApiClient, ApiError } from "../client/base.js";
 import { MachineClient } from "../client/machine.js";
 import { getCredentials } from "../config.js";
 import { PID_FILE } from "../paths.js";
-import { isPidAlive, listSessions, writeSession } from "../session/store.js";
-import { loadIdentity, type StoredIdentity, saveIdentity } from "./identity.js";
+import { isPidAlive, listSessions, removeSession, writeSession } from "../session/store.js";
+import { loadIdentity, removeIdentity, type StoredIdentity, saveIdentity } from "./identity.js";
 import { detectRuntime, findRuntimeAncestorPid } from "./runtime.js";
 
 function isDaemonAlive(): boolean {
@@ -49,10 +49,27 @@ async function restoreIdentity(runtime: AgentRuntime, client: MachineClient): Pr
   return identity;
 }
 
-export async function getIdentity(runtime: AgentRuntime): Promise<StoredIdentity | null> {
+async function hasValidLeaderAgent(client: MachineClient, agentId: string, runtime: AgentRuntime): Promise<boolean> {
+  try {
+    const agent = (await client.getAgent(agentId)) as Agent;
+    return agent.kind === "leader" && agent.runtime === runtime;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return false;
+    throw error;
+  }
+}
+
+async function loadOrRestoreIdentity(runtime: AgentRuntime, client: MachineClient): Promise<StoredIdentity | null> {
   const local = loadIdentity(runtime);
-  if (local) return local;
-  return restoreIdentity(runtime, new MachineClient());
+  if (local) {
+    if (await hasValidLeaderAgent(client, local.agent_id, runtime)) return local;
+    removeIdentity(runtime);
+  }
+  return restoreIdentity(runtime, client);
+}
+
+export async function getIdentity(runtime: AgentRuntime): Promise<StoredIdentity | null> {
+  return loadOrRestoreIdentity(runtime, new MachineClient());
 }
 
 export async function createIdentity(input: { runtime: AgentRuntime; username: string; name?: string }): Promise<StoredIdentity> {
@@ -107,19 +124,23 @@ export async function createClient(): Promise<ApiClient> {
     (session) => session.pid === leaderPid && session.runtime === runtime && session.apiUrl === apiUrl,
   );
   if (existing && isPidAlive(leaderPid)) {
-    const key = await crypto.subtle.importKey("jwk", existing.privateKeyJwk, { name: "Ed25519" } as any, false, ["sign"]);
-    cachedLeaderClient = new AgentClient(existing.apiUrl, existing.agentId, existing.sessionId, key);
-    return cachedLeaderClient;
-  }
-
-  const machineClient = new MachineClient();
-  const identity = loadIdentity(runtime) ?? (await restoreIdentity(runtime, machineClient));
-  if (!identity) {
-    throw new Error(missingIdentityMessage(runtime));
+    const machineClient = new MachineClient();
+    if (await hasValidLeaderAgent(machineClient, existing.agentId, runtime)) {
+      const key = await crypto.subtle.importKey("jwk", existing.privateKeyJwk, { name: "Ed25519" } as any, false, ["sign"]);
+      cachedLeaderClient = new AgentClient(existing.apiUrl, existing.agentId, existing.sessionId, key);
+      return cachedLeaderClient;
+    }
+    removeSession(existing.sessionId);
   }
 
   if (!isDaemonAlive()) {
     throw new Error("No AK agent session is available. Start the Machine daemon with: ak start");
+  }
+
+  const machineClient = new MachineClient();
+  const identity = await loadOrRestoreIdentity(runtime, machineClient);
+  if (!identity) {
+    throw new Error(missingIdentityMessage(runtime));
   }
 
   // First call — create a leader session for an existing identity

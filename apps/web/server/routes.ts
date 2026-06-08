@@ -36,6 +36,8 @@ import {
   getAmaSessionRuntimeSnapshot,
   isAmaTaskDispatchConfigured,
   listAmaRunners,
+  listAmaScheduledTriggerRuns,
+  readAmaSession,
   updateAmaScheduledAgentTrigger,
 } from "./amaRuntime";
 import { authMiddleware } from "./auth";
@@ -286,6 +288,36 @@ function publicBoardMaintainer(maintainer: BoardMaintainer): Omit<BoardMaintaine
   return publicMaintainer;
 }
 
+async function publicBoardMaintainerWithAmaStatus(db: D1, env: Env, ownerId: string, maintainer: BoardMaintainer) {
+  const publicMaintainer = publicBoardMaintainer(maintainer);
+  if (!isAmaTaskDispatchConfigured(env)) return publicMaintainer;
+
+  const projectId = await resolveAmaProjectId(db, env, ownerId);
+  const runs = await listAmaScheduledTriggerRuns(env, projectId, maintainer.ama_schedule_id, { limit: 1 }).catch(() => null);
+  if (!runs) return publicMaintainer;
+  const latestRun = runs.data[0];
+  return {
+    ...publicMaintainer,
+    last_run_at: latestRun?.heartbeatAt ?? publicMaintainer.last_run_at,
+    last_ama_session_id: latestRun?.sessionId ?? null,
+    last_error_message: latestRun?.errorMessage ?? null,
+    latest_run: latestRun
+      ? {
+          id: latestRun.id,
+          scheduled_for: latestRun.scheduledFor,
+          heartbeat_at: latestRun.heartbeatAt,
+          status: latestRun.status,
+          session_id: latestRun.sessionId,
+          error_message: latestRun.errorMessage,
+        }
+      : null,
+  };
+}
+
+async function listPublicMaintainersWithAmaStatus(db: D1, env: Env, ownerId: string, maintainers: BoardMaintainer[]) {
+  return await Promise.all(maintainers.map((maintainer) => publicBoardMaintainerWithAmaStatus(db, env, ownerId, maintainer)));
+}
+
 function publicMachine<T extends MachineRecord | MachineWithAgentsRecord>(machine: T): Omit<T, "ama_environment_id"> {
   const { ama_environment_id: _environmentId, ...publicMachine } = machine;
   return publicMachine;
@@ -311,6 +343,10 @@ async function machineWithAmaRunnerStatus<T extends MachineRecord | MachineWithA
       activeRunners.flatMap((runner) => runner.capabilities),
       lastHeartbeatAt ?? new Date().toISOString(),
     ),
+    usage_info: null,
+    runner_count: runners.data.length,
+    active_runner_count: activeRunners.length,
+    runner_capacity: activeRunners.reduce((sum, runner) => sum + runner.maxConcurrent, 0),
     ...("active_session_count" in machine ? { active_session_count: activeLoad } : {}),
   };
 }
@@ -408,6 +444,7 @@ async function createMachineRunnerOnboarding(env: Env, machine: MachineRecord, o
     projectId,
     environmentId,
     accessToken: token.accessToken,
+    refreshToken: token.refreshToken,
     tokenType: token.tokenType,
     expiresIn: token.expiresIn,
   };
@@ -970,7 +1007,23 @@ api.post("/api/agents/:agentId/sessions/:sessionId/reopen", async (c) => {
 api.get("/api/agents/:agentId/sessions", async (c) => {
   markLegacyRuntimeSurface(c);
   const sessions = await listSessions(c.env.DB, c.req.param("agentId"));
-  return c.json(sessions);
+  if (!isAmaTaskDispatchConfigured(c.env)) return c.json(sessions);
+
+  const ownerId = c.get("ownerId");
+  const projectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
+  const enriched = await Promise.all(
+    sessions.map(async (session) => {
+      const amaSessionId = typeof (session as any).ama_session_id === "string" ? (session as any).ama_session_id : null;
+      if (!amaSessionId) return session;
+      const runtimeSession = await readAmaSession(c.env, amaSessionId, projectId).catch(() => null);
+      return {
+        ...session,
+        runtime_session: runtimeSession,
+        runtime_status: typeof runtimeSession?.status === "string" ? runtimeSession.status : null,
+      };
+    }),
+  );
+  return c.json(enriched);
 });
 
 api.patch("/api/agents/:agentId/sessions/:sessionId/usage", async (c) => {
@@ -1111,6 +1164,8 @@ api.post("/api/tasks/:id/claim", async (c) => {
 api.post("/api/tasks/:id/complete", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
 
+  const existing = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (existing) await stopTaskAmaSession(c.env.DB, c.env, existing);
   const task = await completeTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), sessionId);
   if (task) await closeAmaAgentSessionForTask(c.env.DB, task);
   return c.json(task);
@@ -1118,6 +1173,8 @@ api.post("/api/tasks/:id/complete", async (c) => {
 
 api.post("/api/tasks/:id/release", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
+  const existing = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (existing) await stopTaskAmaSession(c.env.DB, c.env, existing);
   const task = await releaseTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), "released", sessionId);
   if (task) await closeAmaAgentSessionForTask(c.env.DB, task);
   if (!task) return c.json(task);
@@ -1330,7 +1387,9 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     throw new HTTPException(409, { message: `Runtime "${maintainerAgent.runtime}" is not available on any active AMA environment` });
   const amaEnvironmentId = machineRuntime.environmentId;
   const amaRuntime = amaRuntimeName(maintainerAgent.runtime);
-  const amaAgent = await ensureAmaAgentForAkAgent(c.env.DB, c.env, ownerId, maintainerAgentId, amaProjectId, amaRuntime);
+  const amaAgent = await ensureAmaAgentForAkAgent(c.env.DB, c.env, ownerId, maintainerAgentId, amaProjectId, amaRuntime, {
+    memoryEnabled: true,
+  });
   const name = body.name?.trim() || `${board.name} maintainer`;
   const schedule = await createAmaScheduledAgentTrigger(c.env, {
     projectId: amaProjectId,
@@ -1358,14 +1417,14 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     intervalSeconds,
     status: schedule.status === "paused" ? "paused" : "active",
   });
-  return c.json(publicBoardMaintainer(maintainer), 201);
+  return c.json(await publicBoardMaintainerWithAmaStatus(c.env.DB, c.env, ownerId, maintainer), 201);
 });
 
 api.get("/api/boards/:id/maintainers", async (c) => {
   const board = await getOwnedBoard(c.env.DB, c.get("ownerId"), c.req.param("id"));
   if (!board) throw new HTTPException(404, { message: "Board not found" });
   const maintainers = await listBoardMaintainers(c.env.DB, c.get("ownerId"), c.req.param("id"));
-  return c.json(maintainers.map(publicBoardMaintainer));
+  return c.json(await listPublicMaintainersWithAmaStatus(c.env.DB, c.env, c.get("ownerId"), maintainers));
 });
 
 api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
@@ -1393,7 +1452,23 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
     status: schedule.status === "archived" ? "archived" : schedule.status,
   });
   if (!updated) throw new HTTPException(404, { message: "Board maintainer not found" });
-  return c.json(publicBoardMaintainer(updated));
+  return c.json(await publicBoardMaintainerWithAmaStatus(c.env.DB, c.env, ownerId, updated));
+});
+
+api.get("/api/boards/:id/maintainers/:maintainerId/runs", async (c) => {
+  if (!isAmaTaskDispatchConfigured(c.env)) {
+    throw new HTTPException(500, { message: "Task dispatch runtime is not configured" });
+  }
+  const ownerId = c.get("ownerId");
+  const boardId = c.req.param("id");
+  const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
+  if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
+  const projectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
+  const limit = Number.parseInt(c.req.query("limit") ?? "20", 10);
+  const runs = await listAmaScheduledTriggerRuns(c.env, projectId, maintainer.ama_schedule_id, {
+    limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 100) : 20,
+  });
+  return c.json(runs);
 });
 
 api.delete("/api/boards/:id/maintainers/:maintainerId", async (c) => {
@@ -1403,7 +1478,7 @@ api.delete("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
   await archiveAmaScheduledAgentTrigger(c.env, maintainer.ama_schedule_id);
   const updated = await updateBoardMaintainer(c.env.DB, ownerId, boardId, maintainer.id, { status: "archived" });
-  return c.json(updated ? publicBoardMaintainer(updated) : updated);
+  return c.json(updated ? await publicBoardMaintainerWithAmaStatus(c.env.DB, c.env, ownerId, updated) : updated);
 });
 
 api.get("/api/boards/:id", async (c) => {

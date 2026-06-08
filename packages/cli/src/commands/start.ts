@@ -42,6 +42,9 @@ interface AmaRunnerOnboardingResponse {
   projectId: string;
   environmentId: string;
   accessToken: string;
+  refreshToken: string;
+  tokenType?: string;
+  expiresIn?: number | null;
 }
 
 interface RegisteredMachine {
@@ -155,6 +158,7 @@ function amaRunnerArgs(opts: Record<string, unknown>): string[] {
   const add = (flag: string, value: unknown) => {
     if (typeof value === "string" && value.length > 0) args.push(flag, value);
   };
+  add("--config", opts.amaConfigPath);
   add("--api-server", opts.amaOrigin);
   add("--project-id", opts.amaProjectId);
   add("--environment-id", opts.amaEnvironmentId);
@@ -221,10 +225,8 @@ async function startAmaRunner(opts: Record<string, unknown>) {
   const runnerBin = (typeof opts.amaRunnerBin === "string" && opts.amaRunnerBin) || "ama-runner";
   await applyAmaRunnerOnboarding(opts);
   const args = amaRunnerArgs(opts);
-  const env = {
-    ...process.env,
-    ...(typeof opts.amaToken === "string" && opts.amaToken.length > 0 ? { AMA_TOKEN: opts.amaToken } : {}),
-  };
+  const env = { ...process.env };
+  delete env.AMA_TOKEN;
   const child = spawn(runnerBin, args, { detached: true, stdio: ["ignore", logFd, logFd], env });
   let pid: number;
   try {
@@ -290,13 +292,40 @@ async function applyAmaRunnerOnboarding(opts: Record<string, unknown>) {
   }
   const machine = (await machineResponse.json()) as RegisteredMachine;
   const onboarding = machine.runner;
-  if (!onboarding?.accessToken) {
+  if (!onboarding?.accessToken || !onboarding.refreshToken) {
     throw new Error("Machine registration did not return AMA runner onboarding credentials");
   }
   opts.amaOrigin = onboarding.origin;
-  opts.amaToken = onboarding.accessToken;
   opts.amaProjectId = onboarding.projectId;
   opts.amaEnvironmentId = onboarding.environmentId;
+  opts.amaConfigPath = writeAmaRunnerConfig(onboarding);
+}
+
+function writeAmaRunnerConfig(onboarding: AmaRunnerOnboardingResponse): string {
+  mkdirSync(STATE_DIR, { recursive: true });
+  const configPath = join(STATE_DIR, "ama-runner-config.json");
+  const expiresAt =
+    typeof onboarding.expiresIn === "number" && onboarding.expiresIn > 0
+      ? new Date(Date.now() + onboarding.expiresIn * 1000).toISOString()
+      : undefined;
+  writeFileSync(
+    configPath,
+    JSON.stringify(
+      {
+        apiServer: onboarding.origin.replace(/\/$/, ""),
+        accessToken: onboarding.accessToken,
+        refreshToken: onboarding.refreshToken,
+        tokenType: onboarding.tokenType ?? "Bearer",
+        ...(expiresAt ? { expiresAt } : {}),
+        projectId: onboarding.projectId,
+        environmentId: onboarding.environmentId,
+      },
+      null,
+      2,
+    ),
+    { mode: 0o600 },
+  );
+  return configPath;
 }
 
 export function registerStartCommand(program: Command) {

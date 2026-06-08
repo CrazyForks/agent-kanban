@@ -15,6 +15,7 @@ import {
   resolveAmaProviderModelProfile,
   sendAmaSessionMessage,
   stopAmaSession,
+  updateAmaAgentMemoryPolicy,
 } from "./amaRuntime";
 import type { D1 } from "./db";
 import { listMachineEnvironmentCandidatesForRuntime } from "./machineRepo";
@@ -79,22 +80,33 @@ export async function dispatchTaskToAma(db: D1, env: Env, ownerId: string, task:
     "ama.environmentId": dispatch.environmentId,
     "ama.runtime": amaRuntime,
     "ama.sessionId": dispatch.sessionId,
-    "ama.session.status": dispatch.status,
-    "ama.session.statusReason": dispatch.statusReason,
     "ama.runtimeSecretEnv.AK_AGENT_KEY": secret.activeVersionId,
     agentSessionId: sessionIdentity.sessionId,
     "ama.dispatch.result": "accepted",
   });
 }
 
-export async function ensureAmaAgentForAkAgent(db: D1, env: Env, ownerId: string, akAgentId: string, projectId: string, runtime: string) {
+export async function ensureAmaAgentForAkAgent(
+  db: D1,
+  env: Env,
+  ownerId: string,
+  akAgentId: string,
+  projectId: string,
+  runtime: string,
+  options: { memoryEnabled?: boolean } = {},
+) {
   const akAgent = await getAgent(db, akAgentId, ownerId);
   if (!akAgent) throw new HTTPException(404, { message: "Assigned agent not found" });
   const annotations = metadataObject(metadataObject(akAgent.metadata).annotations);
   const existingAmaAgentId = stringAnnotation(annotations, "ama.agentId");
   if (existingAmaAgentId) {
     const live = await readAmaAgent(env, projectId, existingAmaAgentId);
-    if (live) return live;
+    if (live) {
+      if (options.memoryEnabled) {
+        await updateAmaAgentMemoryPolicy(env, projectId, live.id, amaAgentMemoryPolicy(true));
+      }
+      return live;
+    }
   }
 
   const runtimeProfile = await resolveAmaProviderModelProfile(env, projectId, {
@@ -110,6 +122,7 @@ export async function ensureAmaAgentForAkAgent(db: D1, env: Env, ownerId: string
     provider: runtimeProfile.provider,
     model: runtimeProfile.model,
     metadata: { runtime: runtimeProfile.runtime },
+    memoryPolicy: amaAgentMemoryPolicy(options.memoryEnabled === true),
   });
   await updateAgentMetadataAnnotations(db, ownerId, akAgentId, {
     "ama.projectId": projectId,
@@ -118,6 +131,10 @@ export async function ensureAmaAgentForAkAgent(db: D1, env: Env, ownerId: string
     ...(agent.model ? { "ama.model": agent.model } : {}),
   });
   return agent;
+}
+
+function amaAgentMemoryPolicy(enabled: boolean) {
+  return enabled ? { enabled: true, mode: "notebook", scope: "project_agent" } : { enabled: false };
 }
 
 export function amaRuntimeName(runtime: string): string {
