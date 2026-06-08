@@ -192,7 +192,7 @@ export async function getReadyAmaMachineEnvironmentForRuntime(
   return null;
 }
 
-function amaRunnerCanRunRuntime(runner: AmaRunner, runtime: string): boolean {
+export function amaRunnerCanRunRuntime(runner: AmaRunner, runtime: string): boolean {
   return (
     runner.status === "active" &&
     runner.currentLoad < runner.maxConcurrent &&

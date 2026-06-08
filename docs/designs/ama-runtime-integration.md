@@ -66,13 +66,14 @@ assignment do not require AMA agent, environment, or runner flags.
 - AK resolves AMA project, environment, capabilities, and runner federation
   server-side
 - AK creates/refreshes the generic AMA external project binding
-- AK performs OAuth2 token exchange for a runner token
+- AK performs OAuth2 token exchange for runner access and refresh tokens
 - the CLI starts `ama-runner`
 
-The runner token is passed via `AMA_TOKEN` in the child process environment, not
-as a command-line argument. The runner command line contains AMA origin,
-project, environment, and capabilities because those are runner process inputs,
-but they are not exposed as AK CLI options.
+The runner credentials are written to an AK-owned runner config file with
+restricted permissions. `AMA_TOKEN` is removed from the child process
+environment. The runner command line contains the config path, AMA API server,
+project, environment, workdir, and concurrency because those are runner process
+inputs, but they are not exposed as AK CLI options.
 
 ## Metadata
 
@@ -105,11 +106,11 @@ agent triggers.
 AK stores maintainer configuration and lightweight run correlation in:
 
 - `board_maintainers`
-- `board_maintainer_runs`
 
 AMA stores the scheduled trigger, created sessions, events, runtime history, and
-future agent memory/notebook capability. AK can list heartbeat runs and link to
-their AMA sessions, but AK does not copy full session history into local tables.
+future agent memory/notebook capability. AK lists heartbeat runs through a
+public AK-shaped API response, but AK does not copy full session history into
+local tables.
 
 Maintainers are configured with AK agent ids. AK maps those agents to AMA
 AgentDefinitions internally.
@@ -173,10 +174,6 @@ work for the same session during AK reject/resume.
 
 ## Remaining Follow-Up
 
-- Restore per-session git worktree isolation in AMA runner before using this
-  integration for real product work. Until sandboxing lands, each AMA session
-  must run inside its own isolated git worktree so agent edits and temporary
-  files cannot pollute the `ak start` launch repository.
 - Broaden maintainer negative-case validation after this PR lands.
 - Improve AMA event rendering in AK task detail as AMA canonical event shapes
   evolve.

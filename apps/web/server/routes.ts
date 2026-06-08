@@ -90,6 +90,7 @@ import { createSSEResponse } from "./sse";
 import { getSystemStats } from "./statsRepo";
 import { createSubagent, deleteSubagent, getSubagent, listSubagents, updateSubagent } from "./subagentRepo";
 import {
+  amaRunnerCanRunRuntime,
   amaRuntimeName,
   apiUrl,
   dispatchTaskToAma,
@@ -197,9 +198,10 @@ function assertValidAgentRuntime(runtime: string | undefined): void {
   }
 }
 
-function withRuntimeSource<T extends Record<string, any>>(env: Env, agent: T): T {
+function withRuntimeSource<T extends Record<string, any>>(env: Env, agent: T, availableRuntimes?: Set<string>): T {
   if (!isAmaTaskDispatchConfigured(env)) return { ...agent, runtime_source: "ak-machine" };
-  return { ...agent, runtime_available: true, runtime_source: "ama" };
+  if (availableRuntimes === undefined) return { ...agent, runtime_source: "ama" };
+  return { ...agent, runtime_available: availableRuntimes.has(agent.runtime), runtime_source: "ama" };
 }
 
 function parseOptionalBoolean(value: string | undefined, name: string): boolean | undefined {
@@ -293,29 +295,62 @@ async function publicBoardMaintainerWithAmaStatus(db: D1, env: Env, ownerId: str
   if (!isAmaTaskDispatchConfigured(env)) return publicMaintainer;
 
   const projectId = await resolveAmaProjectId(db, env, ownerId);
-  const runs = await listAmaScheduledTriggerRuns(env, projectId, maintainer.ama_schedule_id, { limit: 1 }).catch(() => null);
-  if (!runs) return publicMaintainer;
+  const runs = await listAmaScheduledTriggerRuns(env, projectId, maintainer.ama_schedule_id, { limit: 1 });
   const latestRun = runs.data[0];
   return {
     ...publicMaintainer,
     last_run_at: latestRun?.heartbeatAt ?? publicMaintainer.last_run_at,
-    last_ama_session_id: latestRun?.sessionId ?? null,
+    last_session_id: latestRun?.sessionId ?? null,
     last_error_message: latestRun?.errorMessage ?? null,
-    latest_run: latestRun
-      ? {
-          id: latestRun.id,
-          scheduled_for: latestRun.scheduledFor,
-          heartbeat_at: latestRun.heartbeatAt,
-          status: latestRun.status,
-          session_id: latestRun.sessionId,
-          error_message: latestRun.errorMessage,
-        }
-      : null,
+    latest_run: latestRun ? publicMaintainerRun(latestRun) : null,
   };
 }
 
 async function listPublicMaintainersWithAmaStatus(db: D1, env: Env, ownerId: string, maintainers: BoardMaintainer[]) {
   return await Promise.all(maintainers.map((maintainer) => publicBoardMaintainerWithAmaStatus(db, env, ownerId, maintainer)));
+}
+
+async function availableAmaRuntimes(db: D1, env: Env, ownerId: string): Promise<Set<string>> {
+  if (!isAmaTaskDispatchConfigured(env)) return new Set();
+  const machines = await listMachines(db, ownerId);
+  const projectId = await resolveAmaProjectId(db, env, ownerId);
+  const runtimes = new Set<string>();
+  for (const machine of machines) {
+    if (!machine.ama_environment_id) continue;
+    const runners = await listAmaRunners(env, projectId, machine.ama_environment_id);
+    for (const runner of runners.data) {
+      for (const runtime of AGENT_RUNTIMES) {
+        if (amaRunnerCanRunRuntime(runner, amaRuntimeName(runtime))) {
+          runtimes.add(runtime);
+        }
+      }
+    }
+  }
+  return runtimes;
+}
+
+function publicMaintainerRun(run: {
+  id: string;
+  scheduledFor: string;
+  heartbeatAt: string;
+  status: string;
+  sessionId: string | null;
+  errorMessage: string | null;
+  metadata?: Record<string, unknown>;
+  createdAt?: string;
+  updatedAt?: string;
+}) {
+  return {
+    id: run.id,
+    scheduled_for: run.scheduledFor,
+    heartbeat_at: run.heartbeatAt,
+    status: run.status,
+    session_id: run.sessionId,
+    error_message: run.errorMessage,
+    metadata: run.metadata ?? {},
+    ...(run.createdAt ? { created_at: run.createdAt } : {}),
+    ...(run.updatedAt ? { updated_at: run.updatedAt } : {}),
+  };
 }
 
 function publicMachine<T extends MachineRecord | MachineWithAgentsRecord>(machine: T): Omit<T, "ama_environment_id"> {
@@ -343,7 +378,7 @@ async function machineWithAmaRunnerStatus<T extends MachineRecord | MachineWithA
       activeRunners.flatMap((runner) => runner.capabilities),
       lastHeartbeatAt ?? new Date().toISOString(),
     ),
-    usage_info: null,
+    usage_info: machine.usage_info,
     runner_count: runners.data.length,
     active_runner_count: activeRunners.length,
     runner_capacity: activeRunners.reduce((sum, runner) => sum + runner.maxConcurrent, 0),
@@ -782,7 +817,8 @@ api.get("/api/agents", async (c) => {
     runtime,
     available: amaRuntime ? undefined : available,
   });
-  const withSource = agents.map((agent) => withRuntimeSource(c.env, agent));
+  const amaAvailableRuntimes = amaRuntime && available !== undefined ? await availableAmaRuntimes(c.env.DB, c.env, c.get("ownerId")) : undefined;
+  const withSource = agents.map((agent) => withRuntimeSource(c.env, agent, amaAvailableRuntimes));
   return c.json(available === undefined ? withSource : withSource.filter((agent) => agent.runtime_available === available));
 });
 
@@ -790,7 +826,8 @@ api.get("/api/agents/:id", async (c) => {
   const agent = await getAgent(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!agent) throw new HTTPException(404, { message: "Agent not found" });
   const logs = await getAgentLogs(c.env.DB, c.req.param("id"));
-  return c.json({ ...withRuntimeSource(c.env, agent), logs });
+  const amaAvailableRuntimes = isAmaTaskDispatchConfigured(c.env) ? await availableAmaRuntimes(c.env.DB, c.env, c.get("ownerId")) : undefined;
+  return c.json({ ...withRuntimeSource(c.env, agent, amaAvailableRuntimes), logs });
 });
 
 api.post("/api/agents", async (c) => {
@@ -1468,7 +1505,10 @@ api.get("/api/boards/:id/maintainers/:maintainerId/runs", async (c) => {
   const runs = await listAmaScheduledTriggerRuns(c.env, projectId, maintainer.ama_schedule_id, {
     limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 100) : 20,
   });
-  return c.json(runs);
+  return c.json({
+    data: runs.data.map(publicMaintainerRun),
+    pagination: runs.pagination,
+  });
 });
 
 api.delete("/api/boards/:id/maintainers/:maintainerId", async (c) => {
@@ -1542,6 +1582,11 @@ function requireAdmin(c: { get: (key: string) => any }) {
 api.get("/api/admin/stats", async (c) => {
   requireAdmin(c);
   const stats = await getSystemStats(c.env.DB);
+  if (isAmaTaskDispatchConfigured(c.env)) {
+    const machines = await listAllMachines(c.env.DB);
+    const machinesWithStatus = await machinesWithRuntimeStatusByOwner(c.env.DB, c.env, machines);
+    stats.machines.online = machinesWithStatus.filter((machine) => machine.status === "online").length;
+  }
   return c.json(stats);
 });
 

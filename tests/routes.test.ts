@@ -357,6 +357,30 @@ describe("routes", () => {
         archiveRequests.push(url);
         return new Response(null, { status: 204 });
       }
+      if (url.startsWith("https://ama.test/api/scheduled-agent-triggers/sched_maintainer/runs?")) {
+        const limit = Number(new URL(url).searchParams.get("limit") ?? 20);
+        return new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "run_maintainer_1",
+                projectId: "project_123",
+                triggerId: "sched_maintainer",
+                scheduledFor: "2026-06-08T12:00:00.000Z",
+                heartbeatAt: "2026-06-08T12:00:03.000Z",
+                status: "completed",
+                sessionId: "session_maintainer_1",
+                errorMessage: null,
+                metadata: { attempt: 1 },
+                createdAt: "2026-06-08T12:00:00.000Z",
+                updatedAt: "2026-06-08T12:00:04.000Z",
+              },
+            ],
+            pagination: { limit, hasMore: false },
+          }),
+          { status: 200 },
+        );
+      }
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -394,13 +418,30 @@ describe("routes", () => {
       });
       expect(maintainer).not.toHaveProperty("ama_schedule_id");
       expect(maintainer).not.toHaveProperty("last_ama_session_id");
+      expect(maintainer).toMatchObject({
+        last_run_at: "2026-06-08T12:00:03.000Z",
+        last_session_id: "session_maintainer_1",
+        latest_run: {
+          id: "run_maintainer_1",
+          scheduled_for: "2026-06-08T12:00:00.000Z",
+          heartbeat_at: "2026-06-08T12:00:03.000Z",
+          status: "completed",
+          session_id: "session_maintainer_1",
+          error_message: null,
+          metadata: { attempt: 1 },
+        },
+      });
+      expect(maintainer.latest_run).not.toHaveProperty("sessionId");
+      expect(maintainer.latest_run).not.toHaveProperty("scheduledFor");
       expect(scheduleRequests).toHaveLength(1);
       expect(scheduleRequests[0].runtimeEnv).toMatchObject({ AK_AGENT_ID: maintainerAgent.id, AK_BOARD_ID: maintainerBoard.id });
       expect(scheduleRequests[0].runtimeEnv).not.toHaveProperty("AK_SESSION_ID");
 
       const listRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers`, undefined, userToken);
       expect(listRes.status).toBe(200);
-      await expect(listRes.json()).resolves.toEqual([expect.objectContaining({ id: maintainer.id, last_run_at: null })]);
+      await expect(listRes.json()).resolves.toEqual([
+        expect.objectContaining({ id: maintainer.id, last_run_at: "2026-06-08T12:00:03.000Z", last_session_id: "session_maintainer_1" }),
+      ]);
 
       const pauseRes = await apiRequest("PATCH", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`, { status: "paused" }, userToken);
       expect(pauseRes.status).toBe(200);
@@ -422,6 +463,28 @@ describe("routes", () => {
         schedule: { type: "interval", intervalSeconds: 7200 },
       });
       expect(updateRequests.at(-1).promptTemplate).toContain(`AK board ${maintainerBoard.id}`);
+
+      const runsRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/runs?limit=2`, undefined, userToken);
+      expect(runsRes.status).toBe(200);
+      const runs = (await runsRes.json()) as any;
+      expect(runs).toEqual({
+        data: [
+          expect.objectContaining({
+            id: "run_maintainer_1",
+            scheduled_for: "2026-06-08T12:00:00.000Z",
+            heartbeat_at: "2026-06-08T12:00:03.000Z",
+            status: "completed",
+            session_id: "session_maintainer_1",
+            error_message: null,
+            metadata: { attempt: 1 },
+          }),
+        ],
+        pagination: { limit: 2, hasMore: false },
+      });
+      expect(runs.data[0]).not.toHaveProperty("projectId");
+      expect(runs.data[0]).not.toHaveProperty("triggerId");
+      expect(runs.data[0]).not.toHaveProperty("sessionId");
+      expect(runs.data[0]).not.toHaveProperty("scheduledFor");
 
       const archiveRes = await apiRequest("DELETE", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`, undefined, userToken);
       expect(archiveRes.status).toBe(200);
@@ -582,7 +645,7 @@ describe("routes", () => {
     expect(body.map((agent) => agent.username)).toEqual(["filter-claude-agent"]);
   });
 
-  it("GET /api/agents uses AMA as runtime availability source when AMA dispatch is configured", async () => {
+  it("GET /api/agents uses AMA runner load and capabilities as runtime availability source", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
       AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
@@ -595,8 +658,55 @@ describe("routes", () => {
       AMA_OAUTH_CLIENT_ID: "ak-app",
       AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     });
+    await configureAmaOwnerRuntime(userId, "claude", "env_available");
+    await configureAmaOwnerRuntime(userId, "codex", "env_full");
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/runners?environmentId=env_available&limit=100") {
+        return new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "runner_available",
+                environmentId: "env_available",
+                status: "active",
+                capabilities: ["runtime-provider-model:claude-code:*:claude-sonnet-4-6"],
+                currentLoad: 0,
+                maxConcurrent: 5,
+                lastHeartbeatAt: new Date().toISOString(),
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "https://ama.test/api/runners?environmentId=env_full&limit=100") {
+        return new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "runner_full",
+                environmentId: "env_full",
+                status: "active",
+                capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
+                currentLoad: 2,
+                maxConcurrent: 2,
+                lastHeartbeatAt: new Date().toISOString(),
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
     try {
       await createTestAgent(env.DB, userId, { username: "ama-available-agent", runtime: "claude", role: "ama-runtime-source" });
+      await createTestAgent(env.DB, userId, { username: "ama-full-agent", runtime: "codex", role: "ama-runtime-source" });
       const res = await apiRequest("GET", "/api/agents?kind=worker&role=ama-runtime-source&available=true", undefined, apiKey);
       expect(res.status).toBe(200);
       const body = (await res.json()) as any[];
@@ -606,8 +716,95 @@ describe("routes", () => {
         runtime_available: true,
         runtime_source: "ama",
       });
+
+      const unavailableRes = await apiRequest("GET", "/api/agents?kind=worker&role=ama-runtime-source&available=false", undefined, apiKey);
+      expect(unavailableRes.status).toBe(200);
+      await expect(unavailableRes.json()).resolves.toEqual([
+        expect.objectContaining({ username: "ama-full-agent", runtime_available: false, runtime_source: "ama" }),
+      ]);
     } finally {
       Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("GET /api/agents filters AMA-backed agents out when no active runner can serve their runtime", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    });
+    await configureAmaOwnerRuntime(userId, "codex", "env_unavailable");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "https://auth.test/oauth/token") {
+          return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+        }
+        if (url === "https://ama.test/api/runners?environmentId=env_available&limit=100") {
+          return new Response(
+            JSON.stringify({
+              data: [
+                {
+                  id: "runner_available",
+                  environmentId: "env_available",
+                  status: "active",
+                  capabilities: ["runtime-provider-model:claude-code:*:claude-sonnet-4-6"],
+                  currentLoad: 0,
+                  maxConcurrent: 5,
+                  lastHeartbeatAt: new Date().toISOString(),
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        if (url === "https://ama.test/api/runners?environmentId=env_full&limit=100") {
+          return new Response(
+            JSON.stringify({
+              data: [
+                {
+                  id: "runner_full",
+                  environmentId: "env_full",
+                  status: "active",
+                  capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
+                  currentLoad: 2,
+                  maxConcurrent: 2,
+                  lastHeartbeatAt: new Date().toISOString(),
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        if (url === "https://ama.test/api/runners?environmentId=env_unavailable&limit=100") {
+          return new Response(JSON.stringify({ data: [] }), { status: 200 });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+    try {
+      await createTestAgent(env.DB, userId, { username: "ama-unavailable-agent", runtime: "codex", role: "ama-runtime-unavailable" });
+      const availableRes = await apiRequest("GET", "/api/agents?role=ama-runtime-unavailable&available=true", undefined, apiKey);
+      expect(availableRes.status).toBe(200);
+      expect(await availableRes.json()).toEqual([]);
+
+      const unavailableRes = await apiRequest("GET", "/api/agents?role=ama-runtime-unavailable&available=false", undefined, apiKey);
+      expect(unavailableRes.status).toBe(200);
+      await expect(unavailableRes.json()).resolves.toEqual([
+        expect.objectContaining({ username: "ama-unavailable-agent", runtime_available: false, runtime_source: "ama" }),
+      ]);
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
     }
   });
 
@@ -1061,12 +1258,14 @@ describe("routes", () => {
 
   // ─── Tasks ───
 
-  it("POST /api/tasks creates a task", async () => {
+  it("POST /api/tasks creates an unassigned pending task", async () => {
     const jwt = await signSessionJWT();
-    const res = await apiRequest("POST", "/api/tasks", { title: "Route Task", board_id: boardId, assigned_to: agentId }, jwt);
+    const res = await apiRequest("POST", "/api/tasks", { title: "Route Task", board_id: boardId }, jwt);
     expect(res.status).toBe(201);
     const body = (await res.json()) as any;
     expect(body.title).toBe("Route Task");
+    expect(body.assigned_to).toBeNull();
+    expect(body.status).toBe("todo");
   });
 
   it("POST /api/tasks keeps unassigned task creation compatible when AMA dispatch is configured", async () => {
@@ -1099,6 +1298,40 @@ describe("routes", () => {
     } finally {
       Object.assign(env, previousAma);
       vi.unstubAllGlobals();
+    }
+  });
+
+  it("POST /api/tasks keeps assigned task creation on the legacy path when AMA mode is partially configured", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: undefined,
+      AMA_OAUTH_CLIENT_ID: undefined,
+      AMA_OAUTH_CLIENT_SECRET: undefined,
+    });
+
+    try {
+      const jwt = await signSessionJWT();
+      const res = await apiRequest(
+        "POST",
+        "/api/tasks",
+        { title: "Assigned with incomplete AMA runtime", board_id: boardId, assigned_to: agentId },
+        jwt,
+      );
+
+      const body = (await res.json()) as any;
+      expect(res.status).toBe(201);
+      expect(body.title).toBe("Assigned with incomplete AMA runtime");
+      expect(body.assigned_to).toBe(agentId);
+      expect(body.status).toBe("todo");
+      expect(body.metadata?.annotations?.["ama.sessionId"]).toBeUndefined();
+    } finally {
+      Object.assign(env, previousAma);
     }
   });
 
@@ -2291,6 +2524,71 @@ describe("routes", () => {
       expect(body.status).toBe("offline");
     } finally {
       Object.assign(env, previousAma);
+    }
+  });
+
+  it("GET /api/machines/:id preserves usage_info while deriving status from AMA runners", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    });
+    await configureAmaOwnerRuntime(userId, "codex", "env_usage");
+    const machine = await env.DB.prepare("SELECT id FROM machines WHERE owner_id = ? AND ama_environment_id = ?")
+      .bind(userId, "env_usage")
+      .first<{ id: string }>();
+    const usageInfo = {
+      windows: [{ runtime: "codex", label: "Daily", utilization: 42, resets_at: "2026-06-09T00:00:00.000Z" }],
+      updated_at: "2026-06-08T12:00:00.000Z",
+    };
+    await env.DB.prepare("UPDATE machines SET usage_info = ? WHERE id = ?").bind(JSON.stringify(usageInfo), machine!.id).run();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "https://auth.test/oauth/token") {
+          return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+        }
+        if (url === "https://ama.test/api/runners?environmentId=env_usage&limit=100") {
+          return new Response(
+            JSON.stringify({
+              data: [
+                {
+                  id: "runner_usage",
+                  environmentId: "env_usage",
+                  status: "active",
+                  capabilities: ["codex"],
+                  currentLoad: 2,
+                  maxConcurrent: 5,
+                  lastHeartbeatAt: "2026-06-08T12:01:00.000Z",
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    try {
+      const res = await apiRequest("GET", `/api/machines/${machine!.id}`, undefined, apiKey);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as any;
+      expect(body.status).toBe("online");
+      expect(body.usage_info).toEqual(usageInfo);
+      expect(body.active_session_count).toBe(2);
+      expect(body.runner_capacity).toBe(5);
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
     }
   });
 

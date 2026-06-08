@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { Miniflare } from "miniflare";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getSystemStats } from "../apps/web/server/statsRepo";
 import { createTestAgent, createTestEnv, seedUser, setupMiniflare, signUpVerifiedUser } from "./helpers/db";
 
@@ -278,6 +278,76 @@ describe("GET /api/admin/stats", () => {
     const res = await apiRequest("GET", "/api/admin/stats", undefined, adminToken);
     const body = (await res.json()) as any;
     expect(typeof body.agents.online).toBe("number");
+  });
+
+  it("derives machine online stats from AMA runners when AMA dispatch is configured", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    });
+    const ownerId = "admin-ama-machine-owner";
+    const machineId = "admin-ama-machine";
+    const now = new Date().toISOString();
+    await env.DB.prepare(
+      `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
+       VALUES (?, 'project_admin_stats', ?, 'vault_admin_stats', '{}')
+       ON CONFLICT(owner_id) DO UPDATE SET ama_project_id = excluded.ama_project_id`,
+    )
+      .bind(ownerId, ownerId)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO machines (id, owner_id, device_id, name, os, version, runtimes, status, last_heartbeat_at, created_at, ama_environment_id)
+       VALUES (?, ?, 'admin-ama-device', 'admin AMA machine', 'test', '1.0.0', ?, 'offline', ?, ?, 'env_admin_stats')
+       ON CONFLICT(owner_id, device_id) DO UPDATE SET status = 'offline', ama_environment_id = 'env_admin_stats'`,
+    )
+      .bind(machineId, ownerId, JSON.stringify([{ name: "codex", status: "ready", checked_at: now }]), now, now)
+      .run();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "https://auth.test/oauth/token") {
+          return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+        }
+        if (url === "https://ama.test/api/runners?environmentId=env_admin_stats&limit=100") {
+          return new Response(
+            JSON.stringify({
+              data: [
+                {
+                  id: "runner_admin_stats",
+                  environmentId: "env_admin_stats",
+                  status: "active",
+                  capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
+                  currentLoad: 0,
+                  maxConcurrent: 5,
+                  lastHeartbeatAt: "2026-06-08T12:00:00.000Z",
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    try {
+      const res = await apiRequest("GET", "/api/admin/stats", undefined, adminToken);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as any;
+      expect(body.machines.online).toBe(1);
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
   });
 
   it("returns numeric tasks.todo for an admin user", async () => {
