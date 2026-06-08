@@ -35,9 +35,9 @@ import {
   createAmaExternalProjectBinding,
   createAmaFederatedRunnerToken,
   createAmaScheduledAgentTrigger,
-  defaultAmaRunnerCapabilities,
   getAmaSessionRuntimeSnapshot,
   isAmaTaskDispatchConfigured,
+  listAmaRunners,
   updateAmaScheduledAgentTrigger,
 } from "./amaRuntime";
 import { authMiddleware } from "./auth";
@@ -72,7 +72,6 @@ import {
   deleteMachine,
   detectStaleMachines,
   getMachine,
-  getReadyMachineEnvironmentForRuntime,
   listAllMachines,
   listMachines,
   normalizeMachineRuntimes,
@@ -93,6 +92,7 @@ import {
   apiUrl,
   dispatchTaskToAma,
   ensureAmaAgentForAkAgent,
+  getReadyAmaMachineEnvironmentForRuntime,
   sendTaskMessageToAma,
   sendTaskRejectToAma,
   stopTaskAmaSession,
@@ -291,6 +291,77 @@ function publicMachine<T extends Machine | MachineWithAgents>(machine: T): Omit<
   return publicMachine;
 }
 
+async function machineWithAmaRunnerStatus<T extends Machine | MachineWithAgents>(env: Env, projectId: string, machine: T): Promise<T> {
+  if (!machine.ama_environment_id) {
+    return { ...machine, status: "offline", last_heartbeat_at: null, runtimes: [] };
+  }
+  const runners = await listAmaRunners(env, projectId, machine.ama_environment_id);
+  const activeRunners = runners.data.filter((runner) => runner.status === "active");
+  const activeLoad = activeRunners.reduce((sum, runner) => sum + runner.currentLoad, 0);
+  const lastHeartbeatAt = runners.data
+    .map((runner) => runner.lastHeartbeatAt)
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .sort()
+    .at(-1);
+  return {
+    ...machine,
+    status: activeRunners.length > 0 ? "online" : "offline",
+    last_heartbeat_at: lastHeartbeatAt ?? null,
+    runtimes: machineRuntimesFromAmaCapabilities(
+      activeRunners.flatMap((runner) => runner.capabilities),
+      lastHeartbeatAt ?? new Date().toISOString(),
+    ),
+    ...("active_session_count" in machine ? { active_session_count: activeLoad } : {}),
+  };
+}
+
+function machineRuntimesFromAmaCapabilities(capabilities: string[], checkedAt: string): MachineRuntime[] {
+  const runtimes = new Set<AgentRuntime>();
+  for (const capability of capabilities) {
+    const runtime = akRuntimeFromAmaCapability(capability);
+    if (runtime) runtimes.add(runtime);
+  }
+  return AGENT_RUNTIMES.filter((runtime) => runtimes.has(runtime)).map((runtime) => ({ name: runtime, status: "ready", checked_at: checkedAt }));
+}
+
+function akRuntimeFromAmaCapability(capability: string): AgentRuntime | null {
+  const runtime = capability.startsWith("runtime-provider-model:") ? capability.split(":")[1] : capability;
+  if (runtime === "claude-code") return "claude";
+  if (runtime === "codex" || runtime === "copilot") return runtime;
+  return null;
+}
+
+async function machinesWithRuntimeStatus<T extends Machine | MachineWithAgents>(db: D1, env: Env, ownerId: string, machines: T[]): Promise<T[]> {
+  if (!isAmaTaskDispatchConfigured(env)) {
+    return machines;
+  }
+  if (machines.every((machine) => !machine.ama_environment_id)) {
+    return machines.map((machine) => ({ ...machine, status: "offline", last_heartbeat_at: null, runtimes: [] }));
+  }
+  const projectId = await resolveAmaProjectId(db, env, ownerId);
+  return await Promise.all(machines.map((machine) => machineWithAmaRunnerStatus(env, projectId, machine)));
+}
+
+async function machinesWithRuntimeStatusByOwner<T extends Machine | MachineWithAgents>(db: D1, env: Env, machines: T[]): Promise<T[]> {
+  if (!isAmaTaskDispatchConfigured(env)) {
+    return machines;
+  }
+  const projectIds = new Map<string, string>();
+  return await Promise.all(
+    machines.map(async (machine) => {
+      if (!machine.ama_environment_id) {
+        return { ...machine, status: "offline", last_heartbeat_at: null, runtimes: [] };
+      }
+      let projectId = projectIds.get(machine.owner_id);
+      if (!projectId) {
+        projectId = await resolveAmaProjectId(db, env, machine.owner_id);
+        projectIds.set(machine.owner_id, projectId);
+      }
+      return await machineWithAmaRunnerStatus(env, projectId, machine);
+    }),
+  );
+}
+
 async function ensureMachineAmaEnvironment(db: D1, env: Env, ownerId: string, machine: Machine): Promise<string> {
   if (machine.ama_environment_id) return machine.ama_environment_id;
   const binding = await ensureAmaOwnerIntegration(db, env, ownerId);
@@ -307,37 +378,30 @@ async function ensureMachineAmaEnvironment(db: D1, env: Env, ownerId: string, ma
 async function createMachineRunnerOnboarding(env: Env, machine: Machine, ownerId: string, requestOrigin: string) {
   const environmentId = machine.ama_environment_id;
   if (!environmentId) return null;
-  const readyRuntimes = readyAmaRuntimeNames(machine.runtimes);
-  if (readyRuntimes.length === 0) return null;
+  if (readyAmaRuntimeNames(machine.runtimes).length === 0) return null;
 
   const projectId = await resolveAmaProjectId(env.DB, env, ownerId);
-  const capabilities = await defaultAmaRunnerCapabilities(env, projectId, readyRuntimes);
   const externalTenantId = await resolveAmaExternalTenantId(env.DB, env, ownerId);
   const issuer = apiUrl(env, requestOrigin);
-  const runnerId = `runner_${crypto.randomUUID().replaceAll("-", "")}`;
 
   await createAmaExternalProjectBinding(env, {
     projectId,
     issuer,
     externalTenantId,
     environmentId,
-    capabilities,
   });
   const token = await createAmaFederatedRunnerToken(env, {
     projectId,
+    issuer,
     externalTenantId,
-    runnerId,
+    subject: `machine:${machine.id}`,
     environmentId,
-    capabilities,
   });
 
   return {
     origin: env.AMA_ORIGIN,
     projectId,
-    runnerId,
-    runnerName: machine.name,
     environmentId,
-    capabilities,
     accessToken: token.accessToken,
     tokenType: token.tokenType,
     expiresIn: token.expiresIn,
@@ -585,17 +649,19 @@ api.post("/api/machines/:id/heartbeat", async (c) => {
 
 api.get("/api/machines", async (c) => {
   markLegacyRuntimeSurface(c);
-  await detectStaleMachines(c.env.DB);
+  if (!isAmaTaskDispatchConfigured(c.env)) await detectStaleMachines(c.env.DB);
   const machines = await listMachines(c.env.DB, c.get("ownerId"));
-  return c.json(machines.map(publicMachine));
+  const machinesWithStatus = await machinesWithRuntimeStatus(c.env.DB, c.env, c.get("ownerId"), machines);
+  return c.json(machinesWithStatus.map(publicMachine));
 });
 
 api.get("/api/machines/:id", async (c) => {
   markLegacyRuntimeSurface(c);
-  await detectStaleMachines(c.env.DB);
+  if (!isAmaTaskDispatchConfigured(c.env)) await detectStaleMachines(c.env.DB);
   const machine = await getMachine(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!machine) throw new HTTPException(404, { message: "Machine not found" });
-  return c.json(publicMachine(machine));
+  const [machineWithStatus] = await machinesWithRuntimeStatus(c.env.DB, c.env, c.get("ownerId"), [machine]);
+  return c.json(publicMachine(machineWithStatus));
 });
 
 api.post("/api/machines", async (c) => {
@@ -971,12 +1037,14 @@ api.get("/api/tasks/:id/runtime", async (c) => {
   const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) throw new HTTPException(404, { message: "Task not found" });
   const annotations = task.metadata?.annotations;
-  const sessionId =
-    annotations && typeof annotations === "object" && !Array.isArray(annotations) ? (annotations as Record<string, unknown>)["ama.sessionId"] : null;
+  const taskAnnotations =
+    annotations && typeof annotations === "object" && !Array.isArray(annotations) ? (annotations as Record<string, unknown>) : {};
+  const sessionId = taskAnnotations["ama.sessionId"];
   if (typeof sessionId !== "string" || !sessionId) {
     throw new HTTPException(404, { message: "Task is not bound to a session" });
   }
-  const runtime = await getAmaSessionRuntimeSnapshot(c.env, sessionId);
+  const projectId = typeof taskAnnotations["ama.projectId"] === "string" ? taskAnnotations["ama.projectId"] : undefined;
+  const runtime = await getAmaSessionRuntimeSnapshot(c.env, sessionId, projectId);
   return c.json({
     task_id: task.id,
     session_id: sessionId,
@@ -1239,8 +1307,9 @@ api.post("/api/boards/:id/maintainers", async (c) => {
   const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
   const maintainerAgent = await getAgent(c.env.DB, maintainerAgentId, ownerId);
   if (!maintainerAgent) throw new HTTPException(404, { message: "Agent not found" });
-  const machineRuntime = await getReadyMachineEnvironmentForRuntime(c.env.DB, ownerId, maintainerAgent.runtime);
-  if (!machineRuntime) throw new HTTPException(409, { message: `Runtime "${maintainerAgent.runtime}" is not available on any online machine` });
+  const machineRuntime = await getReadyAmaMachineEnvironmentForRuntime(c.env.DB, c.env, ownerId, amaProjectId, maintainerAgent.runtime);
+  if (!machineRuntime)
+    throw new HTTPException(409, { message: `Runtime "${maintainerAgent.runtime}" is not available on any active AMA environment` });
   const amaEnvironmentId = machineRuntime.environmentId;
   const amaRuntime = amaRuntimeName(maintainerAgent.runtime);
   const amaAgent = await ensureAmaAgentForAkAgent(c.env.DB, c.env, ownerId, maintainerAgentId, amaProjectId, amaRuntime);
@@ -1386,9 +1455,11 @@ api.get("/api/admin/stats", async (c) => {
 api.get("/api/admin/machines", async (c) => {
   markLegacyRuntimeSurface(c);
   requireAdmin(c);
+  if (!isAmaTaskDispatchConfigured(c.env)) await detectStaleMachines(c.env.DB);
   const machines = await listAllMachines(c.env.DB);
+  const machinesWithStatus = await machinesWithRuntimeStatusByOwner(c.env.DB, c.env, machines);
   const metrics = await getMachineMetrics(c.env);
-  return c.json(machines.map((m) => ({ ...m, metrics: metrics.get(m.id) ?? null })));
+  return c.json(machinesWithStatus.map((m) => ({ ...m, metrics: metrics.get(m.id) ?? null })));
 });
 
 // ─── Repositories ───

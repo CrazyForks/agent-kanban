@@ -4,18 +4,20 @@ import { getAgent, updateAgentMetadataAnnotations } from "./agentRepo";
 import { bindAmaAgentSession, closeSession, createAmaAgentSession } from "./agentSessionRepo";
 import { resolveAmaProjectId, resolveAmaSessionSecretVaultId } from "./amaOwnerIntegrationRepo";
 import {
+  type AmaRunner,
   createAmaAgent,
   createAmaSessionSecret,
   createAmaTaskSession,
   isAmaRuntimeConfigured,
   isAmaTaskDispatchConfigured,
+  listAmaRunners,
   readAmaAgent,
   resolveAmaProviderModelProfile,
   sendAmaSessionMessage,
   stopAmaSession,
 } from "./amaRuntime";
 import type { D1 } from "./db";
-import { getReadyMachineEnvironmentForRuntime } from "./machineRepo";
+import { listMachineEnvironmentCandidatesForRuntime } from "./machineRepo";
 import { updateTask } from "./taskRepo";
 import type { Env } from "./types";
 
@@ -29,10 +31,10 @@ export async function dispatchTaskToAma(db: D1, env: Env, ownerId: string, task:
   const amaProjectId = await resolveAmaProjectId(db, env, ownerId);
   const akAgent = await getAgent(db, task.assigned_to, ownerId);
   if (!akAgent) throw new HTTPException(404, { message: "Assigned agent not found" });
-  const machineRuntime = await getReadyMachineEnvironmentForRuntime(db, ownerId, akAgent.runtime);
-  if (!machineRuntime) throw new HTTPException(409, { message: `Runtime "${akAgent.runtime}" is not available on any online machine` });
-  const amaEnvironmentId = machineRuntime.environmentId;
   const amaRuntime = amaRuntimeName(akAgent.runtime);
+  const machineRuntime = await getReadyAmaMachineEnvironmentForRuntime(db, env, ownerId, amaProjectId, akAgent.runtime);
+  if (!machineRuntime) throw new HTTPException(409, { message: `Runtime "${akAgent.runtime}" is not available on any active AMA environment` });
+  const amaEnvironmentId = machineRuntime.environmentId;
   const amaAgent = await ensureAmaAgentForAkAgent(db, env, ownerId, task.assigned_to, amaProjectId, amaRuntime);
 
   const sessionIdentity = await createAkAgentSessionIdentity(db, env, ownerId, task.assigned_to);
@@ -120,6 +122,32 @@ export async function ensureAmaAgentForAkAgent(db: D1, env: Env, ownerId: string
 
 export function amaRuntimeName(runtime: string): string {
   return runtime === "claude" ? "claude-code" : runtime;
+}
+
+export async function getReadyAmaMachineEnvironmentForRuntime(
+  db: D1,
+  env: Env,
+  ownerId: string,
+  projectId: string,
+  runtime: string,
+): Promise<{ machineId: string; environmentId: string } | null> {
+  const amaRuntime = amaRuntimeName(runtime);
+  const candidates = await listMachineEnvironmentCandidatesForRuntime(db, ownerId, runtime);
+  for (const candidate of candidates) {
+    const runners = await listAmaRunners(env, projectId, candidate.environmentId);
+    if (runners.data.some((runner) => amaRunnerCanRunRuntime(runner, amaRuntime))) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function amaRunnerCanRunRuntime(runner: AmaRunner, runtime: string): boolean {
+  return (
+    runner.status === "active" &&
+    runner.currentLoad < runner.maxConcurrent &&
+    runner.capabilities.some((capability) => capability === runtime || capability.startsWith(`runtime-provider-model:${runtime}:`))
+  );
 }
 
 export async function sendTaskMessageToAma(env: Env, task: Task, message: string): Promise<Task> {

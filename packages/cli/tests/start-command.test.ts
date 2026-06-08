@@ -17,7 +17,7 @@ vi.mock("../src/providers/registry.js", () => ({ getAvailableProviders: () => [{
 vi.mock("../src/device.js", () => ({ generateDeviceId: () => "device-test" }));
 vi.mock("../src/machineName.js", () => ({ resolveMachineName: () => "test-machine" }));
 
-function mockMachineRunnerFetch(origin = "https://runner-control.test", runnerName = "ak-runner") {
+function mockMachineRunnerFetch(origin = "https://runner-control.test") {
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url === "https://ak.test/api/machines") {
@@ -28,10 +28,7 @@ function mockMachineRunnerFetch(origin = "https://runner-control.test", runnerNa
           runner: {
             origin,
             projectId: "project_1",
-            runnerId: "runner_from_token",
-            runnerName,
             environmentId: "env_1",
-            capabilities: ["sandbox.exec"],
             accessToken: "runner-token",
             tokenType: "Bearer",
             expiresIn: 3600,
@@ -118,10 +115,7 @@ describe("start runtime command", () => {
             runner: {
               origin: "https://runner-control.test",
               projectId: "project_1",
-              runnerId: "runner_from_token",
-              runnerName: "ak-runner",
               environmentId: "env_1",
-              capabilities: ["sandbox.exec"],
               accessToken: "runner-token",
               tokenType: "Bearer",
               expiresIn: 3600,
@@ -146,18 +140,12 @@ describe("start runtime command", () => {
     expect(spawnMock).toHaveBeenCalledWith(
       "ama-runner",
       [
-        "--origin",
+        "--api-server",
         "https://runner-control.test",
         "--project-id",
         "project_1",
-        "--runner-id",
-        "runner_from_token",
-        "--runner-name",
-        "ak-runner",
         "--environment-id",
         "env_1",
-        "--capabilities",
-        "sandbox.exec",
         "--max-concurrent",
         "1",
         "--allow-unsafe-process",
@@ -166,32 +154,26 @@ describe("start runtime command", () => {
     );
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Machine runner started"));
     const state = JSON.parse(readFileSync(join(testSessionsDir, "daemon-state.json"), "utf-8"));
-    expect(state).toMatchObject({ runtime: "ama-runner", apiUrl: "https://runner-control.test", providers: ["machine-runner"] });
+    expect(state).toMatchObject({ runtime: "ama-runner", apiUrl: "https://ak.test", providers: ["machine-runner"] });
   });
 
   it("does not pass onboarding runner id before AMA registration", async () => {
     const program = new Command();
     registerStartCommand(program);
     vi.spyOn(console, "log").mockImplementation(() => {});
-    mockMachineRunnerFetch("https://ama.test", "local-runner");
+    mockMachineRunnerFetch("https://ama.test");
 
     await program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
 
     expect(spawnMock).toHaveBeenCalledWith(
       "ama-runner",
       [
-        "--origin",
+        "--api-server",
         "https://ama.test",
         "--project-id",
         "project_1",
-        "--runner-id",
-        "runner_from_token",
-        "--runner-name",
-        "local-runner",
         "--environment-id",
         "env_1",
-        "--capabilities",
-        "sandbox.exec",
         "--max-concurrent",
         "1",
         "--allow-unsafe-process",
@@ -213,18 +195,12 @@ describe("restart runtime command", () => {
     expect(spawnMock).toHaveBeenCalledWith(
       "ama-runner",
       [
-        "--origin",
+        "--api-server",
         "https://runner-control.test",
         "--project-id",
         "project_1",
-        "--runner-id",
-        "runner_from_token",
-        "--runner-name",
-        "ak-runner",
         "--environment-id",
         "env_1",
-        "--capabilities",
-        "sandbox.exec",
         "--max-concurrent",
         "1",
         "--allow-unsafe-process",
@@ -234,7 +210,7 @@ describe("restart runtime command", () => {
     expect(logSpy).toHaveBeenCalledWith("○ Machine runner was not running");
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Machine runner started"));
     const state = JSON.parse(readFileSync(join(testSessionsDir, "daemon-state.json"), "utf-8"));
-    expect(state).toMatchObject({ runtime: "ama-runner", apiUrl: "https://runner-control.test" });
+    expect(state).toMatchObject({ runtime: "ama-runner", apiUrl: "https://ak.test" });
   });
 });
 

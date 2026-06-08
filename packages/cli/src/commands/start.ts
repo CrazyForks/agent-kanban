@@ -40,10 +40,7 @@ interface DaemonState {
 interface AmaRunnerOnboardingResponse {
   origin: string;
   projectId: string;
-  runnerId: string;
-  runnerName: string;
   environmentId: string;
-  capabilities: string[];
   accessToken: string;
 }
 
@@ -158,12 +155,9 @@ function amaRunnerArgs(opts: Record<string, unknown>): string[] {
   const add = (flag: string, value: unknown) => {
     if (typeof value === "string" && value.length > 0) args.push(flag, value);
   };
-  add("--origin", opts.amaOrigin);
+  add("--api-server", opts.amaOrigin);
   add("--project-id", opts.amaProjectId);
-  add("--runner-id", opts.amaRunnerId);
-  add("--runner-name", opts.amaRunnerName);
   add("--environment-id", opts.amaEnvironmentId);
-  add("--capabilities", opts.amaCapabilities);
   add("--workdir", opts.amaWorkdir);
   add("--max-concurrent", opts.maxConcurrent);
   if (opts.amaAllowUnsafeProcess !== false) args.push("--allow-unsafe-process");
@@ -172,6 +166,10 @@ function amaRunnerArgs(opts: Record<string, unknown>): string[] {
 
 function amaRunnerOrigin(opts: Record<string, unknown>) {
   return (typeof opts.amaOrigin === "string" && opts.amaOrigin) || "machine-runner";
+}
+
+function akApiUrl(opts: Record<string, unknown>) {
+  return (typeof opts.apiUrl === "string" && opts.apiUrl) || amaRunnerOrigin(opts);
 }
 
 function machineRuntimes(): MachineRuntime[] {
@@ -242,7 +240,7 @@ async function startAmaRunner(opts: Record<string, unknown>) {
     maxConcurrent: parseInt(String(opts.maxConcurrent ?? "1"), 10),
     pollInterval: 0,
     taskTimeout: 0,
-    apiUrl: amaRunnerOrigin(opts),
+    apiUrl: akApiUrl(opts),
     startedAt: new Date().toISOString(),
     runtime: "ama-runner",
   };
@@ -298,10 +296,7 @@ async function applyAmaRunnerOnboarding(opts: Record<string, unknown>) {
   opts.amaOrigin = onboarding.origin;
   opts.amaToken = onboarding.accessToken;
   opts.amaProjectId = onboarding.projectId;
-  opts.amaRunnerId = onboarding.runnerId;
-  opts.amaRunnerName = onboarding.runnerName;
   opts.amaEnvironmentId = onboarding.environmentId;
-  opts.amaCapabilities = onboarding.capabilities.join(",");
 }
 
 export function registerStartCommand(program: Command) {

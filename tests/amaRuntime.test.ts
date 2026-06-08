@@ -161,8 +161,8 @@ describe("AMA runtime adapter", () => {
           issuer: "https://ak.example.com",
           externalTenantId: "owner_123",
           environmentId: "env_123",
-          capabilities: ["sandbox.exec"],
         });
+        expect(body).not.toHaveProperty("capabilities");
         return new Response(JSON.stringify({ id: "epb_123" }), { status: 201 });
       }
       if (url === "https://auth.test/oauth/token" && String(init?.body).includes("token-exchange")) {
@@ -175,13 +175,13 @@ describe("AMA runtime adapter", () => {
         const payload = JSON.parse(atob(tokenBody + "=".repeat((4 - (tokenBody.length % 4)) % 4)));
         expect(payload).toMatchObject({
           iss: "https://ak.example.com",
-          sub: "owner_123:runner_123",
+          sub: "owner_123:machine:machine_123",
           aud: "https://ama.test",
           external_tenant_id: "owner_123",
-          ama_runner_id: "runner_123",
           ama_environment_id: "env_123",
-          runner_capabilities: ["sandbox.exec"],
         });
+        expect(payload).not.toHaveProperty("ama_runner_id");
+        expect(payload).not.toHaveProperty("runner_capabilities");
         return new Response(JSON.stringify({ access_token: "runner-token", token_type: "Bearer", expires_in: 3600 }), {
           status: 200,
         });
@@ -195,15 +195,14 @@ describe("AMA runtime adapter", () => {
       issuer: "https://ak.example.com",
       externalTenantId: "owner_123",
       environmentId: "env_123",
-      capabilities: ["sandbox.exec"],
     });
     await expect(
       createAmaFederatedRunnerToken(env(), {
         projectId: "project_123",
+        issuer: "https://ak.example.com",
         externalTenantId: "owner_123",
-        runnerId: "runner_123",
+        subject: "machine:machine_123",
         environmentId: "env_123",
-        capabilities: ["sandbox.exec"],
       }),
     ).resolves.toEqual({ accessToken: "runner-token", tokenType: "Bearer", expiresIn: 3600 });
   });

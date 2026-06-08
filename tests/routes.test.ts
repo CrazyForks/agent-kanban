@@ -262,13 +262,34 @@ describe("routes", () => {
       if (url === "https://ama.test/api/environments/env_123") {
         return new Response(JSON.stringify({ id: "env_123", runtime: "codex" }), { status: 200 });
       }
+      if (url === "https://ama.test/api/runners?environmentId=env_123&limit=100") {
+        return new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "runner_123",
+                environmentId: "env_123",
+                status: "active",
+                capabilities: ["runtime-provider-model:codex:*:gpt-5.3-codex"],
+                currentLoad: 0,
+                maxConcurrent: 1,
+                lastHeartbeatAt: new Date().toISOString(),
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
       if (url === "https://ama.test/api/providers?limit=100") {
-        return new Response(JSON.stringify({ data: [{ id: "provider_codex", status: "active" }] }), { status: 200 });
+        return new Response(JSON.stringify({ data: [{ id: "provider_codex", type: "openai", status: "active" }] }), { status: 200 });
       }
       if (url === "https://ama.test/api/providers/provider_codex/models?limit=100") {
         return new Response(JSON.stringify({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] }), {
           status: 200,
         });
+      }
+      if (url === "https://ama.test/api/providers/provider_codex/models" && init?.method === "POST") {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
       if (url === "https://ama.test/api/agents") {
         return new Response(
@@ -1084,7 +1105,7 @@ describe("routes", () => {
       if (url === "https://ama.test/api/providers?limit=100") {
         return new Response(
           JSON.stringify({
-            data: [{ id: "provider_claude", status: "active" }],
+            data: [{ id: "provider_claude", type: "anthropic", status: "active" }],
             pagination: { limit: 100, hasMore: false, nextCursor: null },
           }),
           { status: 200 },
@@ -1093,8 +1114,29 @@ describe("routes", () => {
       if (url === "https://ama.test/api/providers/provider_claude/models?limit=100") {
         return new Response(
           JSON.stringify({
-            data: [{ modelId: "claude-sonnet-4.5", availability: "available", metadata: { runtime: "claude-code" } }],
+            data: [{ modelId: "claude-sonnet-4-6", availability: "available", metadata: { runtime: "claude-code" } }],
             pagination: { limit: 100, hasMore: false, nextCursor: null },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "https://ama.test/api/providers/provider_claude/models" && init?.method === "POST") {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/runners?environmentId=env_123&limit=100") {
+        return new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "runner_123",
+                environmentId: "env_123",
+                status: "active",
+                capabilities: ["runtime-provider-model:claude-code:anthropic:claude-sonnet-4-6"],
+                currentLoad: 0,
+                maxConcurrent: 1,
+                lastHeartbeatAt: new Date().toISOString(),
+              },
+            ],
           }),
           { status: 200 },
         );
@@ -1109,7 +1151,7 @@ describe("routes", () => {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         expect(body.metadata).toMatchObject({ runtime: "claude-code" });
         expect(body.provider).toBe("provider_claude");
-        expect(body.model).toBe("claude-sonnet-4.5");
+        expect(body.model).toBe("claude-sonnet-4-6");
         return new Response(
           JSON.stringify({
             id: "ama_agent_123",
@@ -1965,6 +2007,19 @@ describe("routes", () => {
     });
 
     try {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL) => {
+          const url = String(input);
+          if (url === "https://auth.test/oauth/token") {
+            return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+          }
+          if (url.startsWith("http://ama.test/api/runners?environmentId=")) {
+            return new Response(JSON.stringify({ data: [] }), { status: 200 });
+          }
+          throw new Error(`Unexpected fetch: ${url}`);
+        }),
+      );
       const machinesRes = await apiRequest("GET", "/api/machines", undefined, apiKey);
       const sessionsRes = await apiRequest("GET", `/api/agents/${agentId}/sessions`, undefined, apiKey);
 
@@ -1976,6 +2031,7 @@ describe("routes", () => {
       expect(Array.isArray(await sessionsRes.json())).toBe(true);
     } finally {
       Object.assign(env, previous);
+      vi.unstubAllGlobals();
     }
   });
 
@@ -2000,15 +2056,31 @@ describe("routes", () => {
   });
 
   it("GET /api/machines/:id marks stale machines offline", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: undefined,
+      AMA_OAUTH_TOKEN_URL: undefined,
+      AMA_OAUTH_CLIENT_ID: undefined,
+      AMA_OAUTH_CLIENT_SECRET: undefined,
+    });
     await env.DB.prepare("UPDATE machines SET status = 'online', last_heartbeat_at = ? WHERE id = ?")
       .bind("2000-01-01T00:00:00.000Z", machineId)
       .run();
 
-    const res = await apiRequest("GET", `/api/machines/${machineId}`, undefined, apiKey);
+    try {
+      const res = await apiRequest("GET", `/api/machines/${machineId}`, undefined, apiKey);
 
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body.status).toBe("offline");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as any;
+      expect(body.status).toBe("offline");
+    } finally {
+      Object.assign(env, previousAma);
+    }
   });
 
   it("GET /api/machines/:id returns 404 for unknown machine", async () => {

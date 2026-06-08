@@ -68,6 +68,35 @@ export async function getReadyMachineEnvironmentForRuntime(
   return row ? { machineId: row.id, environmentId: row.environment_id } : null;
 }
 
+export async function listMachineEnvironmentCandidatesForRuntime(
+  db: D1,
+  ownerId: string,
+  runtime: string,
+): Promise<{ machineId: string; environmentId: string }[]> {
+  const values = runtimeMatchValues(runtime);
+  const placeholders = values.map(() => "?").join(", ");
+  const result = await db
+    .prepare(
+      `
+      SELECT m.id, m.ama_environment_id AS environment_id
+      FROM machines m, json_each(m.runtimes) rt
+      WHERE m.owner_id = ?
+        AND (
+          (rt.type = 'text' AND rt.value IN (${placeholders}))
+          OR (
+            json_extract(rt.value, '$.status') = 'ready'
+            AND json_extract(rt.value, '$.name') IN (${placeholders})
+          )
+        )
+        AND m.ama_environment_id IS NOT NULL
+      ORDER BY COALESCE(m.last_heartbeat_at, m.created_at) DESC
+    `,
+    )
+    .bind(ownerId, ...values, ...values)
+    .all<{ id: string; environment_id: string }>();
+  return result.results.map((row) => ({ machineId: row.id, environmentId: row.environment_id }));
+}
+
 export async function deleteMachine(db: D1, machineId: string, ownerId: string): Promise<boolean> {
   const result = await db.prepare("DELETE FROM machines WHERE id = ? AND owner_id = ?").bind(machineId, ownerId).run();
   return result.meta.changes > 0;

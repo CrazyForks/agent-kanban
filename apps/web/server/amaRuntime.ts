@@ -147,15 +147,26 @@ interface AmaEnvironmentResponse {
   id: string;
 }
 
+export interface AmaRunner {
+  id: string;
+  environmentId: string | null;
+  status: string;
+  capabilities: string[];
+  currentLoad: number;
+  maxConcurrent: number;
+  lastHeartbeatAt: string | null;
+}
+
 interface AmaProviderResponse {
   id: string;
+  type?: string | null;
   status?: string | null;
 }
 
-interface AmaProviderModelResponse {
-  modelId: string;
-  availability?: string | null;
-  metadata?: Record<string, unknown> | null;
+interface AmaProviderConfigResponse {
+  id: string;
+  type: string;
+  status?: string | null;
 }
 
 interface OAuthTokenResponse {
@@ -169,16 +180,15 @@ export interface AmaExternalBindingInput {
   issuer: string;
   externalTenantId: string;
   environmentId?: string | null;
-  capabilities?: string[];
   metadata?: Record<string, unknown>;
 }
 
 export interface AmaRunnerTokenInput {
   projectId: string;
+  issuer: string;
   externalTenantId: string;
-  runnerId: string;
+  subject: string;
   environmentId: string;
-  capabilities: string[];
 }
 
 export interface AmaRunnerToken {
@@ -212,6 +222,35 @@ export interface AmaEnvironmentInput {
   metadata?: Record<string, unknown>;
 }
 
+const RUNTIME_PROVIDER_PROFILES: Record<
+  string,
+  {
+    providerType: string;
+    providerDisplayName: string;
+    defaultModel: string;
+    modelDisplayName: string;
+  }
+> = {
+  "claude-code": {
+    providerType: "anthropic",
+    providerDisplayName: "Anthropic",
+    defaultModel: "claude-sonnet-4-6",
+    modelDisplayName: "Claude Sonnet 4.6",
+  },
+  codex: {
+    providerType: "openai",
+    providerDisplayName: "OpenAI",
+    defaultModel: "gpt-5.3-codex",
+    modelDisplayName: "GPT-5.3 Codex",
+  },
+  copilot: {
+    providerType: "other",
+    providerDisplayName: "GitHub Copilot",
+    defaultModel: "copilot-cli",
+    modelDisplayName: "GitHub Copilot CLI",
+  },
+};
+
 export function isAmaRuntimeConfigured(env: Env): boolean {
   return Boolean(env.AMA_ORIGIN && hasTokenSource(env));
 }
@@ -222,18 +261,20 @@ export function isAmaTaskDispatchConfigured(env: Env): boolean {
 
 export async function createAmaTaskSession(env: Env, input: AmaTaskSessionInput): Promise<AmaSessionDispatch> {
   const client = await createAmaClient(env, input.projectId);
-  const session = await client.request<AmaSessionResponse>("createSession", {
-    body: {
-      agentId: input.agentId,
-      environmentId: input.environmentId,
-      runtime: input.runtime,
-      title: input.title,
-      resourceRefs: input.resourceRefs ?? [],
-      ...(input.runtimeEnv ? { runtimeEnv: input.runtimeEnv } : {}),
-      ...(input.runtimeSecretEnv ? { runtimeSecretEnv: input.runtimeSecretEnv } : {}),
-      ...(input.initialPrompt ? { initialPrompt: input.initialPrompt } : {}),
-    },
-  });
+  const session = await withAmaErrorDetails("create session", () =>
+    client.request<AmaSessionResponse>("createSession", {
+      body: {
+        agentId: input.agentId,
+        environmentId: input.environmentId,
+        runtime: input.runtime,
+        title: input.title,
+        resourceRefs: input.resourceRefs ?? [],
+        ...(input.runtimeEnv ? { runtimeEnv: input.runtimeEnv } : {}),
+        ...(input.runtimeSecretEnv ? { runtimeSecretEnv: input.runtimeSecretEnv } : {}),
+        ...(input.initialPrompt ? { initialPrompt: input.initialPrompt } : {}),
+      },
+    }),
+  );
 
   return {
     projectId: input.projectId,
@@ -347,50 +388,54 @@ export async function resolveAmaProviderModelProfile(
   projectId: string,
   input: { runtime: string; preferredModel?: string | null },
 ): Promise<AmaProviderModelProfile> {
-  const profiles = await listAmaProviderModelProfiles(env, projectId, input.runtime);
-  const preferred = input.preferredModel ? profiles.find((profile) => profile.model === input.preferredModel) : null;
-  const profile = preferred ?? profiles[0];
-  if (!profile) {
-    throw new Error(`No available runtime provider model for runtime ${input.runtime}`);
+  return await ensureAmaProviderModelProfile(env, projectId, input.runtime, input.preferredModel);
+}
+
+async function ensureAmaProviderModelProfile(
+  env: Env,
+  projectId: string,
+  runtime: string,
+  preferredModel?: string | null,
+): Promise<AmaProviderModelProfile> {
+  const configured = RUNTIME_PROVIDER_PROFILES[runtime];
+  if (!configured) {
+    throw new Error(`No AK runtime provider mapping is configured for runtime ${runtime}`);
   }
-  return profile;
-}
-
-export async function defaultAmaRunnerCapabilities(env: Env, projectId: string, runtimes: string[]): Promise<string[]> {
-  const capabilities = new Set(["sandbox.exec"]);
-  for (const runtime of runtimes) {
-    const profiles = await listAmaProviderModelProfiles(env, projectId, runtime);
-    for (const profile of profiles) {
-      capabilities.add(runtimeProviderModelCapability(profile.runtime, profile.provider, profile.model));
-    }
-  }
-  return [...capabilities];
-}
-
-export function runtimeProviderModelCapability(runtime: string, provider: string, model: string) {
-  return `runtime-provider-model:${runtime}:${provider}:${model}`;
-}
-
-async function listAmaProviderModelProfiles(env: Env, projectId: string, runtime: string): Promise<AmaProviderModelProfile[]> {
   const client = await createAmaClient(env, projectId);
   const providers = await client.request<AmaListResponse<AmaProviderResponse>>("listProviders", {
     query: { limit: 100 },
   });
-  const profiles: AmaProviderModelProfile[] = [];
-  for (const provider of providers.data) {
-    if (provider.status && provider.status !== "active") continue;
-    const models = await client.request<AmaListResponse<AmaProviderModelResponse>>("listProviderModels", {
-      path: { providerId: provider.id },
-      query: { limit: 100 },
-    });
-    for (const model of models.data) {
-      if (model.availability && model.availability !== "available") continue;
-      const modelRuntime = typeof model.metadata?.runtime === "string" ? model.metadata.runtime : runtime;
-      if (modelRuntime !== runtime) continue;
-      profiles.push({ runtime, provider: provider.id, model: model.modelId });
-    }
+  let provider = providers.data.find((item) => item.type === configured.providerType && item.status !== "disabled" && item.status !== "deleted");
+  if (!provider) {
+    provider = await withAmaErrorDetails("create provider", () =>
+      client.request<AmaProviderConfigResponse>("createProvider", {
+        body: {
+          type: configured.providerType,
+          displayName: configured.providerDisplayName,
+          metadata: { runtime },
+        },
+      }),
+    );
   }
-  return profiles;
+
+  const model = preferredModel || configured.defaultModel;
+  await withAmaErrorDetails("upsert provider model", () =>
+    client.request("upsertProviderModel", {
+      path: { providerId: provider.id },
+      body: {
+        modelId: model,
+        displayName: model === configured.defaultModel ? configured.modelDisplayName : model,
+        capabilities: ["text"],
+        availability: "available",
+        metadata: {
+          runtime,
+          defaultForRuntime: model === configured.defaultModel,
+        },
+      },
+    }),
+  );
+
+  return { runtime, provider: provider.id, model };
 }
 
 export async function createAmaExternalProjectBinding(env: Env, input: AmaExternalBindingInput): Promise<void> {
@@ -402,7 +447,6 @@ export async function createAmaExternalProjectBinding(env: Env, input: AmaExtern
         issuer: input.issuer,
         externalTenantId: input.externalTenantId,
         ...(input.environmentId ? { environmentId: input.environmentId } : {}),
-        capabilities: input.capabilities ?? [],
         ...(input.metadata ? { metadata: input.metadata } : {}),
       },
     });
@@ -419,17 +463,15 @@ export async function createAmaFederatedRunnerToken(env: Env, input: AmaRunnerTo
   const clientId = requireEnv(env.AMA_OAUTH_CLIENT_ID, "AMA_OAUTH_CLIENT_ID");
   const clientSecret = requireEnv(env.AMA_OAUTH_CLIENT_SECRET, "AMA_OAUTH_CLIENT_SECRET");
   const audience = requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN").replace(/\/$/, "");
-  const issuer = apiUrl(env, "http://localhost").replace(/\/$/, "");
+  const issuer = input.issuer.replace(/\/$/, "");
   const subjectSecret = requireEnv(env.AK_FEDERATED_RUNNER_SUBJECT_SECRET, "AK_FEDERATED_RUNNER_SUBJECT_SECRET");
   const subjectToken = await signSubjectToken(subjectSecret, {
     iss: issuer,
-    sub: `${input.externalTenantId}:${input.runnerId}`,
+    sub: `${input.externalTenantId}:${input.subject}`,
     aud: audience,
     exp: Math.floor(Date.now() / 1000) + 120,
     external_tenant_id: input.externalTenantId,
-    ama_runner_id: input.runnerId,
     ama_environment_id: input.environmentId,
-    runner_capabilities: input.capabilities,
   });
   const body = new URLSearchParams({
     grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -448,7 +490,8 @@ export async function createAmaFederatedRunnerToken(env: Env, input: AmaRunnerTo
     body,
   });
   if (!response.ok) {
-    throw new Error(`AMA token exchange failed with HTTP ${response.status}`);
+    const detail = await response.text().catch(() => "");
+    throw new Error(`AMA token exchange failed with HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
   }
   const token = (await response.json()) as OAuthTokenResponse;
   if (!token.access_token) {
@@ -491,8 +534,8 @@ export async function sendAmaSessionMessage(env: Env, sessionId: string, message
   return { accepted: result.accepted !== false };
 }
 
-export async function getAmaSessionRuntimeSnapshot(env: Env, sessionId: string): Promise<AmaSessionRuntimeSnapshot> {
-  const client = await createAmaClient(env);
+export async function getAmaSessionRuntimeSnapshot(env: Env, sessionId: string, projectId?: string): Promise<AmaSessionRuntimeSnapshot> {
+  const client = await createAmaClient(env, projectId);
   const [session, eventPage] = await Promise.all([
     client.request<Record<string, unknown>>("readSession", { path: { sessionId } }),
     client.request<{ data: Record<string, unknown>[]; pagination: Record<string, unknown> }>("listSessionEvents", {
@@ -519,6 +562,13 @@ export async function listAmaEnvironments(env: Env): Promise<AmaListResponse<Rec
   const client = await createAmaClient(env);
   return await client.request<AmaListResponse<Record<string, unknown>>>("listEnvironments", {
     query: { limit: 100 },
+  });
+}
+
+export async function listAmaRunners(env: Env, projectId: string, environmentId: string): Promise<AmaListResponse<AmaRunner>> {
+  const client = await createAmaClient(env, projectId);
+  return await client.request<AmaListResponse<AmaRunner>>("listRunners", {
+    query: { environmentId, limit: 100 },
   });
 }
 
@@ -604,10 +654,6 @@ async function accessToken(env: Env) {
 
 function hasTokenSource(env: Env) {
   return Boolean(env.AMA_OAUTH_TOKEN_URL && env.AMA_OAUTH_CLIENT_ID && env.AMA_OAUTH_CLIENT_SECRET);
-}
-
-function apiUrl(env: Env, requestOrigin: string) {
-  return (env.AK_API_URL || requestOrigin).replace(/\/$/, "");
 }
 
 function requireEnv(value: string | undefined, name: string): string {
