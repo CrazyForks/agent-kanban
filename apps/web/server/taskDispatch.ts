@@ -174,10 +174,9 @@ export async function sendTaskRejectToAma(db: D1, env: Env, task: Task, reason: 
       `Task was rejected by reviewer.${reason ? ` Reason: ${reason}` : ""}`,
       "",
       `Resume task ${task.id}. It is already assigned to you and already in progress.`,
-      "Do not inspect files. Do not run tests. Do not run help commands. Do not run `ak task claim` again.",
-      "Execute exactly these workflow commands:",
-      `1. ak create note --task ${task.id} "Completion Summary: addressed reviewer rejection and resubmitted through the task runner."`,
-      `2. ak task review ${task.id}`,
+      "Do not run `ak task claim` again.",
+      "Inspect the current task, repository, and pull request state. Fix the reviewer rejection in the working branch, commit and push any required code changes, rerun the smallest meaningful checks, then submit the task for review again.",
+      `When the fix is complete, add a Completion Summary note with what changed and what passed, then run: ak task review ${task.id}`,
     ].join("\n"),
   );
   return await annotateTask(db, task, {

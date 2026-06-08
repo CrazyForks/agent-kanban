@@ -1399,6 +1399,146 @@ describe("routes", () => {
     }
   });
 
+  it("POST /api/tasks/:id/release redispatches assigned AMA tasks", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    });
+    await configureAmaOwnerRuntime(userId, "codex", "env_release");
+    const tempAgent = await createTestAgent(env.DB, userId, {
+      name: `Release Redispatch Agent ${randomUUID()}`,
+      username: `release-redispatch-${randomUUID()}`,
+      runtime: "codex",
+    });
+
+    let sessionCreateCount = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/runners?environmentId=env_release&limit=100") {
+        return new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "runner_release",
+                environmentId: "env_release",
+                status: "active",
+                capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
+                currentLoad: 0,
+                maxConcurrent: 1,
+                lastHeartbeatAt: new Date().toISOString(),
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "https://ama.test/api/providers?limit=100") {
+        return new Response(
+          JSON.stringify({
+            data: [{ id: "provider_codex", type: "openai", status: "active" }],
+            pagination: { limit: 100, hasMore: false, nextCursor: null },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "https://ama.test/api/providers/provider_codex/models?limit=100") {
+        return new Response(
+          JSON.stringify({
+            data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }],
+            pagination: { limit: 100, hasMore: false, nextCursor: null },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "https://ama.test/api/agents/ama_agent_release") {
+        return new Response(
+          JSON.stringify({ id: "ama_agent_release", projectId: "project_123", name: "agent", provider: "provider_codex", model: "gpt-5.3-codex" }),
+          { status: 200 },
+        );
+      }
+      if (url === "https://ama.test/api/agents") {
+        return new Response(
+          JSON.stringify({ id: "ama_agent_release", projectId: "project_123", name: "agent", provider: "provider_codex", model: "gpt-5.3-codex" }),
+          { status: 201 },
+        );
+      }
+      if (url === "https://ama.test/api/vaults/vault_123/credentials") {
+        return new Response(JSON.stringify({ id: "vaultcred_release", activeVersionId: "vaultver_release" }), { status: 201 });
+      }
+      if (url === "https://ama.test/api/sessions") {
+        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+        expect(body.agentId).toBe("ama_agent_release");
+        expect(body.environmentId).toBe("env_release");
+        expect(body.runtime).toBe("codex");
+        expect(body.initialPrompt).toContain("AK task");
+        sessionCreateCount += 1;
+        return new Response(
+          JSON.stringify({
+            id: `session_release_${sessionCreateCount}`,
+            agentId: body.agentId,
+            environmentId: "env_release",
+            status: "pending",
+            statusReason: null,
+          }),
+          { status: 201 },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { createTask } = await import("../apps/web/server/taskRepo");
+      const task = await createTask(env.DB, userId, {
+        title: "Release redispatch task",
+        board_id: boardId,
+        assigned_to: tempAgent.id,
+        metadata: { annotations: { "ama.sessionId": "session_release_old", "ama.projectId": "project_123" } },
+      });
+      await env.DB.prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ?").bind(task.id).run();
+
+      const leaderJwt = await signLeaderSessionJWT();
+      const res = await apiRequest("POST", `/api/tasks/${task.id}/release`, {}, leaderJwt);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as any;
+      expect(body.status).toBe("todo");
+      expect(body.assigned_to).toBe(tempAgent.id);
+      expect(body.metadata.annotations).toMatchObject({
+        "ama.environmentId": "env_release",
+        "ama.sessionId": "session_release_1",
+        "ama.dispatch.result": "accepted",
+      });
+      expect(body.metadata.annotations.agentSessionId).toEqual(expect.any(String));
+      expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain("https://ama.test/api/sessions");
+
+      const assignRes = await apiRequest("POST", `/api/tasks/${task.id}/assign`, { agent_id: tempAgent.id }, leaderJwt);
+      expect(assignRes.status).toBe(200);
+      const reassigned = (await assignRes.json()) as any;
+      expect(reassigned.status).toBe("todo");
+      expect(reassigned.assigned_to).toBe(tempAgent.id);
+      expect(reassigned.metadata.annotations).toMatchObject({
+        "ama.environmentId": "env_release",
+        "ama.sessionId": "session_release_2",
+        "ama.dispatch.result": "accepted",
+      });
+      expect(sessionCreateCount).toBe(2);
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("POST /api/tasks requires title", async () => {
     const jwt = await signSessionJWT();
     const res = await apiRequest("POST", "/api/tasks", { board_id: boardId }, jwt);
@@ -1689,9 +1829,17 @@ describe("routes", () => {
       const messageRes = await apiRequest("POST", `/api/tasks/${messageTask.id}/messages`, { sender_type: "user", content: "Please continue" }, jwt);
       expect(messageRes.status).toBe(201);
 
+      const noteTask = await createTask(env.DB, userId, { title: "AMA note task", board_id: boardId, assigned_to: agentId, metadata });
+      await env.DB.prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ?").bind(noteTask.id).run();
+      const leaderJwt = await signLeaderSessionJWT();
+      const noteRes = await apiRequest("POST", `/api/tasks/${noteTask.id}/notes`, { detail: "Leader says continue" }, leaderJwt);
+      expect(noteRes.status).toBe(201);
+
+      const workerNoteRes = await apiRequest("POST", `/api/tasks/${noteTask.id}/notes`, { detail: "Worker progress only" }, jwt);
+      expect(workerNoteRes.status).toBe(201);
+
       const rejectTask = await createTask(env.DB, userId, { title: "AMA reject task", board_id: boardId, assigned_to: agentId, metadata });
       await env.DB.prepare("UPDATE tasks SET status = 'in_review' WHERE id = ?").bind(rejectTask.id).run();
-      const leaderJwt = await signLeaderSessionJWT();
       const rejectRes = await apiRequest("POST", `/api/tasks/${rejectTask.id}/reject`, { reason: "Fix tests" }, leaderJwt);
       expect(rejectRes.status).toBe(200);
       const rejected = (await rejectRes.json()) as any;
@@ -1704,7 +1852,14 @@ describe("routes", () => {
       const cancelled = (await cancelRes.json()) as any;
       expect(cancelled.metadata.annotations).toMatchObject({ "ama.lastCommand": "stop", "ama.lastCommand.result": "accepted" });
 
-      expect(runtimeMessages).toEqual(["Please continue", expect.stringContaining("Task was rejected by reviewer. Reason: Fix tests")]);
+      expect(runtimeMessages).toEqual([
+        "Please continue",
+        "Leader says continue",
+        expect.stringContaining("Task was rejected by reviewer. Reason: Fix tests"),
+      ]);
+      expect(runtimeMessages[2]).toContain("Fix the reviewer rejection");
+      expect(runtimeMessages[2]).toContain(`ak task review ${rejectTask.id}`);
+      expect(runtimeMessages[2]).not.toContain("Do not inspect files");
       expect(stops).toEqual(["https://ama.test/api/sessions/session_123/stop?reason=user_requested"]);
     } finally {
       Object.assign(env, previousAma);

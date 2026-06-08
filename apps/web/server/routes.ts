@@ -1120,7 +1120,10 @@ api.post("/api/tasks/:id/release", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
   const task = await releaseTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), "released", sessionId);
   if (task) await closeAmaAgentSessionForTask(c.env.DB, task);
-  return c.json(task);
+  if (!task) return c.json(task);
+
+  const dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), task, { apiOrigin: new URL(c.req.url).origin });
+  return c.json(dispatched);
 });
 
 api.post("/api/tasks/:id/assign", async (c) => {
@@ -1129,6 +1132,13 @@ api.post("/api/tasks/:id/assign", async (c) => {
   if (!targetAgentId) throw new HTTPException(400, { message: "agent_id is required" });
 
   const { actorType, actorId, sessionId } = resolveActor(c);
+  const existing = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (!existing) throw new HTTPException(404, { message: "Task not found" });
+  if (existing.status === "todo" && existing.assigned_to === targetAgentId) {
+    const dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), existing, { apiOrigin: new URL(c.req.url).origin });
+    return c.json(dispatched);
+  }
+
   const task = await assignTask(c.env.DB, c.req.param("id"), targetAgentId, actorType, actorId, sessionId, {
     skipRuntimeAvailability: isAmaTaskDispatchConfigured(c.env),
   });
@@ -1180,11 +1190,14 @@ api.post("/api/tasks/:id/notes", async (c) => {
   const body = await c.req.json<{ detail: string }>();
   if (!body.detail) throw new HTTPException(400, { message: "detail is required" });
 
-  const task = await c.env.DB.prepare("SELECT id FROM tasks WHERE id = ?").bind(c.req.param("id")).first();
+  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) throw new HTTPException(404, { message: "Task not found" });
 
   const { actorType, actorId, sessionId } = resolveActor(c);
   const action = await addTaskAction(c.env.DB, c.req.param("id"), actorType, actorId, "commented", body.detail, sessionId);
+  if (actorType === "agent:leader" && task.status === "in_progress") {
+    await sendTaskMessageToAma(c.env, task, body.detail);
+  }
   return c.json(action, 201);
 });
 
