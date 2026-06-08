@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import type { MachineRuntime } from "@agent-kanban/shared";
 import type { Command } from "commander";
+import { type AmaRunnerVersionInfo, resolveAmaRunnerBinary } from "../amaRunner.js";
 import { getCredentials, saveCredentials, setCurrent } from "../config.js";
 import { generateDeviceId } from "../device.js";
 import { resolveMachineName } from "../machineName.js";
@@ -27,6 +28,7 @@ import { listSessions } from "../session/store.js";
 import { getVersion } from "../version.js";
 
 const MAX_LOG_ARCHIVES = 5;
+const DEFAULT_MAX_CONCURRENT = 5;
 interface DaemonState {
   providers: string[];
   maxConcurrent: number;
@@ -35,6 +37,8 @@ interface DaemonState {
   apiUrl: string;
   startedAt: string;
   runtime?: "legacy-daemon" | "ama-runner";
+  runnerPath?: string;
+  runnerVersion?: AmaRunnerVersionInfo | null;
 }
 
 interface AmaRunnerOnboardingResponse {
@@ -222,15 +226,15 @@ async function startAmaRunner(opts: Record<string, unknown>) {
 
   const logFile = join(LOGS_DIR, "daemon.log");
   const logFd = openSync(logFile, "a");
-  const runnerBin = (typeof opts.amaRunnerBin === "string" && opts.amaRunnerBin) || "ama-runner";
   await applyAmaRunnerOnboarding(opts);
+  const runner = await resolveAmaRunnerBinary();
   const args = amaRunnerArgs(opts);
   const env = { ...process.env };
   delete env.AMA_TOKEN;
-  const child = spawn(runnerBin, args, { detached: true, stdio: ["ignore", logFd, logFd], env });
+  const child = spawn(runner.path, args, { detached: true, stdio: ["ignore", logFd, logFd], env });
   let pid: number;
   try {
-    pid = await waitForSpawn(child, runnerBin);
+    pid = await waitForSpawn(child, runner.path);
   } catch (error) {
     closeSync(logFd);
     throw error;
@@ -239,18 +243,21 @@ async function startAmaRunner(opts: Record<string, unknown>) {
   writeFileSync(PID_FILE, String(pid));
   const state: DaemonState = {
     providers: ["machine-runner"],
-    maxConcurrent: parseInt(String(opts.maxConcurrent ?? "1"), 10),
+    maxConcurrent: parseInt(String(opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT), 10),
     pollInterval: 0,
     taskTimeout: 0,
     apiUrl: akApiUrl(opts),
     startedAt: new Date().toISOString(),
     runtime: "ama-runner",
+    runnerPath: runner.path,
+    runnerVersion: runner.version,
   };
   writeFileSync(DAEMON_STATE_FILE, JSON.stringify(state, null, 2));
   child.unref();
   console.log(`● Machine runner started (PID ${pid}, v${getVersion()})`);
   console.log(`  API:         ${maskApiUrl((typeof opts.apiUrl === "string" && opts.apiUrl) || state.apiUrl)}`);
   console.log(`  Concurrency: ${state.maxConcurrent}`);
+  if (state.runnerVersion?.version) console.log(`  Runner:      ama-runner ${state.runnerVersion.version}`);
   console.log(`  Logs:        ${logFile}`);
 }
 
@@ -334,7 +341,7 @@ export function registerStartCommand(program: Command) {
     .description("Start the Machine runner")
     .option("--api-url <url>", "API server URL")
     .option("--api-key <key>", "AK API key")
-    .option("--max-concurrent <n>", "Max concurrent agents", "1")
+    .option("--max-concurrent <n>", "Max concurrent agents", String(DEFAULT_MAX_CONCURRENT))
     .option("--poll-interval <ms>", "Poll interval in ms", "10000")
     .option("--task-timeout <ms>", "Task timeout in ms (0 to disable)", "7200000")
     .action(async (opts) => {
@@ -536,7 +543,7 @@ export function registerRestartCommand(program: Command) {
         ...opts,
         apiUrl: creds.apiUrl,
         apiKey: creds.apiKey,
-        maxConcurrent: opts.maxConcurrent ?? String(prevState?.maxConcurrent ?? 1),
+        maxConcurrent: opts.maxConcurrent ?? String(prevState?.maxConcurrent ?? DEFAULT_MAX_CONCURRENT),
       });
     });
 }

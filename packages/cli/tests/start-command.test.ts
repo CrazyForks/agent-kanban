@@ -8,10 +8,17 @@ import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const testSessionsDir = join(tmpdir(), `ak-start-command-test-${randomUUID()}`);
+const testRunnerBin = join(testSessionsDir, "runners", "ama-runner");
 const spawnMock = vi.fn(() => ({ pid: 12345, unref: vi.fn() }));
 const assertDaemonDependenciesMock = vi.fn();
 
 vi.mock("node:child_process", () => ({ spawn: spawnMock }));
+vi.mock("../src/amaRunner.js", () => ({
+  resolveAmaRunnerBinary: vi.fn(async () => ({
+    path: testRunnerBin,
+    version: { name: "ama-runner", version: "0.1.0", commit: "test-commit", buildDate: "test-build" },
+  })),
+}));
 vi.mock("../src/daemon/preflight.js", () => ({ assertDaemonDependencies: assertDaemonDependenciesMock }));
 vi.mock("../src/providers/registry.js", () => ({ getAvailableProviders: () => [{ name: "codex" }] }));
 vi.mock("../src/device.js", () => ({ generateDeviceId: () => "device-test" }));
@@ -140,7 +147,7 @@ describe("start runtime command", () => {
     );
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(spawnMock).toHaveBeenCalledWith(
-      "ama-runner",
+      testRunnerBin,
       [
         "--config",
         join(testSessionsDir, "ama-runner-config.json"),
@@ -151,7 +158,7 @@ describe("start runtime command", () => {
         "--environment-id",
         "env_1",
         "--max-concurrent",
-        "1",
+        "5",
         "--allow-unsafe-process",
       ],
       expect.objectContaining({ detached: true }),
@@ -169,6 +176,7 @@ describe("start runtime command", () => {
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Machine runner started"));
     const state = JSON.parse(readFileSync(join(testSessionsDir, "daemon-state.json"), "utf-8"));
     expect(state).toMatchObject({ runtime: "ama-runner", apiUrl: "https://ak.test", providers: ["machine-runner"] });
+    expect(state.runnerVersion).toMatchObject({ version: "0.1.0", commit: "test-commit" });
   });
 
   it("does not pass onboarding runner id before AMA registration", async () => {
@@ -180,7 +188,7 @@ describe("start runtime command", () => {
     await program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
 
     expect(spawnMock).toHaveBeenCalledWith(
-      "ama-runner",
+      testRunnerBin,
       [
         "--config",
         join(testSessionsDir, "ama-runner-config.json"),
@@ -191,7 +199,7 @@ describe("start runtime command", () => {
         "--environment-id",
         "env_1",
         "--max-concurrent",
-        "1",
+        "5",
         "--allow-unsafe-process",
       ],
       expect.objectContaining({ detached: true }),
@@ -209,7 +217,7 @@ describe("restart runtime command", () => {
     await program.parseAsync(["restart", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
 
     expect(spawnMock).toHaveBeenCalledWith(
-      "ama-runner",
+      testRunnerBin,
       [
         "--config",
         join(testSessionsDir, "ama-runner-config.json"),
@@ -220,7 +228,7 @@ describe("restart runtime command", () => {
         "--environment-id",
         "env_1",
         "--max-concurrent",
-        "1",
+        "5",
         "--allow-unsafe-process",
       ],
       expect.objectContaining({ detached: true }),
