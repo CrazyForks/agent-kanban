@@ -127,7 +127,6 @@ export function registerCreateCommand(program: Command) {
     .requiredOption("--agent <id>", "Maintainer agent ID")
     .requiredOption("--prompt <prompt>", "Maintainer heartbeat prompt")
     .option("--name <name>", "Maintainer display name")
-    .option("--repo <repo>", "Repository ID or URL")
     .option("--interval-seconds <seconds>", "Heartbeat interval in seconds", "86400")
     .option("--paused", "Create maintainer paused")
     .option("-o, --output <format>", "Output format (json, yaml, text)")
@@ -144,7 +143,6 @@ export function registerCreateCommand(program: Command) {
         interval_seconds: intervalSeconds,
       };
       if (opts.name) body.name = opts.name;
-      if (opts.repo) body.repository_id = await resolveRepoId(client, opts.repo);
       if (opts.paused) body.status = "paused";
       const maintainer = await client.createBoardMaintainer(opts.board, body);
       const fmt = getOutputFormat(opts.output);

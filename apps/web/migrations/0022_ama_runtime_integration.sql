@@ -6,7 +6,6 @@ CREATE TABLE board_maintainers (
   id                  TEXT PRIMARY KEY,
   owner_id            TEXT NOT NULL,
   board_id            TEXT NOT NULL,
-  repository_id       TEXT,
   agent_id            TEXT NOT NULL,
   ama_schedule_id     TEXT NOT NULL,
   name                TEXT NOT NULL,
@@ -18,6 +17,7 @@ CREATE TABLE board_maintainers (
   last_error_message  TEXT,
   created_at          TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE,
   FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
 );
 

@@ -251,8 +251,6 @@ describe("routes", () => {
       kind: "leader",
       role: "board-maintainer",
     });
-    const { createRepository } = await import("../apps/web/server/repositoryRepo");
-    const repository = await createRepository(env.DB, userTokenOwnerId, { name: "agent-kanban", url: "https://github.com/saltbo/agent-kanban.git" });
     const scheduleRequests: any[] = [];
     const updateRequests: any[] = [];
     const archiveRequests: string[] = [];
@@ -278,27 +276,21 @@ describe("routes", () => {
           { status: 201 },
         );
       }
-      if (url === "https://ama.test/api/vaults/vault_123/credentials") {
-        const body = JSON.parse(String(init?.body)) as Record<string, any>;
-        expect(body.type).toBe("session_env_secret");
-        expect(body.secret.secretValue).toContain('"kty":"OKP"');
-        return new Response(JSON.stringify({ id: "vaultcred_maintainer", activeVersionId: "vaultver_maintainer" }), { status: 201 });
-      }
       if (url === "https://ama.test/api/scheduled-agent-triggers") {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         scheduleRequests.push(body);
         expect(body.metadata).toBeUndefined();
         expect(body.agentId).toBe("ama_agent_maintainer");
         expect(body.environmentId).toBe("env_123");
-        expect(body.resourceRefs).toEqual([{ type: "github_repository", owner: "saltbo", repo: "agent-kanban" }]);
+        expect(body.resourceRefs).toEqual([]);
         expect(body.runtimeEnv).toMatchObject({
           AK_WORKER: "1",
           AK_BOARD_ID: maintainerBoard.id,
           AK_API_URL: "https://ak.test",
         });
         expect(body.runtimeEnv.AK_AGENT_ID).toBe(maintainerAgent.id);
-        expect(body.runtimeEnv.AK_SESSION_ID).toEqual(expect.any(String));
-        expect(body.runtimeSecretEnv).toEqual([{ name: "AK_AGENT_KEY", ref: "vaultver_maintainer" }]);
+        expect(body.runtimeEnv).not.toHaveProperty("AK_SESSION_ID");
+        expect(body.runtimeSecretEnv).toEqual([]);
         expect(body.promptTemplate).toContain(`AK board ${maintainerBoard.id}`);
         return new Response(
           JSON.stringify({
@@ -360,7 +352,6 @@ describe("routes", () => {
         `/api/boards/${maintainerBoard.id}/maintainers`,
         {
           agent_id: maintainerAgent.id,
-          repository_id: repository.id,
           name: "Daily maintainer",
           prompt: "Inspect open work and create follow-up tasks when needed.",
           interval_seconds: 3600,
@@ -371,23 +362,18 @@ describe("routes", () => {
       const maintainer = (await createRes.json()) as any;
       expect(maintainer).toMatchObject({
         board_id: maintainerBoard.id,
-        repository_id: repository.id,
         agent_id: maintainerAgent.id,
-        ama_schedule_id: "sched_maintainer",
         status: "active",
       });
+      expect(maintainer).not.toHaveProperty("ama_schedule_id");
+      expect(maintainer).not.toHaveProperty("last_ama_session_id");
       expect(scheduleRequests).toHaveLength(1);
-
-      const sessionRow = await env.DB.prepare("SELECT status FROM ama_agent_sessions WHERE id = ?")
-        .bind(scheduleRequests[0].runtimeEnv.AK_SESSION_ID)
-        .first<{ status: string }>();
-      expect(sessionRow).toMatchObject({ status: "active" });
+      expect(scheduleRequests[0].runtimeEnv).toMatchObject({ AK_AGENT_ID: maintainerAgent.id, AK_BOARD_ID: maintainerBoard.id });
+      expect(scheduleRequests[0].runtimeEnv).not.toHaveProperty("AK_SESSION_ID");
 
       const listRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers`, undefined, userToken);
       expect(listRes.status).toBe(200);
-      await expect(listRes.json()).resolves.toEqual([
-        expect.objectContaining({ id: maintainer.id, ama_schedule_id: "sched_maintainer", last_run_at: null, last_ama_session_id: null }),
-      ]);
+      await expect(listRes.json()).resolves.toEqual([expect.objectContaining({ id: maintainer.id, last_run_at: null })]);
 
       const pauseRes = await apiRequest("PATCH", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`, { status: "paused" }, userToken);
       expect(pauseRes.status).toBe(200);

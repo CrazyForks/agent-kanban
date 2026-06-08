@@ -4,7 +4,6 @@ export interface BoardMaintainer {
   id: string;
   owner_id: string;
   board_id: string;
-  repository_id: string | null;
   agent_id: string;
   ama_schedule_id: string;
   name: string;
@@ -20,7 +19,6 @@ export interface BoardMaintainer {
 
 export interface CreateBoardMaintainerInput {
   boardId: string;
-  repositoryId?: string | null;
   agentId: string;
   amaScheduleId: string;
   name: string;
@@ -40,37 +38,17 @@ export async function getOwnedBoard(db: D1, ownerId: string, boardId: string) {
   return await db.prepare("SELECT id, name FROM boards WHERE id = ? AND owner_id = ?").bind(boardId, ownerId).first<{ id: string; name: string }>();
 }
 
-export async function getOwnedRepository(db: D1, ownerId: string, repositoryId: string) {
-  return await db
-    .prepare("SELECT id, url FROM repositories WHERE id = ? AND owner_id = ?")
-    .bind(repositoryId, ownerId)
-    .first<{ id: string; url: string }>();
-}
-
 export async function createBoardMaintainer(db: D1, ownerId: string, input: CreateBoardMaintainerInput): Promise<BoardMaintainer> {
   const id = newLongId();
   const now = new Date().toISOString();
   await db
     .prepare(
       `INSERT INTO board_maintainers (
-        id, owner_id, board_id, repository_id, agent_id, ama_schedule_id,
+        id, owner_id, board_id, agent_id, ama_schedule_id,
         name, prompt, interval_seconds, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(
-      id,
-      ownerId,
-      input.boardId,
-      input.repositoryId ?? null,
-      input.agentId,
-      input.amaScheduleId,
-      input.name,
-      input.prompt,
-      input.intervalSeconds,
-      input.status,
-      now,
-      now,
-    )
+    .bind(id, ownerId, input.boardId, input.agentId, input.amaScheduleId, input.name, input.prompt, input.intervalSeconds, input.status, now, now)
     .run();
   const maintainer = await getBoardMaintainer(db, ownerId, input.boardId, id);
   if (!maintainer) throw new Error("Board maintainer was not persisted");

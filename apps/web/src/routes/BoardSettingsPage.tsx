@@ -38,10 +38,8 @@ interface BoardMaintainer {
   prompt: string;
   status: "active" | "paused" | "archived";
   agent_id?: string;
-  repository_id: string | null;
   interval_seconds: number;
   last_run_at: string | null;
-  last_ama_session_id: string | null;
 }
 
 interface MaintainerAgent {
@@ -50,12 +48,6 @@ interface MaintainerAgent {
   username?: string;
   role?: string;
   model?: string;
-}
-
-interface Repository {
-  id: string;
-  name: string;
-  url: string;
 }
 
 const BADGE_TYPES = [
@@ -269,7 +261,6 @@ function BoardMaintainersSection({ boardId }: { boardId: string }) {
                   </p>
                   <p className="mt-1 text-xs text-content-secondary">
                     Last run {maintainer.last_run_at ? formatRelative(maintainer.last_run_at) : "never"}
-                    {maintainer.last_ama_session_id ? ` · session ${maintainer.last_ama_session_id}` : ""}
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -319,11 +310,9 @@ function MaintainerDialog({
   const createMaintainer = useCreateBoardMaintainer(boardId);
   const updateMaintainer = useUpdateBoardMaintainer(boardId);
   const agentQuery = useQuery({ queryKey: ["agents", { kind: "worker" }], queryFn: () => api.agents.list(), enabled: open && !isEditing });
-  const repositories = useQuery({ queryKey: ["repositories"], queryFn: () => api.repositories.list(), enabled: open && !isEditing });
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
   const [agentId, setAgentId] = useState("");
-  const [repositoryId, setRepositoryId] = useState("");
   const [intervalSeconds, setIntervalSeconds] = useState("86400");
 
   useEffect(() => {
@@ -331,12 +320,10 @@ function MaintainerDialog({
     setName(maintainer?.name ?? "");
     setPrompt(maintainer?.prompt ?? "");
     setAgentId(maintainer?.agent_id ?? "");
-    setRepositoryId(maintainer?.repository_id ?? "");
     setIntervalSeconds(String(maintainer?.interval_seconds ?? 86400));
   }, [open, maintainer?.id]);
 
   const agents = (agentQuery.data ?? []) as MaintainerAgent[];
-  const repos = (repositories.data ?? []) as Repository[];
   const pending = createMaintainer.isPending || updateMaintainer.isPending;
 
   async function save() {
@@ -365,7 +352,6 @@ function MaintainerDialog({
           name: name.trim() || undefined,
           prompt: prompt.trim(),
           agent_id: agentId,
-          repository_id: repositoryId || undefined,
           interval_seconds: seconds,
         });
         toast.success("Maintainer created");
@@ -391,44 +377,23 @@ function MaintainerDialog({
           </div>
 
           {!isEditing && (
-            <>
-              <div className="space-y-1.5">
-                <Label htmlFor="maintainer-agent">Agent</Label>
-                <select
-                  id="maintainer-agent"
-                  value={agentId}
-                  onChange={(event) => setAgentId(event.target.value)}
-                  className="h-9 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary"
-                >
-                  <option value="">Select an agent</option>
-                  {agents.map((agent) => (
-                    <option key={agent.id} value={agent.id}>
-                      {agent.name ?? agent.username ?? agent.id}
-                      {agent.role ? ` (${agent.role})` : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <Label htmlFor="maintainer-repo">Repository</Label>
-                  <select
-                    id="maintainer-repo"
-                    value={repositoryId}
-                    onChange={(event) => setRepositoryId(event.target.value)}
-                    className="h-9 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary"
-                  >
-                    <option value="">No repository</option>
-                    {repos.map((repo) => (
-                      <option key={repo.id} value={repo.id}>
-                        {repo.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            </>
+            <div className="space-y-1.5">
+              <Label htmlFor="maintainer-agent">Agent</Label>
+              <select
+                id="maintainer-agent"
+                value={agentId}
+                onChange={(event) => setAgentId(event.target.value)}
+                className="h-9 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary"
+              >
+                <option value="">Select an agent</option>
+                {agents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.name ?? agent.username ?? agent.id}
+                    {agent.role ? ` (${agent.role})` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
           )}
 
           <div className="space-y-1.5">

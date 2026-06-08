@@ -70,7 +70,7 @@ export async function createAmaAgentSession(
   await registerBetterAuthAgentSession(env, db, {
     ownerId: input.ownerId,
     agentId: input.agentId,
-    hostId: "ama-runtime",
+    hostId: amaRuntimeHostId(input.ownerId),
     sessionId: input.sessionId,
     sessionPublicKey: input.sessionPublicKey,
   });
@@ -96,7 +96,7 @@ async function registerBetterAuthAgentSession(
       model: "agentHost",
       data: {
         id: input.hostId,
-        name: input.hostId === "ama-runtime" ? "ama-runtime" : `machine-${input.hostId.slice(0, 8)}`,
+        name: input.hostId.startsWith("ama-runtime-") ? "ama-runtime" : `machine-${input.hostId.slice(0, 8)}`,
         userId: input.ownerId,
         status: "active",
         activatedAt: new Date(),
@@ -150,6 +150,10 @@ async function registerBetterAuthAgentSession(
       },
     });
   }
+}
+
+function amaRuntimeHostId(ownerId: string): string {
+  return `ama-runtime-${ownerId}`;
 }
 
 export async function getSession(db: D1, sessionId: string): Promise<AgentSession | null> {

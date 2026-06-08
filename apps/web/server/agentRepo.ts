@@ -394,7 +394,7 @@ async function updateLatestFromPrepared(
       latest.fingerprint,
       agent.builtin,
       extras?.mailboxToken ?? latest.mailbox_token,
-      JSON.stringify(agent.metadata ?? {}),
+      JSON.stringify(latest.metadata ?? {}),
       now,
       latest.id,
     )

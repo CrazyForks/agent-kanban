@@ -27,19 +27,13 @@ import {
   upsertLatestAgent,
 } from "./agentRepo";
 import { closeAmaAgentSessionForTask, closeSession, createSession, listSessions, reopenSession, updateSessionUsage } from "./agentSessionRepo";
-import {
-  ensureAmaOwnerIntegration,
-  resolveAmaExternalTenantId,
-  resolveAmaProjectId,
-  resolveAmaSessionSecretVaultId,
-} from "./amaOwnerIntegrationRepo";
+import { ensureAmaOwnerIntegration, resolveAmaExternalTenantId, resolveAmaProjectId } from "./amaOwnerIntegrationRepo";
 import {
   archiveAmaScheduledAgentTrigger,
   createAmaEnvironment,
   createAmaExternalProjectBinding,
   createAmaFederatedRunnerToken,
   createAmaScheduledAgentTrigger,
-  createAmaSessionSecret,
   defaultAmaRunnerCapabilities,
   getAmaSessionRuntimeSnapshot,
   isAmaTaskDispatchConfigured,
@@ -48,10 +42,10 @@ import {
 import { authMiddleware } from "./auth";
 import { createAuth } from "./betterAuth";
 import {
+  type BoardMaintainer,
   createBoardMaintainer,
   getBoardMaintainer,
   getOwnedBoard,
-  getOwnedRepository,
   listBoardMaintainers,
   updateBoardMaintainer,
 } from "./boardMaintainerRepo";
@@ -96,11 +90,8 @@ import { createSubagent, deleteSubagent, getSubagent, listSubagents, updateSubag
 import {
   amaRuntimeName,
   apiUrl,
-  createAkAgentSessionIdentity,
   dispatchTaskToAma,
   ensureAmaAgentForAkAgent,
-  githubRepoRef,
-  secretReferenceName,
   sendTaskMessageToAma,
   sendTaskRejectToAma,
   stopTaskAmaSession,
@@ -287,6 +278,11 @@ function assertValidMachineRuntimes(runtimes: unknown): void {
 
 function readyAmaRuntimeNames(runtimes: MachineRuntime[]): string[] {
   return runtimes.filter((runtime) => runtime.status === "ready").map((runtime) => amaRuntimeName(runtime.name));
+}
+
+function publicBoardMaintainer(maintainer: BoardMaintainer): Omit<BoardMaintainer, "ama_schedule_id" | "last_ama_session_id"> {
+  const { ama_schedule_id: _scheduleId, last_ama_session_id: _lastAmaSessionId, ...publicMaintainer } = maintainer;
+  return publicMaintainer;
 }
 
 async function ensureMachineAmaEnvironment(db: D1, env: Env, ownerId: string, machine: Machine): Promise<string> {
@@ -1217,7 +1213,6 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     name?: string;
     prompt: string;
     agent_id?: string;
-    repository_id?: string | null;
     interval_seconds?: number;
     status?: "active" | "paused";
   }>();
@@ -1234,8 +1229,6 @@ api.post("/api/boards/:id/maintainers", async (c) => {
 
   const board = await getOwnedBoard(c.env.DB, ownerId, boardId);
   if (!board) throw new HTTPException(404, { message: "Board not found" });
-  const repository = body.repository_id ? await getOwnedRepository(c.env.DB, ownerId, body.repository_id) : null;
-  if (body.repository_id && !repository) throw new HTTPException(404, { message: "Repository not found" });
 
   const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
   const maintainerAgent = await getAgent(c.env.DB, maintainerAgentId, ownerId);
@@ -1245,17 +1238,6 @@ api.post("/api/boards/:id/maintainers", async (c) => {
   const amaEnvironmentId = machineRuntime.environmentId;
   const amaRuntime = amaRuntimeName(maintainerAgent.runtime);
   const amaAgent = await ensureAmaAgentForAkAgent(c.env.DB, c.env, ownerId, maintainerAgentId, amaProjectId, amaRuntime);
-  const sessionIdentity = await createAkAgentSessionIdentity(c.env.DB, c.env, ownerId, maintainerAgentId);
-  const vaultId = await resolveAmaSessionSecretVaultId(c.env.DB, c.env, ownerId);
-  const secret = await createAmaSessionSecret(c.env, {
-    projectId: amaProjectId,
-    vaultId,
-    name: secretReferenceName(sessionIdentity.sessionId),
-    secretValue: JSON.stringify(sessionIdentity.privateKeyJwk),
-    metadata: { purpose: "agent-session" },
-  });
-  const resourceRef = repository ? githubRepoRef(repository.url) : null;
-  const resourceRefs = resourceRef ? [resourceRef] : [];
   const name = body.name?.trim() || `${board.name} maintainer`;
   const schedule = await createAmaScheduledAgentTrigger(c.env, {
     projectId: amaProjectId,
@@ -1266,20 +1248,16 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     promptTemplate: boardMaintainerPrompt(boardId, body.prompt),
     intervalSeconds,
     status: body.status ?? "active",
-    resourceRefs,
     runtimeEnv: {
       AK_WORKER: "1",
       AK_AGENT_ID: maintainerAgentId,
-      AK_SESSION_ID: sessionIdentity.sessionId,
       AK_BOARD_ID: boardId,
       AK_API_URL: apiUrl(c.env, new URL(c.req.url).origin),
     },
-    runtimeSecretEnv: [{ name: "AK_AGENT_KEY", ref: secret.activeVersionId }],
   });
 
   const maintainer = await createBoardMaintainer(c.env.DB, ownerId, {
     boardId,
-    repositoryId: repository?.id ?? null,
     agentId: maintainerAgentId,
     amaScheduleId: schedule.id,
     name,
@@ -1287,13 +1265,14 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     intervalSeconds,
     status: schedule.status === "paused" ? "paused" : "active",
   });
-  return c.json(maintainer, 201);
+  return c.json(publicBoardMaintainer(maintainer), 201);
 });
 
 api.get("/api/boards/:id/maintainers", async (c) => {
   const board = await getOwnedBoard(c.env.DB, c.get("ownerId"), c.req.param("id"));
   if (!board) throw new HTTPException(404, { message: "Board not found" });
-  return c.json(await listBoardMaintainers(c.env.DB, c.get("ownerId"), c.req.param("id")));
+  const maintainers = await listBoardMaintainers(c.env.DB, c.get("ownerId"), c.req.param("id"));
+  return c.json(maintainers.map(publicBoardMaintainer));
 });
 
 api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
@@ -1321,7 +1300,7 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
     status: schedule.status === "archived" ? "archived" : schedule.status,
   });
   if (!updated) throw new HTTPException(404, { message: "Board maintainer not found" });
-  return c.json(updated);
+  return c.json(publicBoardMaintainer(updated));
 });
 
 api.delete("/api/boards/:id/maintainers/:maintainerId", async (c) => {
@@ -1331,7 +1310,7 @@ api.delete("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
   await archiveAmaScheduledAgentTrigger(c.env, maintainer.ama_schedule_id);
   const updated = await updateBoardMaintainer(c.env.DB, ownerId, boardId, maintainer.id, { status: "archived" });
-  return c.json(updated);
+  return c.json(updated ? publicBoardMaintainer(updated) : updated);
 });
 
 api.get("/api/boards/:id", async (c) => {
