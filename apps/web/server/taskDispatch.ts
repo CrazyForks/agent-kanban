@@ -152,20 +152,23 @@ function amaRunnerCanRunRuntime(runner: AmaRunner, runtime: string): boolean {
 
 export async function sendTaskMessageToAma(env: Env, task: Task, message: string): Promise<Task> {
   const sessionId = amaSessionId(task);
-  if (!sessionId || !isAmaRuntimeConfigured(env)) {
+  const projectId = amaProjectId(task);
+  if (!sessionId || !projectId || !isAmaRuntimeConfigured(env)) {
     return task;
   }
-  await sendAmaSessionMessage(env, sessionId, message);
+  await sendAmaSessionMessage(env, projectId, sessionId, message);
   return task;
 }
 
 export async function sendTaskRejectToAma(db: D1, env: Env, task: Task, reason: string | undefined): Promise<Task> {
   const sessionId = amaSessionId(task);
-  if (!sessionId || !isAmaRuntimeConfigured(env)) {
+  const projectId = amaProjectId(task);
+  if (!sessionId || !projectId || !isAmaRuntimeConfigured(env)) {
     return task;
   }
   await sendAmaSessionMessage(
     env,
+    projectId,
     sessionId,
     [
       `Task was rejected by reviewer.${reason ? ` Reason: ${reason}` : ""}`,
@@ -190,10 +193,11 @@ export async function stopTaskAmaSession(
   reason: "user_requested" | "timeout" | "policy" | "runtime_error" = "user_requested",
 ) {
   const sessionId = amaSessionId(task);
-  if (!sessionId || !isAmaRuntimeConfigured(env)) {
+  const projectId = amaProjectId(task);
+  if (!sessionId || !projectId || !isAmaRuntimeConfigured(env)) {
     return task;
   }
-  await stopAmaSession(env, sessionId, reason);
+  await stopAmaSession(env, projectId, sessionId, reason);
   return await annotateTask(db, task, {
     "ama.lastCommand": "stop",
     "ama.lastCommand.result": "accepted",
@@ -226,6 +230,10 @@ function taskAnnotations(task: Task) {
 
 function amaSessionId(task: Task) {
   return stringAnnotation(taskAnnotations(task), "ama.sessionId");
+}
+
+function amaProjectId(task: Task) {
+  return stringAnnotation(taskAnnotations(task), "ama.projectId");
 }
 
 function metadataObject(value: unknown): Record<string, unknown> {

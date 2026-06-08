@@ -516,8 +516,8 @@ export async function createAmaSessionSecret(env: Env, input: AmaSessionSecretIn
   return { credentialId: credential.id, activeVersionId: credential.activeVersionId };
 }
 
-export async function sendAmaSessionMessage(env: Env, sessionId: string, message: string): Promise<AmaRuntimeCommandResult> {
-  const client = await createAmaClient(env);
+export async function sendAmaSessionMessage(env: Env, projectId: string, sessionId: string, message: string): Promise<AmaRuntimeCommandResult> {
+  const client = await createAmaClient(env, projectId);
   const result = await client.request<{ accepted?: boolean }>("createSessionCommand", {
     path: { sessionId },
     body: { type: "prompt", message },
@@ -563,8 +563,13 @@ export async function listAmaRunners(env: Env, projectId: string, environmentId:
   });
 }
 
-export async function stopAmaSession(env: Env, sessionId: string, reason: "user_requested" | "timeout" | "policy" | "runtime_error") {
-  const client = await createAmaClient(env);
+export async function stopAmaSession(
+  env: Env,
+  projectId: string,
+  sessionId: string,
+  reason: "user_requested" | "timeout" | "policy" | "runtime_error",
+) {
+  const client = await createAmaClient(env, projectId);
   await client.request("stopSession", { path: { sessionId }, query: { reason } });
 }
 

@@ -1683,7 +1683,7 @@ describe("routes", () => {
 
     try {
       const { createTask } = await import("../apps/web/server/taskRepo");
-      const metadata = { annotations: { "ama.sessionId": "session_123" } };
+      const metadata = { annotations: { "ama.projectId": "project_123", "ama.sessionId": "session_123" } };
       const messageTask = await createTask(env.DB, userId, { title: "AMA message task", board_id: boardId, metadata });
       const jwt = await signSessionJWT();
       const messageRes = await apiRequest("POST", `/api/tasks/${messageTask.id}/messages`, { sender_type: "user", content: "Please continue" }, jwt);
@@ -1742,7 +1742,7 @@ describe("routes", () => {
 
     try {
       const { createTask } = await import("../apps/web/server/taskRepo");
-      const metadata = { annotations: { "ama.sessionId": "session_failed" } };
+      const metadata = { annotations: { "ama.projectId": "project_123", "ama.sessionId": "session_failed" } };
       const rejectTarget = await createTask(env.DB, userId, { title: "Failed reject command", board_id: boardId, assigned_to: agentId, metadata });
       await env.DB.prepare("UPDATE tasks SET status = 'in_review' WHERE id = ?").bind(rejectTarget.id).run();
       const cancelTarget = await createTask(env.DB, userId, { title: "Failed cancel command", board_id: boardId, assigned_to: agentId, metadata });

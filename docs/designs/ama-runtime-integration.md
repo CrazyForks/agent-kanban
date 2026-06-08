@@ -152,15 +152,11 @@ Local AK checks:
 - `pnpm -r --parallel run lint`
 - `npx vitest run`
 - `bash scripts/install-cli.sh`
-- `./scripts/daemon-smoke-test.sh codex`
+- `./scripts/daemon-smoke-test.sh --runtime codex`
 
 Real smoke evidence from the latest successful run:
 
-- board: `0zktb42l`
-- repository: `q04u4hch`
-- positive lifecycle task: `abog3lqkspbn`
-- generated PR: `https://github.com/saltbo/agent-kanban/pull/205`
-- cancel lifecycle task: `j54jtk8vpsi4`
+- generated PR: `https://github.com/saltbo/agent-kanban/pull/206`
 - smoke summary: `Passed 11 Failed 0`
 
 The smoke created real AK tasks, dispatched them through the online AMA
@@ -177,6 +173,10 @@ work for the same session during AK reject/resume.
 
 ## Remaining Follow-Up
 
+- Restore per-session git worktree isolation in AMA runner before using this
+  integration for real product work. Until sandboxing lands, each AMA session
+  must run inside its own isolated git worktree so agent edits and temporary
+  files cannot pollute the `ak start` launch repository.
 - Broaden maintainer negative-case validation after this PR lands.
 - Improve AMA event rendering in AK task detail as AMA canonical event shapes
   evolve.
