@@ -112,8 +112,8 @@ function RuntimePanel({ runtime, loading }: { runtime: any; loading: boolean }) 
               </div>
               <div className="min-w-0">
                 <div className="text-[11px] font-medium uppercase tracking-wide text-content-tertiary">Session</div>
-                <div className="truncate font-mono text-[12px] text-content-primary" title={runtime?.ama_session_id ?? runtime?.taskSessionId}>
-                  {runtime?.ama_session_id ?? runtime?.taskSessionId}
+                <div className="truncate font-mono text-[12px] text-content-primary" title={runtime?.session_id ?? runtime?.taskSessionId}>
+                  {runtime?.session_id ?? runtime?.taskSessionId}
                 </div>
               </div>
               <div>

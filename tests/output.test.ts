@@ -207,7 +207,7 @@ describe("formatTaskRuntime", () => {
   it("shows AMA session status and recent event types", () => {
     const result = formatTaskRuntime({
       task_id: "task-1",
-      ama_session_id: "session-1",
+      session_id: "session-1",
       session: { status: "idle", statusReason: null, startedAt: "2026-06-06T12:00:00.000Z" },
       events: [
         { id: "event-1", sequence: 1, type: "message_start", role: "assistant" },

@@ -1835,7 +1835,7 @@ describe("routes", () => {
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toMatchObject({
         task_id: task.id,
-        ama_session_id: "session_runtime_123",
+        session_id: "session_runtime_123",
         taskSessionId: "session_runtime_123",
         session: { id: "session_runtime_123", status: "idle" },
         events: [{ id: "event_1", type: "message_end" }],
@@ -1988,6 +1988,7 @@ describe("routes", () => {
     expect(res.headers.get("X-AK-Runtime-Surface")).toBe("legacy-daemon");
     const body = (await res.json()) as any;
     expect(Array.isArray(body)).toBe(true);
+    expect(body[0]).not.toHaveProperty("ama_environment_id");
   });
 
   it("GET /api/machines/:id returns a machine", async () => {
@@ -1995,6 +1996,7 @@ describe("routes", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.id).toBe(machineId);
+    expect(body).not.toHaveProperty("ama_environment_id");
   });
 
   it("GET /api/machines/:id marks stale machines offline", async () => {
@@ -2017,6 +2019,7 @@ describe("routes", () => {
   it("POST /api/machines/:id/heartbeat updates machine", async () => {
     const res = await apiRequest("POST", `/api/machines/${machineId}/heartbeat`, { version: "2.0.0" }, apiKey);
     expect(res.status).toBe(200);
+    await expect(res.json()).resolves.not.toHaveProperty("ama_environment_id");
   });
 
   it("POST /api/machines/:id/heartbeat rejects a machine API key bound to another machine without mutating the target", async () => {

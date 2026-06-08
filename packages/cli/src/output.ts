@@ -213,7 +213,7 @@ export function formatTaskRuntime(runtime: any): string {
   const lines: string[] = [];
   lines.push(`Task runtime`);
   lines.push(`  Task:        ${runtime.task_id}`);
-  lines.push(`  Session:     ${runtime.ama_session_id ?? runtime.taskSessionId}`);
+  lines.push(`  Session:     ${runtime.session_id ?? runtime.taskSessionId}`);
   lines.push(`  Status:      ${session.status ?? "unknown"}${session.statusReason ? ` (${session.statusReason})` : ""}`);
   if (session.runtimeEndpointPath) lines.push(`  Endpoint:    ${session.runtimeEndpointPath}`);
   if (session.startedAt) lines.push(`  Started:     ${session.startedAt}`);

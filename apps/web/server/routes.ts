@@ -9,6 +9,7 @@ import {
   isValidUsername,
   type Machine,
   type MachineRuntime,
+  type MachineWithAgents,
   parseScheduledAt,
   RESERVED_ROLES,
   type Task,
@@ -283,6 +284,11 @@ function readyAmaRuntimeNames(runtimes: MachineRuntime[]): string[] {
 function publicBoardMaintainer(maintainer: BoardMaintainer): Omit<BoardMaintainer, "ama_schedule_id" | "last_ama_session_id"> {
   const { ama_schedule_id: _scheduleId, last_ama_session_id: _lastAmaSessionId, ...publicMaintainer } = maintainer;
   return publicMaintainer;
+}
+
+function publicMachine<T extends Machine | MachineWithAgents>(machine: T): Omit<T, "ama_environment_id"> {
+  const { ama_environment_id: _environmentId, ...publicMachine } = machine;
+  return publicMachine;
 }
 
 async function ensureMachineAmaEnvironment(db: D1, env: Env, ownerId: string, machine: Machine): Promise<string> {
@@ -574,14 +580,14 @@ api.post("/api/machines/:id/heartbeat", async (c) => {
     });
   }
 
-  return c.json(updated);
+  return c.json(publicMachine(updated));
 });
 
 api.get("/api/machines", async (c) => {
   markLegacyRuntimeSurface(c);
   await detectStaleMachines(c.env.DB);
   const machines = await listMachines(c.env.DB, c.get("ownerId"));
-  return c.json(machines);
+  return c.json(machines.map(publicMachine));
 });
 
 api.get("/api/machines/:id", async (c) => {
@@ -589,7 +595,7 @@ api.get("/api/machines/:id", async (c) => {
   await detectStaleMachines(c.env.DB);
   const machine = await getMachine(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!machine) throw new HTTPException(404, { message: "Machine not found" });
-  return c.json(machine);
+  return c.json(publicMachine(machine));
 });
 
 api.post("/api/machines", async (c) => {
@@ -636,7 +642,7 @@ api.post("/api/machines", async (c) => {
   const runner = isAmaTaskDispatchConfigured(c.env)
     ? await createMachineRunnerOnboarding(c.env, machine, c.get("ownerId"), new URL(c.req.url).origin)
     : null;
-  return c.json({ ...machine, runner }, 201);
+  return c.json({ ...publicMachine(machine), runner }, 201);
 });
 
 api.delete("/api/machines/:id", async (c) => {
@@ -973,7 +979,7 @@ api.get("/api/tasks/:id/runtime", async (c) => {
   const runtime = await getAmaSessionRuntimeSnapshot(c.env, sessionId);
   return c.json({
     task_id: task.id,
-    ama_session_id: sessionId,
+    session_id: sessionId,
     ...runtime,
   });
 });
