@@ -3,11 +3,12 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { arch as nodeArch, platform as nodePlatform, tmpdir } from "node:os";
 import { join } from "node:path";
-import { RUNNERS_DIR } from "./paths.js";
+import { BIN_DIR, DATA_DIR } from "./paths.js";
 
 const AMA_RUNNER_REPOSITORY = "saltbo/any-managed-agents";
 export const AMA_RUNNER_VERSION = "0.1.0";
-const AMA_RUNNER_INSTALL_DIR = join(RUNNERS_DIR, "ama-runner");
+const AMA_RUNNER_PATH = join(BIN_DIR, "ama-runner");
+const LEGACY_RUNNER_INSTALL_DIR = join(DATA_DIR, "runners", "ama-runner");
 
 export interface AmaRunnerVersionInfo {
   name?: string;
@@ -74,14 +75,15 @@ function installedRunnerMatches(path: string, version: string): boolean {
   return readRunnerVersion(path)?.version === version;
 }
 
-function cleanupLegacyVersionedInstalls(): void {
-  if (!existsSync(AMA_RUNNER_INSTALL_DIR)) return;
-  for (const entry of readdirSync(AMA_RUNNER_INSTALL_DIR)) {
-    const path = join(AMA_RUNNER_INSTALL_DIR, entry);
+function cleanupLegacyInstalls(): void {
+  if (!existsSync(LEGACY_RUNNER_INSTALL_DIR)) return;
+  for (const entry of readdirSync(LEGACY_RUNNER_INSTALL_DIR)) {
+    const path = join(LEGACY_RUNNER_INSTALL_DIR, entry);
     if (/^v\d/.test(entry) && statSync(path).isDirectory()) {
       rmSync(path, { recursive: true, force: true });
     }
   }
+  rmSync(LEGACY_RUNNER_INSTALL_DIR, { recursive: true, force: true });
 }
 
 async function installAmaRunner(version: string, targetPath: string): Promise<void> {
@@ -99,7 +101,7 @@ async function installAmaRunner(version: string, targetPath: string): Promise<vo
     rmSync(tmpDir, { recursive: true, force: true });
     throw new Error(`Failed to extract AMA runner: ${tar.stderr || tar.stdout}`);
   }
-  mkdirSync(AMA_RUNNER_INSTALL_DIR, { recursive: true });
+  mkdirSync(BIN_DIR, { recursive: true });
   rmSync(targetPath, { force: true });
   renameSync(join(tmpDir, "ama-runner"), targetPath);
   rmSync(tmpDir, { recursive: true, force: true });
@@ -108,11 +110,10 @@ async function installAmaRunner(version: string, targetPath: string): Promise<vo
 
 export async function resolveAmaRunnerBinary(): Promise<ResolvedAmaRunner> {
   const version = AMA_RUNNER_VERSION;
-  const targetPath = join(AMA_RUNNER_INSTALL_DIR, "ama-runner");
-  cleanupLegacyVersionedInstalls();
-  if (!installedRunnerMatches(targetPath, version)) {
-    await installAmaRunner(version, targetPath);
+  cleanupLegacyInstalls();
+  if (!installedRunnerMatches(AMA_RUNNER_PATH, version)) {
+    await installAmaRunner(version, AMA_RUNNER_PATH);
   }
-  if (!existsSync(targetPath)) throw new Error(`AMA runner installation did not produce ${targetPath}`);
-  return { path: targetPath, version: readRunnerVersion(targetPath) };
+  if (!existsSync(AMA_RUNNER_PATH)) throw new Error(`AMA runner installation did not produce ${AMA_RUNNER_PATH}`);
+  return { path: AMA_RUNNER_PATH, version: readRunnerVersion(AMA_RUNNER_PATH) };
 }

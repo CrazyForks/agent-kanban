@@ -7,11 +7,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const testDir = join(tmpdir(), `ak-ama-runner-test-${randomUUID()}`);
-const runnersDir = join(testDir, "runners");
+const binDir = join(testDir, "bin");
+const legacyRunnersDir = join(testDir, "runners");
 
 vi.mock("../src/paths.js", async () => {
   const actual = await vi.importActual<typeof import("../src/paths.js")>("../src/paths.js");
-  return { ...actual, RUNNERS_DIR: runnersDir };
+  return { ...actual, BIN_DIR: binDir, DATA_DIR: testDir };
 });
 
 vi.mock("node:child_process", async () => {
@@ -40,9 +41,9 @@ afterEach(() => {
 });
 
 describe("resolveAmaRunnerBinary", () => {
-  it("installs a single AK-managed runner and removes legacy version directories", async () => {
-    mkdirSync(join(runnersDir, "ama-runner", "v0.1.0", "darwin-arm64"), { recursive: true });
-    writeFileSync(join(runnersDir, "ama-runner", "v0.1.0", "darwin-arm64", "ama-runner"), "old");
+  it("installs a single AK-managed runner binary and removes legacy runner directories", async () => {
+    mkdirSync(join(legacyRunnersDir, "ama-runner", "v0.1.0", "darwin-arm64"), { recursive: true });
+    writeFileSync(join(legacyRunnersDir, "ama-runner", "v0.1.0", "darwin-arm64", "ama-runner"), "old");
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/checksums.txt")) {
@@ -61,9 +62,9 @@ describe("resolveAmaRunnerBinary", () => {
 
     const resolved = await resolveAmaRunnerBinary();
 
-    expect(resolved.path).toBe(join(runnersDir, "ama-runner", "ama-runner"));
+    expect(resolved.path).toBe(join(binDir, "ama-runner"));
     expect(resolved.version).toMatchObject({ version: "0.1.0", commit: "test" });
-    expect(existsSync(join(runnersDir, "ama-runner", "v0.1.0"))).toBe(false);
-    expect(existsSync(join(runnersDir, "ama-runner", "ama-runner"))).toBe(true);
+    expect(existsSync(join(legacyRunnersDir, "ama-runner"))).toBe(false);
+    expect(existsSync(join(binDir, "ama-runner"))).toBe(true);
   });
 });
