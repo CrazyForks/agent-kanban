@@ -46,7 +46,15 @@ describe("resolveAmaRunnerBinary", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/checksums.txt")) {
-        return new Response("0eb3e36bfb24dcd9bb1d1bece1531216b59539a8fde17ee80224af0653c92aa3 ama-runner-v0.1.0-darwin-arm64.tar.gz\n");
+        const checksum = "0eb3e36bfb24dcd9bb1d1bece1531216b59539a8fde17ee80224af0653c92aa3";
+        return new Response(
+          [
+            `${checksum} ama-runner-v0.1.0-darwin-arm64.tar.gz`,
+            `${checksum} ama-runner-v0.1.0-darwin-amd64.tar.gz`,
+            `${checksum} ama-runner-v0.1.0-linux-arm64.tar.gz`,
+            `${checksum} ama-runner-v0.1.0-linux-amd64.tar.gz`,
+          ].join("\n"),
+        );
       }
       return new Response(Buffer.from("archive"));
     });
