@@ -2210,6 +2210,32 @@ describe("routes", () => {
     expect(Array.isArray(body)).toBe(true);
   });
 
+  it("GET /api/agents/:agentId/sessions includes AMA runtime sessions", async () => {
+    const runtimeSessionId = randomUUID();
+    await env.DB.prepare(
+      `INSERT INTO ama_agent_sessions (
+        id, owner_id, agent_id, ama_session_id, status, public_key, delegation_proof, created_at
+      ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?)`,
+    )
+      .bind(runtimeSessionId, userId, agentId, "ama_session_routes", "public-key", "delegation-proof", new Date().toISOString())
+      .run();
+
+    const res = await apiRequest("GET", `/api/agents/${agentId}/sessions`, undefined, apiKey);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any[];
+    expect(body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: runtimeSessionId,
+          agent_id: agentId,
+          machine_id: `ama-runtime-${userId}`,
+          machine_name: "AMA runtime",
+          runtime_source: "ama",
+        }),
+      ]),
+    );
+  });
+
   it("POST /api/agents/:agentId/sessions requires fields", async () => {
     const res = await apiRequest("POST", `/api/agents/${agentId}/sessions`, {}, apiKey);
     expect(res.status).toBe(400);

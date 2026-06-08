@@ -2,6 +2,14 @@ import type { AgentRuntime, Machine, MachineRuntime, MachineRuntimeStatus, Machi
 import { AGENT_RUNTIMES, MACHINE_STALE_TIMEOUT_MS, normalizeRuntime, RUNTIME_LABELS } from "@agent-kanban/shared";
 import { type D1, newId, parseJsonFields } from "./db";
 
+export interface MachineRecord extends Machine {
+  ama_environment_id: string | null;
+}
+
+export interface MachineWithAgentsRecord extends MachineWithAgents {
+  ama_environment_id: string | null;
+}
+
 export interface CreateMachineInfo {
   name: string;
   os: string;
@@ -16,7 +24,7 @@ export interface HeartbeatInfo {
   usage_info?: UsageInfo | null;
 }
 
-export async function upsertMachine(db: D1, ownerId: string, info: CreateMachineInfo): Promise<Machine> {
+export async function upsertMachine(db: D1, ownerId: string, info: CreateMachineInfo): Promise<MachineRecord> {
   const id = newId();
   const now = new Date().toISOString();
   // device_id is the stable hardware fingerprint — never updated after creation
@@ -26,17 +34,22 @@ export async function upsertMachine(db: D1, ownerId: string, info: CreateMachine
       ON CONFLICT(owner_id, device_id) DO UPDATE SET name = excluded.name, os = excluded.os, version = excluded.version, runtimes = excluded.runtimes`)
     .bind(id, ownerId, info.device_id, info.name, info.os, info.version, JSON.stringify(normalizeMachineRuntimes(info.runtimes, now)), now)
     .run();
-  const row = await db.prepare("SELECT * FROM machines WHERE owner_id = ? AND device_id = ?").bind(ownerId, info.device_id).first<Machine>();
+  const row = await db.prepare("SELECT * FROM machines WHERE owner_id = ? AND device_id = ?").bind(ownerId, info.device_id).first<MachineRecord>();
   return parseMachine(row!);
 }
 
-export async function updateMachineAmaEnvironment(db: D1, machineId: string, ownerId: string, amaEnvironmentId: string): Promise<Machine | null> {
+export async function updateMachineAmaEnvironment(
+  db: D1,
+  machineId: string,
+  ownerId: string,
+  amaEnvironmentId: string,
+): Promise<MachineRecord | null> {
   const result = await db
     .prepare("UPDATE machines SET ama_environment_id = ? WHERE id = ? AND owner_id = ?")
     .bind(amaEnvironmentId, machineId, ownerId)
     .run();
   if (result.meta.changes === 0) return null;
-  const row = await db.prepare("SELECT * FROM machines WHERE id = ?").bind(machineId).first<Machine>();
+  const row = await db.prepare("SELECT * FROM machines WHERE id = ?").bind(machineId).first<MachineRecord>();
   return parseMachine(row!);
 }
 
@@ -102,7 +115,7 @@ export async function deleteMachine(db: D1, machineId: string, ownerId: string):
   return result.meta.changes > 0;
 }
 
-export async function updateMachine(db: D1, machineId: string, ownerId: string, info: HeartbeatInfo): Promise<Machine | null> {
+export async function updateMachine(db: D1, machineId: string, ownerId: string, info: HeartbeatInfo): Promise<MachineRecord | null> {
   const now = new Date().toISOString();
   const sets: string[] = ["status = 'online'", "last_heartbeat_at = ?"];
   const binds: any[] = [now];
@@ -128,11 +141,11 @@ export async function updateMachine(db: D1, machineId: string, ownerId: string, 
     .run();
   if (result.meta.changes === 0) return null;
 
-  const row = await db.prepare("SELECT * FROM machines WHERE id = ?").bind(machineId).first<Machine>();
+  const row = await db.prepare("SELECT * FROM machines WHERE id = ?").bind(machineId).first<MachineRecord>();
   return parseMachine(row!);
 }
 
-export async function listMachines(db: D1, ownerId: string): Promise<MachineWithAgents[]> {
+export async function listMachines(db: D1, ownerId: string): Promise<MachineWithAgentsRecord[]> {
   const result = await db
     .prepare(`
     SELECT m.*,
@@ -143,11 +156,11 @@ export async function listMachines(db: D1, ownerId: string): Promise<MachineWith
     ORDER BY m.last_heartbeat_at DESC
   `)
     .bind(ownerId)
-    .all<MachineWithAgents>();
+    .all<MachineWithAgentsRecord>();
   return result.results.map(parseMachine);
 }
 
-export async function getMachine(db: D1, machineId: string, ownerId: string): Promise<(MachineWithAgents & { agents: any[] }) | null> {
+export async function getMachine(db: D1, machineId: string, ownerId: string): Promise<(MachineWithAgentsRecord & { agents: any[] }) | null> {
   const machine = await db
     .prepare(`
     SELECT m.*,
@@ -156,7 +169,7 @@ export async function getMachine(db: D1, machineId: string, ownerId: string): Pr
     FROM machines m WHERE m.id = ? AND m.owner_id = ?
   `)
     .bind(machineId, ownerId)
-    .first<MachineWithAgents>();
+    .first<MachineWithAgentsRecord>();
 
   if (!machine) return null;
 
@@ -177,7 +190,7 @@ export async function getMachine(db: D1, machineId: string, ownerId: string): Pr
   return { ...parseMachine(machine), agents: agents.results };
 }
 
-export interface AdminMachine extends MachineWithAgents {
+export interface AdminMachine extends MachineWithAgentsRecord {
   owner_name: string | null;
   owner_email: string | null;
 }
@@ -197,7 +210,7 @@ export async function listAllMachines(db: D1): Promise<AdminMachine[]> {
   return result.results.map(parseMachine);
 }
 
-function parseMachine<T extends Machine>(row: T): T {
+function parseMachine<T extends MachineRecord>(row: T): T {
   const parsed = parseJsonFields(row, ["runtimes", "usage_info"]);
   parsed.runtimes = normalizeMachineRuntimes(parsed.runtimes ?? [], parsed.last_heartbeat_at ?? parsed.created_at);
   if (parsed.usage_info) parsed.usage_info = normalizeUsageInfo(parsed.usage_info);

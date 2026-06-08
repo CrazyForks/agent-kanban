@@ -218,13 +218,47 @@ export async function updateSessionUsage(db: D1, sessionId: string, usage: Sessi
 export async function listSessions(db: D1, agentId: string): Promise<AgentSessionWithMachine[]> {
   const result = await db
     .prepare(`
-    SELECT s.*, m.name as machine_name
+    SELECT
+      s.id,
+      s.agent_id,
+      s.machine_id,
+      s.status,
+      s.public_key,
+      s.delegation_proof,
+      s.input_tokens,
+      s.output_tokens,
+      s.cache_read_tokens,
+      s.cache_creation_tokens,
+      s.cost_micro_usd,
+      s.created_at,
+      s.closed_at,
+      m.name AS machine_name,
+      'machine' AS runtime_source
     FROM agent_sessions s
     JOIN machines m ON s.machine_id = m.id
     WHERE s.agent_id = ?
-    ORDER BY s.created_at DESC
+    UNION ALL
+    SELECT
+      s.id,
+      s.agent_id,
+      'ama-runtime-' || s.owner_id AS machine_id,
+      s.status,
+      s.public_key,
+      s.delegation_proof,
+      s.input_tokens,
+      s.output_tokens,
+      s.cache_read_tokens,
+      s.cache_creation_tokens,
+      s.cost_micro_usd,
+      s.created_at,
+      s.closed_at,
+      'AMA runtime' AS machine_name,
+      'ama' AS runtime_source
+    FROM ama_agent_sessions s
+    WHERE s.agent_id = ?
+    ORDER BY created_at DESC
   `)
-    .bind(agentId)
+    .bind(agentId, agentId)
     .all<AgentSessionWithMachine>();
   return result.results;
 }

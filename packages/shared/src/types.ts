@@ -139,7 +139,6 @@ export interface Machine {
   version: string;
   runtimes: MachineRuntime[];
   usage_info: UsageInfo | null;
-  ama_environment_id: string | null;
   last_heartbeat_at: string | null;
   created_at: string;
 }
@@ -282,6 +281,7 @@ export interface AgentSession {
 
 export interface AgentSessionWithMachine extends AgentSession {
   machine_name: string;
+  runtime_source?: "machine" | "ama";
 }
 
 // ─── Repository ───

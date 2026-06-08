@@ -7,9 +7,7 @@ import {
   isBoardType,
   isValidAgentRole,
   isValidUsername,
-  type Machine,
   type MachineRuntime,
-  type MachineWithAgents,
   parseScheduledAt,
   RESERVED_ROLES,
   type Task,
@@ -74,6 +72,8 @@ import {
   getMachine,
   listAllMachines,
   listMachines,
+  type MachineRecord,
+  type MachineWithAgentsRecord,
   normalizeMachineRuntimes,
   updateMachine,
   updateMachineAmaEnvironment,
@@ -286,12 +286,12 @@ function publicBoardMaintainer(maintainer: BoardMaintainer): Omit<BoardMaintaine
   return publicMaintainer;
 }
 
-function publicMachine<T extends Machine | MachineWithAgents>(machine: T): Omit<T, "ama_environment_id"> {
+function publicMachine<T extends MachineRecord | MachineWithAgentsRecord>(machine: T): Omit<T, "ama_environment_id"> {
   const { ama_environment_id: _environmentId, ...publicMachine } = machine;
   return publicMachine;
 }
 
-async function machineWithAmaRunnerStatus<T extends Machine | MachineWithAgents>(env: Env, projectId: string, machine: T): Promise<T> {
+async function machineWithAmaRunnerStatus<T extends MachineRecord | MachineWithAgentsRecord>(env: Env, projectId: string, machine: T): Promise<T> {
   if (!machine.ama_environment_id) {
     return { ...machine, status: "offline", last_heartbeat_at: null, runtimes: [] };
   }
@@ -331,7 +331,12 @@ function akRuntimeFromAmaCapability(capability: string): AgentRuntime | null {
   return null;
 }
 
-async function machinesWithRuntimeStatus<T extends Machine | MachineWithAgents>(db: D1, env: Env, ownerId: string, machines: T[]): Promise<T[]> {
+async function machinesWithRuntimeStatus<T extends MachineRecord | MachineWithAgentsRecord>(
+  db: D1,
+  env: Env,
+  ownerId: string,
+  machines: T[],
+): Promise<T[]> {
   if (!isAmaTaskDispatchConfigured(env)) {
     return machines;
   }
@@ -342,7 +347,7 @@ async function machinesWithRuntimeStatus<T extends Machine | MachineWithAgents>(
   return await Promise.all(machines.map((machine) => machineWithAmaRunnerStatus(env, projectId, machine)));
 }
 
-async function machinesWithRuntimeStatusByOwner<T extends Machine | MachineWithAgents>(db: D1, env: Env, machines: T[]): Promise<T[]> {
+async function machinesWithRuntimeStatusByOwner<T extends MachineRecord | MachineWithAgentsRecord>(db: D1, env: Env, machines: T[]): Promise<T[]> {
   if (!isAmaTaskDispatchConfigured(env)) {
     return machines;
   }
@@ -362,7 +367,7 @@ async function machinesWithRuntimeStatusByOwner<T extends Machine | MachineWithA
   );
 }
 
-async function ensureMachineAmaEnvironment(db: D1, env: Env, ownerId: string, machine: Machine): Promise<string> {
+async function ensureMachineAmaEnvironment(db: D1, env: Env, ownerId: string, machine: MachineRecord): Promise<string> {
   if (machine.ama_environment_id) return machine.ama_environment_id;
   const binding = await ensureAmaOwnerIntegration(db, env, ownerId);
   const environment = await createAmaEnvironment(env, {
@@ -375,7 +380,7 @@ async function ensureMachineAmaEnvironment(db: D1, env: Env, ownerId: string, ma
   return environment.id;
 }
 
-async function createMachineRunnerOnboarding(env: Env, machine: Machine, ownerId: string, requestOrigin: string) {
+async function createMachineRunnerOnboarding(env: Env, machine: MachineRecord, ownerId: string, requestOrigin: string) {
   const environmentId = machine.ama_environment_id;
   if (!environmentId) return null;
   if (readyAmaRuntimeNames(machine.runtimes).length === 0) return null;
