@@ -1151,14 +1151,14 @@ describe("routes", () => {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         expect(body.metadata).toMatchObject({ runtime: "claude-code" });
         expect(body.provider).toBe("provider_claude");
-        expect(body.model).toBe("claude-sonnet-4-6");
+        expect(body).not.toHaveProperty("model");
         return new Response(
           JSON.stringify({
             id: "ama_agent_123",
             projectId: "project_123",
             name: body.name,
             provider: body.provider,
-            model: body.model,
+            model: null,
           }),
           { status: 201 },
         );

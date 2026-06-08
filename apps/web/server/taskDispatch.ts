@@ -115,7 +115,7 @@ export async function ensureAmaAgentForAkAgent(db: D1, env: Env, ownerId: string
     "ama.projectId": projectId,
     "ama.agentId": agent.id,
     "ama.provider": agent.provider,
-    "ama.model": agent.model,
+    ...(agent.model ? { "ama.model": agent.model } : {}),
   });
   return agent;
 }

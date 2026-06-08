@@ -25,7 +25,7 @@ export interface AmaAgentInput {
   description?: string | null;
   instructions?: string | null;
   provider: string;
-  model: string;
+  model?: string | null;
   role?: string | null;
   metadata?: Record<string, unknown>;
 }
@@ -35,7 +35,7 @@ export interface AmaAgent {
   projectId: string;
   name: string;
   provider: string;
-  model: string;
+  model: string | null;
 }
 
 export interface AmaEnvironment {
@@ -44,7 +44,7 @@ export interface AmaEnvironment {
 
 export interface AmaProviderModelProfile {
   provider: string;
-  model: string;
+  model: string | null;
   runtime: string;
 }
 
@@ -140,7 +140,7 @@ interface AmaAgentResponse {
   projectId: string;
   name: string;
   provider: string;
-  model: string;
+  model: string | null;
 }
 
 interface AmaEnvironmentResponse {
@@ -227,27 +227,19 @@ const RUNTIME_PROVIDER_PROFILES: Record<
   {
     providerType: string;
     providerDisplayName: string;
-    defaultModel: string;
-    modelDisplayName: string;
   }
 > = {
   "claude-code": {
     providerType: "anthropic",
     providerDisplayName: "Anthropic",
-    defaultModel: "claude-sonnet-4-6",
-    modelDisplayName: "Claude Sonnet 4.6",
   },
   codex: {
     providerType: "openai",
     providerDisplayName: "OpenAI",
-    defaultModel: "gpt-5.3-codex",
-    modelDisplayName: "GPT-5.3 Codex",
   },
   copilot: {
     providerType: "other",
     providerDisplayName: "GitHub Copilot",
-    defaultModel: "copilot-cli",
-    modelDisplayName: "GitHub Copilot CLI",
   },
 };
 
@@ -295,7 +287,7 @@ export async function createAmaAgent(env: Env, input: AmaAgentInput): Promise<Am
         ...(input.description ? { description: input.description } : {}),
         ...(input.instructions ? { instructions: input.instructions, systemPrompt: input.instructions } : {}),
         provider: input.provider,
-        model: input.model,
+        ...(input.model ? { model: input.model } : {}),
         ...(input.role ? { role: input.role } : {}),
         metadata: input.metadata ?? {},
         memoryPolicy: { enabled: false },
@@ -418,22 +410,21 @@ async function ensureAmaProviderModelProfile(
     );
   }
 
-  const model = preferredModel || configured.defaultModel;
-  await withAmaErrorDetails("upsert provider model", () =>
-    client.request("upsertProviderModel", {
-      path: { providerId: provider.id },
-      body: {
-        modelId: model,
-        displayName: model === configured.defaultModel ? configured.modelDisplayName : model,
-        capabilities: ["text"],
-        availability: "available",
-        metadata: {
-          runtime,
-          defaultForRuntime: model === configured.defaultModel,
+  const model = preferredModel ?? null;
+  if (model) {
+    await withAmaErrorDetails("upsert provider model", () =>
+      client.request("upsertProviderModel", {
+        path: { providerId: provider.id },
+        body: {
+          modelId: model,
+          displayName: model,
+          capabilities: ["text"],
+          availability: "available",
+          metadata: { runtime },
         },
-      },
-    }),
-  );
+      }),
+    );
+  }
 
   return { runtime, provider: provider.id, model };
 }
