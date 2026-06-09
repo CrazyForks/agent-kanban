@@ -19,6 +19,7 @@ import { createInterface } from "node:readline/promises";
 import type { MachineRuntime } from "@agent-kanban/shared";
 import type { Command } from "commander";
 import { type AmaRunnerVersionInfo, resolveAmaRunnerBinary } from "../amaRunner.js";
+import { MachineClient } from "../client/machine.js";
 import { getCredentials, saveCredentials, setCurrent } from "../config.js";
 import { generateDeviceId } from "../device.js";
 import { resolveMachineName } from "../machineName.js";
@@ -39,6 +40,7 @@ interface DaemonState {
   runtime?: "legacy-daemon" | "ama-runner";
   runnerPath?: string;
   runnerVersion?: AmaRunnerVersionInfo | null;
+  machineId?: string;
 }
 
 interface AmaRunnerOnboardingResponse {
@@ -251,6 +253,7 @@ async function startAmaRunner(opts: Record<string, unknown>) {
     runtime: "ama-runner",
     runnerPath: runner.path,
     runnerVersion: runner.version,
+    ...(typeof opts.machineId === "string" ? { machineId: opts.machineId } : {}),
   };
   writeFileSync(DAEMON_STATE_FILE, JSON.stringify(state, null, 2));
   child.unref();
@@ -302,6 +305,7 @@ async function applyAmaRunnerOnboarding(opts: Record<string, unknown>) {
   if (!onboarding?.accessToken || !onboarding.refreshToken) {
     throw new Error("Machine registration did not return AMA runner onboarding credentials");
   }
+  opts.machineId = machine.id;
   opts.amaOrigin = onboarding.origin;
   opts.amaProjectId = onboarding.projectId;
   opts.amaEnvironmentId = onboarding.environmentId;
@@ -434,7 +438,7 @@ export function registerStatusCommand(program: Command) {
   program
     .command("status")
     .description("Show Machine runner status")
-    .action(() => {
+    .action(async () => {
       const pid = readDaemonPid();
       if (!pid) {
         console.log("○ Machine runner is not running");
@@ -465,6 +469,21 @@ export function registerStatusCommand(program: Command) {
         console.log(`  API:         ${maskApiUrl(state.apiUrl)}`);
       }
       if (state?.runtime !== "ama-runner") console.log(`  Sessions:    ${sessions} active`);
+
+      // The ama-runner reports to AMA, not local stdout — surface its real health
+      // (a live local process does not imply the runner is registered/heartbeating).
+      if (state?.runtime === "ama-runner" && state.machineId) {
+        try {
+          const machine = await new MachineClient().getMachine(state.machineId);
+          const online = machine.status === "online";
+          const heartbeat = machine.last_heartbeat_at ? ` (heartbeat ${formatUptime(new Date(machine.last_heartbeat_at).getTime())} ago)` : "";
+          console.log(`  AMA runner:  ${online ? "●" : "○"} ${machine.status ?? "unknown"}${heartbeat}`);
+          const ready = (machine.runtimes ?? []).filter((runtime) => runtime.status === "ready").map((runtime) => runtime.name);
+          if (ready.length > 0) console.log(`  Runtimes:    ${ready.join(", ")}`);
+        } catch (error) {
+          console.log(`  AMA runner:  (could not reach AK API: ${(error as Error).message})`);
+        }
+      }
     });
 }
 

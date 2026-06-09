@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
@@ -66,7 +66,7 @@ vi.mock("../src/paths.js", async () => {
 });
 
 const { writeSession, clearAllSessions } = await import("../src/session/store.js");
-const { confirmDaemonShutdown, listRunningTaskSessions, registerRestartCommand, registerStartCommand } = await import("../src/commands/start.js");
+const { confirmDaemonShutdown, listRunningTaskSessions, registerRestartCommand, registerStartCommand, registerStatusCommand } = await import("../src/commands/start.js");
 const stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
 
@@ -237,6 +237,171 @@ describe("restart runtime command", () => {
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Machine runner started"));
     const state = JSON.parse(readFileSync(join(testSessionsDir, "daemon-state.json"), "utf-8"));
     expect(state).toMatchObject({ runtime: "ama-runner", apiUrl: "https://ak.test" });
+  });
+});
+
+describe("status command — ama-runner with machineId", () => {
+  function writeDaemonState(state: Record<string, unknown>) {
+    mkdirSync(testSessionsDir, { recursive: true });
+    writeFileSync(join(testSessionsDir, "daemon-state.json"), JSON.stringify(state));
+  }
+
+  function writePidFile(pid: number) {
+    mkdirSync(testSessionsDir, { recursive: true });
+    writeFileSync(join(testSessionsDir, "daemon.pid"), String(pid));
+  }
+
+  function writeConfig(apiUrl: string, apiKey: string) {
+    mkdirSync(testSessionsDir, { recursive: true });
+    const host = new URL(apiUrl).host;
+    writeFileSync(
+      join(testSessionsDir, "config.json"),
+      JSON.stringify({ current: host, credentials: { [host]: { "api-url": apiUrl, "api-key": apiKey } } }),
+    );
+  }
+
+  it("prints AMA runner online status and ready runtimes when getMachine resolves", async () => {
+    const machineId = "machine-status-test";
+    writePidFile(process.pid);
+    writeDaemonState({
+      runtime: "ama-runner",
+      machineId,
+      providers: ["machine-runner"],
+      maxConcurrent: 5,
+      pollInterval: 0,
+      taskTimeout: 0,
+      apiUrl: "https://ak.test",
+      startedAt: new Date().toISOString(),
+    });
+    writeConfig("https://ak.test", "ak_test_key");
+
+    const lastHeartbeat = new Date().toISOString();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `https://ak.test/api/machines/${machineId}`) {
+        return new Response(
+          JSON.stringify({
+            id: machineId,
+            name: "test-machine",
+            status: "online",
+            last_heartbeat_at: lastHeartbeat,
+            runtimes: [
+              { name: "claude", status: "ready", checked_at: new Date().toISOString() },
+              { name: "codex", status: "ready", checked_at: new Date().toISOString() },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const program = new Command();
+    registerStatusCommand(program);
+    await program.parseAsync(["status"], { from: "user" });
+
+    const logged = logSpy.mock.calls.map((c) => String(c[0]));
+    expect(logged.some((line) => line.includes("AMA runner") && line.includes("online"))).toBe(true);
+    expect(logged.some((line) => line.includes("Runtimes") && line.includes("claude") && line.includes("codex"))).toBe(true);
+  });
+
+  it("prints only ready runtimes, omitting non-ready ones", async () => {
+    const machineId = "machine-partial-ready";
+    writePidFile(process.pid);
+    writeDaemonState({
+      runtime: "ama-runner",
+      machineId,
+      providers: ["machine-runner"],
+      maxConcurrent: 5,
+      pollInterval: 0,
+      taskTimeout: 0,
+      apiUrl: "https://ak.test",
+      startedAt: new Date().toISOString(),
+    });
+    writeConfig("https://ak.test", "ak_test_key");
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+      return new Response(
+        JSON.stringify({
+          id: machineId,
+          name: "test-machine",
+          status: "online",
+          last_heartbeat_at: new Date().toISOString(),
+          runtimes: [
+            { name: "claude", status: "ready", checked_at: new Date().toISOString() },
+            { name: "codex", status: "unavailable", checked_at: new Date().toISOString() },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const program = new Command();
+    registerStatusCommand(program);
+    await program.parseAsync(["status"], { from: "user" });
+
+    const logged = logSpy.mock.calls.map((c) => String(c[0]));
+    const runtimesLine = logged.find((line) => line.includes("Runtimes"));
+    expect(runtimesLine).toBeDefined();
+    expect(runtimesLine).toContain("claude");
+    expect(runtimesLine).not.toContain("codex");
+  });
+
+  it("prints error message when getMachine API call fails", async () => {
+    const machineId = "machine-err";
+    writePidFile(process.pid);
+    writeDaemonState({
+      runtime: "ama-runner",
+      machineId,
+      providers: ["machine-runner"],
+      maxConcurrent: 5,
+      pollInterval: 0,
+      taskTimeout: 0,
+      apiUrl: "https://ak.test",
+      startedAt: new Date().toISOString(),
+    });
+    writeConfig("https://ak.test", "ak_test_key");
+
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("connection refused"));
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const program = new Command();
+    registerStatusCommand(program);
+    await program.parseAsync(["status"], { from: "user" });
+
+    const logged = logSpy.mock.calls.map((c) => String(c[0]));
+    expect(logged.some((line) => line.includes("AMA runner") && line.includes("could not reach AK API"))).toBe(true);
+  });
+
+  it("does not print AMA runner line when state has no machineId", async () => {
+    writePidFile(process.pid);
+    writeDaemonState({
+      runtime: "ama-runner",
+      // no machineId
+      providers: ["machine-runner"],
+      maxConcurrent: 5,
+      pollInterval: 0,
+      taskTimeout: 0,
+      apiUrl: "https://ak.test",
+      startedAt: new Date().toISOString(),
+    });
+    writeConfig("https://ak.test", "ak_test_key");
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("should not be called"));
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const program = new Command();
+    registerStatusCommand(program);
+    await program.parseAsync(["status"], { from: "user" });
+
+    const logged = logSpy.mock.calls.map((c) => String(c[0]));
+    expect(logged.some((line) => line.includes("AMA runner"))).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 

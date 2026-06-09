@@ -142,6 +142,16 @@ export abstract class ApiClient {
   registerMachine(info: { name: string; os: string; version: string; runtimes: MachineRuntime[]; device_id: string }) {
     return this.request<{ id: string; name: string }>("POST", "/api/machines", info);
   }
+  getMachine(machineId: string) {
+    return this.request<{
+      id: string;
+      name: string;
+      status?: string;
+      last_heartbeat_at?: string | null;
+      runtimes?: MachineRuntime[];
+      usage_info?: UsageInfo | null;
+    }>("GET", `/api/machines/${machineId}`);
+  }
   heartbeat(machineId: string, info: { version?: string; runtimes?: MachineRuntime[]; usage_info?: UsageInfo | null }) {
     return this.request("POST", `/api/machines/${machineId}/heartbeat`, info);
   }

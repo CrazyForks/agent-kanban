@@ -1073,6 +1073,15 @@ describe("ApiClient method stubs", () => {
     expect(opts.method).toBe("POST");
   });
 
+  it("getMachine calls GET /api/machines/:id", async () => {
+    const c = await makeAgentClient();
+    stubOk({ id: "m1", name: "box" });
+    await c.getMachine("machine-42");
+    const [url, opts] = lastCall();
+    expect(url).toContain("/api/machines/machine-42");
+    expect(opts.method).toBe("GET");
+  });
+
   it("heartbeat posts to /api/machines/:id/heartbeat", async () => {
     const c = await makeAgentClient();
     stubOk({});
