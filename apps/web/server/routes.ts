@@ -838,7 +838,10 @@ api.get("/api/agents", async (c) => {
     runtime,
     available: amaRuntime ? undefined : available,
   });
-  const amaAvailableRuntimes = amaRuntime && available !== undefined ? await availableAmaRuntimes(c.env.DB, c.env, c.get("ownerId")) : undefined;
+  // When AMA is the runtime substrate, machine.status/last_heartbeat_at are no
+  // longer updated by the daemon, so the SQL-derived runtime_available is always
+  // false. Recompute it from live AMA runners (as the detail endpoint does).
+  const amaAvailableRuntimes = amaRuntime ? await availableAmaRuntimes(c.env.DB, c.env, c.get("ownerId")) : undefined;
   const withSource = agents.map((agent) => withRuntimeSource(c.env, agent, amaAvailableRuntimes));
   return c.json(available === undefined ? withSource : withSource.filter((agent) => agent.runtime_available === available));
 });
