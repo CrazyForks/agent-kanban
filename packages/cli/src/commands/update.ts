@@ -193,4 +193,46 @@ export function registerUpdateCommand(program: Command) {
       const fmt = getOutputFormat(opts.output);
       output(subagent, fmt, (a) => `Updated subagent ${a.id}: ${a.name}`);
     });
+
+  updateCmd
+    .command("maintainer <id>")
+    .description("Update a board maintainer")
+    .option("--board <id>", "Board ID")
+    .option("--name <name>", "Maintainer display name")
+    .option("--prompt <prompt>", "Heartbeat prompt")
+    .option("--interval-seconds <seconds>", "Heartbeat interval in seconds")
+    .option("--status <status>", "active or paused")
+    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .action(async (id: string, opts) => {
+      if (!opts.board) {
+        console.error("--board is required");
+        process.exit(1);
+      }
+      const body: Record<string, unknown> = {};
+      if (opts.name) body.name = opts.name;
+      if (opts.prompt) body.prompt = opts.prompt;
+      if (opts.intervalSeconds !== undefined) {
+        const intervalSeconds = Number.parseInt(String(opts.intervalSeconds), 10);
+        if (!Number.isInteger(intervalSeconds) || intervalSeconds < 60) {
+          console.error("--interval-seconds must be an integer >= 60");
+          process.exit(1);
+        }
+        body.interval_seconds = intervalSeconds;
+      }
+      if (opts.status) {
+        if (opts.status !== "active" && opts.status !== "paused") {
+          console.error("--status must be active or paused");
+          process.exit(1);
+        }
+        body.status = opts.status;
+      }
+      if (Object.keys(body).length === 0) {
+        console.error("Nothing to update. Provide --name, --prompt, --interval-seconds, or --status.");
+        process.exit(1);
+      }
+      const client = await createClient();
+      const maintainer = await client.updateBoardMaintainer(opts.board, id, body);
+      const fmt = getOutputFormat(opts.output);
+      output(maintainer, fmt, (m) => `Updated maintainer ${m.id}: ${m.name}`);
+    });
 }

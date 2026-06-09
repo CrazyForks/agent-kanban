@@ -1291,4 +1291,30 @@ describe("ApiClient method stubs", () => {
     await expect(c.getTask("x")).rejects.toThrow("ETIMEDOUT");
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   });
+
+  it("updateBoardMaintainer sends PATCH /api/boards/:boardId/maintainers/:maintainerId", async () => {
+    const c = await makeAgentClient();
+    stubOk({});
+    await c.updateBoardMaintainer("board-abc", "maintainer-xyz", { status: "paused" });
+    const [url, opts] = lastCall();
+    expect(url).toContain("/api/boards/board-abc/maintainers/maintainer-xyz");
+    expect(opts.method).toBe("PATCH");
+  });
+
+  it("updateBoardMaintainer sends the input body as JSON", async () => {
+    const c = await makeAgentClient();
+    stubOk({});
+    await c.updateBoardMaintainer("board-abc", "maintainer-xyz", { name: "Nightly", interval_seconds: 86400 });
+    const [, opts] = lastCall();
+    expect(JSON.parse(opts.body as string)).toEqual({ name: "Nightly", interval_seconds: 86400 });
+  });
+
+  it("deleteBoardMaintainer sends DELETE /api/boards/:boardId/maintainers/:maintainerId", async () => {
+    const c = await makeAgentClient();
+    stubOk({});
+    await c.deleteBoardMaintainer("board-def", "maintainer-uvw");
+    const [url, opts] = lastCall();
+    expect(url).toContain("/api/boards/board-def/maintainers/maintainer-uvw");
+    expect(opts.method).toBe("DELETE");
+  });
 });

@@ -33,6 +33,8 @@ const helpSections: [string, [string, string][]][] = [
       ["apply -f <file>", "Apply a YAML/JSON resource spec"],
       ["create maintainer", "Create an AI board maintainer"],
       ["get maintainer --board <id>", "List board maintainers"],
+      ["update maintainer <id> --board <id>", "Update or pause/resume a maintainer"],
+      ["delete maintainer <id> --board <id>", "Delete (archive) a maintainer"],
       ["get task <id> --session", "Show task session state and events"],
     ],
   ],

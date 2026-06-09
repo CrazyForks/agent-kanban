@@ -233,6 +233,12 @@ export abstract class ApiClient {
     const qs = params.toString() ? `?${params.toString()}` : "";
     return this.request<any>("GET", `/api/boards/${boardId}/maintainers/${maintainerId}/runs${qs}`);
   }
+  updateBoardMaintainer(boardId: string, maintainerId: string, input: Record<string, unknown>) {
+    return this.request<any>("PATCH", `/api/boards/${boardId}/maintainers/${maintainerId}`, input);
+  }
+  deleteBoardMaintainer(boardId: string, maintainerId: string) {
+    return this.request<any>("DELETE", `/api/boards/${boardId}/maintainers/${maintainerId}`);
+  }
 
   // Repositories
   createRepository(input: { name: string; url: string }) {

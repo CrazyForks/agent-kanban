@@ -3,7 +3,7 @@ import { createClient } from "../agent/leader.js";
 import { getOutputFormat, output } from "../output.js";
 
 export function registerDeleteCommand(program: Command) {
-  const deleteCmd = program.command("delete").description("Delete a resource (board, task, agent, subagent, repo)");
+  const deleteCmd = program.command("delete").description("Delete a resource (board, task, agent, subagent, repo, maintainer)");
 
   deleteCmd
     .command("label")
@@ -75,5 +75,21 @@ export function registerDeleteCommand(program: Command) {
       const fmt = getOutputFormat(opts.output);
       const repo = await client.deleteRepository(id);
       output(repo, fmt, () => `Deleted repository ${id}`);
+    });
+
+  deleteCmd
+    .command("maintainer <id>")
+    .description("Delete (archive) a board maintainer")
+    .option("--board <id>", "Board ID")
+    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .action(async (id: string, opts) => {
+      if (!opts.board) {
+        console.error("--board is required");
+        process.exit(1);
+      }
+      const client = await createClient();
+      const fmt = getOutputFormat(opts.output);
+      const maintainer = await client.deleteBoardMaintainer(opts.board, id);
+      output(maintainer, fmt, () => `Deleted maintainer ${id}`);
     });
 }
