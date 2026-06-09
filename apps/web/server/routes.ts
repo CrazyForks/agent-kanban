@@ -11,6 +11,8 @@ import {
   parseScheduledAt,
   RESERVED_ROLES,
   type Task,
+  type UsageInfo,
+  type UsageWindow,
 } from "@agent-kanban/shared";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -29,6 +31,7 @@ import { closeAmaAgentSessionForTask, closeSession, createSession, listSessions,
 import { ensureAmaOwnerIntegration, resolveAmaExternalTenantId, resolveAmaProjectId } from "./amaOwnerIntegrationRepo";
 import {
   archiveAmaScheduledAgentTrigger,
+  type AmaRunner,
   createAmaEnvironment,
   createAmaExternalProjectBinding,
   createAmaFederatedRunnerToken,
@@ -313,11 +316,12 @@ async function listPublicMaintainersWithAmaStatus(db: D1, env: Env, ownerId: str
 async function availableAmaRuntimes(db: D1, env: Env, ownerId: string): Promise<Set<string>> {
   if (!isAmaTaskDispatchConfigured(env)) return new Set();
   const machines = await listMachines(db, ownerId);
-  const projectId = await resolveAmaProjectId(db, env, ownerId);
+  const environmentIds = [...new Set(machines.map((machine) => machine.ama_environment_id).filter((id): id is string => Boolean(id)))];
   const runtimes = new Set<string>();
-  for (const machine of machines) {
-    if (!machine.ama_environment_id) continue;
-    const runners = await listAmaRunners(env, projectId, machine.ama_environment_id);
+  if (environmentIds.length === 0) return runtimes;
+  const projectId = await resolveAmaProjectId(db, env, ownerId);
+  const runnerLists = await Promise.all(environmentIds.map((environmentId) => listAmaRunners(env, projectId, environmentId)));
+  for (const runners of runnerLists) {
     for (const runner of runners.data) {
       for (const runtime of AGENT_RUNTIMES) {
         if (amaRunnerCanRunRuntime(runner, amaRuntimeName(runtime))) {
@@ -378,7 +382,7 @@ async function machineWithAmaRunnerStatus<T extends MachineRecord | MachineWithA
       activeRunners.flatMap((runner) => runner.capabilities),
       lastHeartbeatAt ?? new Date().toISOString(),
     ),
-    usage_info: machine.usage_info,
+    usage_info: machineUsageInfoFromRunners(runners.data) ?? machine.usage_info,
     runner_count: runners.data.length,
     active_runner_count: activeRunners.length,
     runner_capacity: activeRunners.reduce((sum, runner) => sum + runner.maxConcurrent, 0),
@@ -400,6 +404,23 @@ function akRuntimeFromAmaCapability(capability: string): AgentRuntime | null {
   if (runtime === "claude-code") return "claude";
   if (runtime === "codex" || runtime === "copilot") return runtime;
   return null;
+}
+
+function machineUsageInfoFromRunners(runners: AmaRunner[]): UsageInfo | null {
+  const windows: UsageWindow[] = [];
+  let updatedAt = "";
+  for (const runner of runners) {
+    for (const usage of runner.runtimeUsage ?? []) {
+      const runtime = akRuntimeFromAmaCapability(usage.runtime);
+      if (!runtime) continue;
+      for (const window of usage.windows) {
+        windows.push({ runtime, label: window.label, utilization: window.utilization, resets_at: window.resetsAt });
+      }
+    }
+    if (runner.lastHeartbeatAt && runner.lastHeartbeatAt > updatedAt) updatedAt = runner.lastHeartbeatAt;
+  }
+  if (windows.length === 0) return null;
+  return { windows, updated_at: updatedAt || new Date().toISOString() };
 }
 
 async function machinesWithRuntimeStatus<T extends MachineRecord | MachineWithAgentsRecord>(

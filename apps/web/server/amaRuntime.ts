@@ -166,6 +166,15 @@ interface AmaEnvironmentResponse {
   id: string;
 }
 
+export interface AmaRuntimeUsageWindow {
+  label: string;
+  utilization: number;
+  resetsAt: string;
+}
+export interface AmaRuntimeUsage {
+  runtime: string;
+  windows: AmaRuntimeUsageWindow[];
+}
 export interface AmaRunner {
   id: string;
   environmentId: string | null;
@@ -174,6 +183,7 @@ export interface AmaRunner {
   currentLoad: number;
   maxConcurrent: number;
   lastHeartbeatAt: string | null;
+  runtimeUsage?: AmaRuntimeUsage[];
 }
 
 interface AmaProviderResponse {
@@ -702,10 +712,19 @@ async function createAmaClient(env: Env, projectId?: string) {
   });
 }
 
+// The client-credentials token is valid for ~1h; cache it per isolate so each
+// AMA call doesn't pay a second remote round-trip re-authenticating. Keyed by
+// client id so a credential change invalidates the cache.
+let cachedAmaToken: { key: string; token: string; expiresAt: number } | null = null;
+const AMA_TOKEN_REFRESH_SKEW_MS = 60_000;
+
 async function accessToken(env: Env) {
   const tokenUrl = requireEnv(env.AMA_OAUTH_TOKEN_URL, "AMA_OAUTH_TOKEN_URL");
   const clientId = requireEnv(env.AMA_OAUTH_CLIENT_ID, "AMA_OAUTH_CLIENT_ID");
   const clientSecret = requireEnv(env.AMA_OAUTH_CLIENT_SECRET, "AMA_OAUTH_CLIENT_SECRET");
+  if (cachedAmaToken && cachedAmaToken.key === clientId && cachedAmaToken.expiresAt > Date.now()) {
+    return cachedAmaToken.token;
+  }
   const body = new URLSearchParams({
     grant_type: "client_credentials",
     client_id: clientId,
@@ -727,6 +746,8 @@ async function accessToken(env: Env) {
   if (!token.access_token) {
     throw new Error("AMA OAuth token response did not include access_token");
   }
+  const ttlMs = Math.max((token.expires_in ?? 3600) * 1000 - AMA_TOKEN_REFRESH_SKEW_MS, 30_000);
+  cachedAmaToken = { key: clientId, token: token.access_token, expiresAt: Date.now() + ttlMs };
   return token.access_token;
 }
 
