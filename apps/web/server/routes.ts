@@ -1163,7 +1163,13 @@ api.get("/api/tasks/:id/runtime", async (c) => {
     throw new HTTPException(404, { message: "Task is not bound to a session" });
   }
   const projectId = typeof taskAnnotations["ama.projectId"] === "string" ? taskAnnotations["ama.projectId"] : undefined;
-  const runtime = await getAmaSessionRuntimeSnapshot(c.env, sessionId, projectId);
+  const orderParam = c.req.query("order");
+  const order = orderParam === "desc" ? "desc" : orderParam === "asc" ? "asc" : undefined;
+  const limitRaw = Number.parseInt(c.req.query("limit") ?? "", 10);
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : undefined;
+  const cursorRaw = Number.parseInt(c.req.query("cursor") ?? "", 10);
+  const cursor = Number.isFinite(cursorRaw) ? cursorRaw : undefined;
+  const runtime = await getAmaSessionRuntimeSnapshot(c.env, sessionId, projectId, { order, limit, cursor });
   return c.json({
     task_id: task.id,
     session_id: sessionId,

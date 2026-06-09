@@ -2638,6 +2638,219 @@ describe("routes", () => {
     });
   });
 
+  it("GET /api/tasks/:id/runtime forwards default order=asc and limit=100 to AMA events when no params given", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    });
+
+    let capturedEventsUrl: string | undefined;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token", expires_in: 3600 }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/sessions/session_default_params") {
+        return new Response(JSON.stringify({ id: "session_default_params", status: "idle", statusReason: null }), { status: 200 });
+      }
+      if (url.startsWith("https://ama.test/api/sessions/session_default_params/events")) {
+        capturedEventsUrl = url;
+        return new Response(
+          JSON.stringify({ data: [], pagination: { limit: 100, hasMore: false, nextCursor: null } }),
+          { status: 200 },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { createTask } = await import("../apps/web/server/taskRepo");
+      const task = await createTask(env.DB, userId, {
+        title: "AMA default params",
+        board_id: boardId,
+        metadata: { annotations: { "ama.sessionId": "session_default_params" } },
+      });
+      const res = await apiRequest("GET", `/api/tasks/${task.id}/runtime`, undefined, apiKey);
+      expect(res.status).toBe(200);
+      expect(capturedEventsUrl).toBeDefined();
+      const eventsQs = new URL(capturedEventsUrl!).searchParams;
+      expect(eventsQs.get("order")).toBe("asc");
+      expect(eventsQs.get("limit")).toBe("100");
+      expect(eventsQs.has("cursor")).toBe(false);
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("GET /api/tasks/:id/runtime forwards explicit order=desc and limit=10 to AMA events", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    });
+
+    let capturedEventsUrl: string | undefined;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token", expires_in: 3600 }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/sessions/session_order_limit") {
+        return new Response(JSON.stringify({ id: "session_order_limit", status: "active", statusReason: null }), { status: 200 });
+      }
+      if (url.startsWith("https://ama.test/api/sessions/session_order_limit/events")) {
+        capturedEventsUrl = url;
+        return new Response(
+          JSON.stringify({ data: [], pagination: { limit: 10, hasMore: true, nextCursor: 11 } }),
+          { status: 200 },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { createTask } = await import("../apps/web/server/taskRepo");
+      const task = await createTask(env.DB, userId, {
+        title: "AMA order and limit",
+        board_id: boardId,
+        metadata: { annotations: { "ama.sessionId": "session_order_limit" } },
+      });
+      const res = await apiRequest("GET", `/api/tasks/${task.id}/runtime?order=desc&limit=10`, undefined, apiKey);
+      expect(res.status).toBe(200);
+      expect(capturedEventsUrl).toBeDefined();
+      const eventsQs = new URL(capturedEventsUrl!).searchParams;
+      expect(eventsQs.get("order")).toBe("desc");
+      expect(eventsQs.get("limit")).toBe("10");
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("GET /api/tasks/:id/runtime forwards cursor, order, and limit to AMA events", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    });
+
+    let capturedEventsUrl: string | undefined;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token", expires_in: 3600 }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/sessions/session_cursor_test") {
+        return new Response(JSON.stringify({ id: "session_cursor_test", status: "active", statusReason: null }), { status: 200 });
+      }
+      if (url.startsWith("https://ama.test/api/sessions/session_cursor_test/events")) {
+        capturedEventsUrl = url;
+        return new Response(
+          JSON.stringify({ data: [], pagination: { limit: 10, hasMore: false, nextCursor: null } }),
+          { status: 200 },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { createTask } = await import("../apps/web/server/taskRepo");
+      const task = await createTask(env.DB, userId, {
+        title: "AMA cursor test",
+        board_id: boardId,
+        metadata: { annotations: { "ama.sessionId": "session_cursor_test" } },
+      });
+      const res = await apiRequest("GET", `/api/tasks/${task.id}/runtime?cursor=42&order=desc&limit=10`, undefined, apiKey);
+      expect(res.status).toBe(200);
+      expect(capturedEventsUrl).toBeDefined();
+      const eventsQs = new URL(capturedEventsUrl!).searchParams;
+      expect(eventsQs.get("cursor")).toBe("42");
+      expect(eventsQs.get("order")).toBe("desc");
+      expect(eventsQs.get("limit")).toBe("10");
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("GET /api/tasks/:id/runtime passes AMA pagination object through to the response", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    });
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token", expires_in: 3600 }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/sessions/session_pagination_pass") {
+        return new Response(JSON.stringify({ id: "session_pagination_pass", status: "idle", statusReason: null }), { status: 200 });
+      }
+      if (url.startsWith("https://ama.test/api/sessions/session_pagination_pass/events")) {
+        return new Response(
+          JSON.stringify({
+            data: [{ id: "ev_99", type: "tool_use", sequence: 99 }],
+            pagination: { limit: 5, hasMore: true, nextCursor: 99 },
+          }),
+          { status: 200 },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { createTask } = await import("../apps/web/server/taskRepo");
+      const task = await createTask(env.DB, userId, {
+        title: "AMA pagination passthrough",
+        board_id: boardId,
+        metadata: { annotations: { "ama.sessionId": "session_pagination_pass" } },
+      });
+      const res = await apiRequest("GET", `/api/tasks/${task.id}/runtime?limit=5&order=asc`, undefined, apiKey);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.pagination).toEqual({ limit: 5, hasMore: true, nextCursor: 99 });
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("POST /api/tasks/:id/messages requires sender_type and content", async () => {
     const { createBoard } = await import("../apps/web/server/boardRepo");
     const { createTask } = await import("../apps/web/server/taskRepo");

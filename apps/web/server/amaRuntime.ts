@@ -589,13 +589,26 @@ export async function sendAmaSessionMessage(env: Env, projectId: string, session
   return { accepted: result.accepted !== false };
 }
 
-export async function getAmaSessionRuntimeSnapshot(env: Env, sessionId: string, projectId?: string): Promise<AmaSessionRuntimeSnapshot> {
+export interface AmaSessionEventsQuery {
+  cursor?: number;
+  order?: "asc" | "desc";
+  limit?: number;
+}
+
+export async function getAmaSessionRuntimeSnapshot(
+  env: Env,
+  sessionId: string,
+  projectId?: string,
+  events: AmaSessionEventsQuery = {},
+): Promise<AmaSessionRuntimeSnapshot> {
   const client = await createAmaClient(env, projectId);
+  const eventQuery: Record<string, string | number | boolean | undefined> = { limit: events.limit ?? 100, order: events.order ?? "asc" };
+  if (events.cursor !== undefined) eventQuery.cursor = events.cursor;
   const [session, eventPage] = await Promise.all([
     client.request<Record<string, unknown>>("readSession", { path: { sessionId } }),
     client.request<{ data: Record<string, unknown>[]; pagination: Record<string, unknown> }>("listSessionEvents", {
       path: { sessionId },
-      query: { limit: 100, order: "asc" },
+      query: eventQuery,
     }),
   ]);
   return {
