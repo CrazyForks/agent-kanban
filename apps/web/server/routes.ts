@@ -1465,6 +1465,9 @@ api.get("/api/boards/:id/maintainers", async (c) => {
 });
 
 api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
+  if (!isAmaTaskDispatchConfigured(c.env)) {
+    throw new HTTPException(500, { message: "Task dispatch runtime is not configured" });
+  }
   const ownerId = c.get("ownerId");
   const boardId = c.req.param("id");
   const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
@@ -1476,7 +1479,8 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   if (body.status !== undefined && body.status !== "active" && body.status !== "paused") {
     throw new HTTPException(400, { message: "status must be active or paused" });
   }
-  const schedule = await updateAmaScheduledAgentTrigger(c.env, maintainer.ama_schedule_id, {
+  const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
+  const schedule = await updateAmaScheduledAgentTrigger(c.env, amaProjectId, maintainer.ama_schedule_id, {
     name: body.name,
     promptTemplate: body.prompt ? boardMaintainerPrompt(boardId, body.prompt) : undefined,
     intervalSeconds: body.interval_seconds,
@@ -1512,13 +1516,18 @@ api.get("/api/boards/:id/maintainers/:maintainerId/runs", async (c) => {
 });
 
 api.delete("/api/boards/:id/maintainers/:maintainerId", async (c) => {
+  if (!isAmaTaskDispatchConfigured(c.env)) {
+    throw new HTTPException(500, { message: "Task dispatch runtime is not configured" });
+  }
   const ownerId = c.get("ownerId");
   const boardId = c.req.param("id");
   const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
   if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
-  await archiveAmaScheduledAgentTrigger(c.env, maintainer.ama_schedule_id);
+  const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
+  await archiveAmaScheduledAgentTrigger(c.env, amaProjectId, maintainer.ama_schedule_id);
   const updated = await updateBoardMaintainer(c.env.DB, ownerId, boardId, maintainer.id, { status: "archived" });
-  return c.json(updated ? await publicBoardMaintainerWithAmaStatus(c.env.DB, c.env, ownerId, updated) : updated);
+  if (!updated) throw new HTTPException(404, { message: "Board maintainer not found" });
+  return c.json(await publicBoardMaintainerWithAmaStatus(c.env.DB, c.env, ownerId, updated));
 });
 
 api.get("/api/boards/:id", async (c) => {

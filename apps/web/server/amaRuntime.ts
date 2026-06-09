@@ -668,7 +668,12 @@ export async function createAmaScheduledAgentTrigger(env: Env, input: AmaSchedul
   });
 }
 
-export async function updateAmaScheduledAgentTrigger(env: Env, scheduleId: string, input: AmaScheduledTriggerUpdate): Promise<AmaScheduledTrigger> {
+export async function updateAmaScheduledAgentTrigger(
+  env: Env,
+  projectId: string,
+  scheduleId: string,
+  input: AmaScheduledTriggerUpdate,
+): Promise<AmaScheduledTrigger> {
   const body: Record<string, unknown> = {};
   if (input.agentId !== undefined) body.agentId = input.agentId;
   if (input.environmentId !== undefined) body.environmentId = input.environmentId;
@@ -677,15 +682,15 @@ export async function updateAmaScheduledAgentTrigger(env: Env, scheduleId: strin
   if (input.promptTemplate !== undefined) body.promptTemplate = input.promptTemplate;
   if (input.intervalSeconds !== undefined) body.schedule = { type: "interval", intervalSeconds: input.intervalSeconds };
   if (input.status !== undefined) body.status = input.status;
-  const client = await createAmaClient(env);
+  const client = await createAmaClient(env, projectId);
   return await client.request<AmaScheduledTrigger>("updateScheduledAgentTrigger", {
     path: { triggerId: scheduleId },
     body,
   });
 }
 
-export async function archiveAmaScheduledAgentTrigger(env: Env, scheduleId: string): Promise<void> {
-  const client = await createAmaClient(env);
+export async function archiveAmaScheduledAgentTrigger(env: Env, projectId: string, scheduleId: string): Promise<void> {
+  const client = await createAmaClient(env, projectId);
   await client.request("archiveScheduledAgentTrigger", { path: { triggerId: scheduleId } });
 }
 

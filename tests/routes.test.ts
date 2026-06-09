@@ -496,6 +496,301 @@ describe("routes", () => {
     }
   });
 
+  it("PATCH /api/boards/:id/maintainers/:maintainerId sends x-ama-project-id header to AMA", async () => {
+    const amaProjectId = "project_patch_test";
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AK_API_URL: env.AK_API_URL,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AK_API_URL: "https://ak.test",
+    });
+    const { createAuth } = await import("../apps/web/server/betterAuth");
+    const auth = createAuth(env);
+    const patchUser = await signUpVerifiedUser(env.DB, auth, {
+      name: "Patch Header User",
+      email: "patch-header@test.com",
+      password: "test-password-123",
+    });
+    const patchOwnerId = patchUser.user.id;
+    const patchToken = patchUser.token;
+    await configureAmaOwnerRuntime(patchOwnerId, "codex", "env_patch_test", amaProjectId);
+
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const patchBoard = await createBoard(env.DB, patchOwnerId, `patch-header-board-${crypto.randomUUID()}`, "ops");
+    const patchAgent = await createTestAgent(env.DB, patchOwnerId, {
+      name: "Patch header agent",
+      username: `patch-header-agent-${crypto.randomUUID()}`,
+      runtime: "codex",
+      kind: "leader",
+      role: "board-maintainer",
+      handoff_to: ["worker"],
+      skills: ["saltbo/agent-kanban@agent-kanban"],
+    });
+
+    const capturedPatchHeaders: Record<string, string>[] = [];
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/environments/env_patch_test") {
+        return new Response(JSON.stringify({ id: "env_patch_test", runtime: "codex" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/runners?environmentId=env_patch_test&limit=100") {
+        return new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "runner_patch",
+                environmentId: "env_patch_test",
+                status: "active",
+                capabilities: ["runtime-provider-model:codex:*:gpt-5.3-codex"],
+                currentLoad: 0,
+                maxConcurrent: 1,
+                lastHeartbeatAt: new Date().toISOString(),
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "https://ama.test/api/providers?limit=100") {
+        return new Response(JSON.stringify({ data: [{ id: "provider_codex_patch", type: "openai", status: "active" }] }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/providers/provider_codex_patch/models?limit=100") {
+        return new Response(JSON.stringify({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] }), {
+          status: 200,
+        });
+      }
+      if (url === "https://ama.test/api/providers/provider_codex_patch/models" && init?.method === "POST") {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/agents") {
+        return new Response(
+          JSON.stringify({ id: "ama_agent_patch", projectId: amaProjectId, name: "agent", provider: "provider_codex_patch", model: "gpt-5.3-codex" }),
+          { status: 201 },
+        );
+      }
+      if (url === "https://ama.test/api/scheduled-agent-triggers" && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            id: "sched_patch",
+            agentId: "ama_agent_patch",
+            environmentId: "env_patch_test",
+            name: "Patch header agent",
+            promptTemplate: "template",
+            schedule: { intervalSeconds: 3600, windowSeconds: 0 },
+            status: "active",
+            lastDispatchedAt: null,
+            lastRunId: null,
+          }),
+          { status: 201 },
+        );
+      }
+      if (url === "https://ama.test/api/scheduled-agent-triggers/sched_patch" && init?.method === "PATCH") {
+        capturedPatchHeaders.push({ ...(init?.headers as Record<string, string>) });
+        return new Response(
+          JSON.stringify({
+            id: "sched_patch",
+            agentId: "ama_agent_patch",
+            environmentId: "env_patch_test",
+            name: "Patch header agent",
+            promptTemplate: "template",
+            schedule: { intervalSeconds: 3600, windowSeconds: 0 },
+            status: "paused",
+            lastDispatchedAt: null,
+            lastRunId: null,
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.startsWith("https://ama.test/api/scheduled-agent-triggers/sched_patch/runs?")) {
+        return new Response(JSON.stringify({ data: [], pagination: { limit: 20, hasMore: false } }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const createRes = await apiRequest(
+        "POST",
+        `/api/boards/${patchBoard.id}/maintainers`,
+        {
+          agent_id: patchAgent.id,
+          name: "Patch header agent",
+          prompt: "Inspect open work.",
+          interval_seconds: 3600,
+        },
+        patchToken,
+      );
+      expect(createRes.status).toBe(201);
+      const maintainer = (await createRes.json()) as any;
+
+      const patchRes = await apiRequest("PATCH", `/api/boards/${patchBoard.id}/maintainers/${maintainer.id}`, { status: "paused" }, patchToken);
+      expect(patchRes.status).toBe(200);
+
+      expect(capturedPatchHeaders).toHaveLength(1);
+      expect(capturedPatchHeaders[0]["x-ama-project-id"]).toBe(amaProjectId);
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("DELETE /api/boards/:id/maintainers/:maintainerId sends x-ama-project-id header to AMA", async () => {
+    const amaProjectId = "project_delete_test";
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AK_API_URL: env.AK_API_URL,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AK_API_URL: "https://ak.test",
+    });
+    const { createAuth: createAuthForDelete } = await import("../apps/web/server/betterAuth");
+    const authForDelete = createAuthForDelete(env);
+    const deleteUser = await signUpVerifiedUser(env.DB, authForDelete, {
+      name: "Delete Header User",
+      email: "delete-header@test.com",
+      password: "test-password-123",
+    });
+    const deleteOwnerId = deleteUser.user.id;
+    const deleteToken = deleteUser.token;
+    await configureAmaOwnerRuntime(deleteOwnerId, "codex", "env_delete_test", amaProjectId);
+
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const deleteBoard = await createBoard(env.DB, deleteOwnerId, `delete-header-board-${crypto.randomUUID()}`, "ops");
+    const deleteAgent = await createTestAgent(env.DB, deleteOwnerId, {
+      name: "Delete header agent",
+      username: `delete-header-agent-${crypto.randomUUID()}`,
+      runtime: "codex",
+      kind: "leader",
+      role: "board-maintainer",
+      handoff_to: ["worker"],
+      skills: ["saltbo/agent-kanban@agent-kanban"],
+    });
+
+    const capturedDeleteHeaders: Record<string, string>[] = [];
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/environments/env_delete_test") {
+        return new Response(JSON.stringify({ id: "env_delete_test", runtime: "codex" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/runners?environmentId=env_delete_test&limit=100") {
+        return new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "runner_delete",
+                environmentId: "env_delete_test",
+                status: "active",
+                capabilities: ["runtime-provider-model:codex:*:gpt-5.3-codex"],
+                currentLoad: 0,
+                maxConcurrent: 1,
+                lastHeartbeatAt: new Date().toISOString(),
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "https://ama.test/api/providers?limit=100") {
+        return new Response(JSON.stringify({ data: [{ id: "provider_codex_delete", type: "openai", status: "active" }] }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/providers/provider_codex_delete/models?limit=100") {
+        return new Response(JSON.stringify({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] }), {
+          status: 200,
+        });
+      }
+      if (url === "https://ama.test/api/providers/provider_codex_delete/models" && init?.method === "POST") {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/agents") {
+        return new Response(
+          JSON.stringify({
+            id: "ama_agent_delete",
+            projectId: amaProjectId,
+            name: "agent",
+            provider: "provider_codex_delete",
+            model: "gpt-5.3-codex",
+          }),
+          { status: 201 },
+        );
+      }
+      if (url === "https://ama.test/api/scheduled-agent-triggers" && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            id: "sched_delete",
+            agentId: "ama_agent_delete",
+            environmentId: "env_delete_test",
+            name: "Delete header agent",
+            promptTemplate: "template",
+            schedule: { intervalSeconds: 3600, windowSeconds: 0 },
+            status: "active",
+            lastDispatchedAt: null,
+            lastRunId: null,
+          }),
+          { status: 201 },
+        );
+      }
+      if (url === "https://ama.test/api/scheduled-agent-triggers/sched_delete" && init?.method === "DELETE") {
+        capturedDeleteHeaders.push({ ...(init?.headers as Record<string, string>) });
+        return new Response(null, { status: 204 });
+      }
+      if (url.startsWith("https://ama.test/api/scheduled-agent-triggers/sched_delete/runs?")) {
+        return new Response(JSON.stringify({ data: [], pagination: { limit: 20, hasMore: false } }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const createRes = await apiRequest(
+        "POST",
+        `/api/boards/${deleteBoard.id}/maintainers`,
+        {
+          agent_id: deleteAgent.id,
+          name: "Delete header agent",
+          prompt: "Inspect open work.",
+          interval_seconds: 3600,
+        },
+        deleteToken,
+      );
+      expect(createRes.status).toBe(201);
+      const maintainer = (await createRes.json()) as any;
+
+      const archiveRes = await apiRequest("DELETE", `/api/boards/${deleteBoard.id}/maintainers/${maintainer.id}`, undefined, deleteToken);
+      expect(archiveRes.status).toBe(200);
+      const archived = (await archiveRes.json()) as any;
+      expect(archived.status).toBe("archived");
+
+      expect(capturedDeleteHeaders).toHaveLength(1);
+      expect(capturedDeleteHeaders[0]["x-ama-project-id"]).toBe(amaProjectId);
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("GET /api/boards?name= finds board by name", async () => {
     const res = await apiRequest("GET", "/api/boards?name=Route Board", undefined, userToken);
     expect(res.status).toBe(200);
