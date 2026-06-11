@@ -331,7 +331,7 @@ run_dispatch_phase() {
 run_reject_phase() {
   local label="$1" task_id="$2"
   sleep 5
-  ak task reject "$task_id" --reason "Smoke test: change file content to REJECTED" >/dev/null 2>&1
+  ak task reject "$task_id" --reason "Smoke test: change file content to REJECTED" >/dev/null 2>&1 || true
 
   local status_after
   status_after=$(task_status "$task_id")
@@ -350,7 +350,7 @@ run_reject_phase() {
 
 run_complete_phase() {
   local label="$1" task_id="$2"
-  ak task complete "$task_id" >/dev/null 2>&1
+  ak task complete "$task_id" >/dev/null 2>&1 || true
 
   local status_after
   status_after=$(task_status "$task_id")
@@ -380,7 +380,7 @@ run_cancel_phase() {
   fi
 
   sleep 3
-  ak task cancel "$task_id" >/dev/null 2>&1
+  ak task cancel "$task_id" >/dev/null 2>&1 || true
 
   local status_after
   status_after=$(task_status "$task_id")
