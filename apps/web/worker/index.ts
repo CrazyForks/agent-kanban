@@ -3,7 +3,7 @@ export { TunnelRelay } from "../server/tunnelRelay";
 import { createLogger } from "../server/logger";
 import { detectStaleMachines } from "../server/machineRepo";
 import { api } from "../server/routes";
-import { dispatchPendingAmaTasks, reconcileAmaBoundTasks } from "../server/taskDispatch";
+import { dispatchPendingAmaTasks, reconcileAmaBoundTasks, releaseStaleDispatchClaims } from "../server/taskDispatch";
 import { detectAndReleaseStaleAll } from "../server/taskStale";
 import type { Env } from "../server/types";
 
@@ -29,6 +29,8 @@ export default {
           .catch((err) => logger.warn(`detectAndReleaseStaleAll failed: ${err}`))
           .then(() => reconcileAmaBoundTasks(env.DB, env))
           .catch((err) => logger.warn(`reconcileAmaBoundTasks failed: ${err}`))
+          .then(() => releaseStaleDispatchClaims(env.DB))
+          .catch((err) => logger.warn(`releaseStaleDispatchClaims failed: ${err}`))
           .then(() => dispatchPendingAmaTasks(env.DB, env))
           .catch((err) => logger.warn(`dispatchPendingAmaTasks failed: ${err}`)),
       ]),

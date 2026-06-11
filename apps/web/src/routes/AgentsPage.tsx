@@ -1,5 +1,5 @@
 import { type AgentRuntime, type AgentWithActivity, RUNTIME_LABELS, type Subagent } from "@agent-kanban/shared";
-import { Bot, Code2, Github, type LucideIcon, Sparkles, Terminal } from "lucide-react";
+import { Bot, Cloud, Code2, Github, type LucideIcon, Sparkles, Terminal } from "lucide-react";
 import { Link } from "react-router-dom";
 import { AgentIdenticon } from "../components/AgentIdenticon";
 import { Header } from "../components/Header";
@@ -15,6 +15,7 @@ const runtimeMeta: Record<AgentRuntime, { icon: LucideIcon; tone: string }> = {
   gemini: { icon: Sparkles, tone: "text-warning" },
   copilot: { icon: Github, tone: "text-success" },
   hermes: { icon: Code2, tone: "text-content-tertiary" },
+  ama: { icon: Cloud, tone: "text-accent" },
 };
 
 function formatTokens(n: number): string {

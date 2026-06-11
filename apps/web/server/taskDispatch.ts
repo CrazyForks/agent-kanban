@@ -1,4 +1,4 @@
-import { generateKeypair, type Task } from "@agent-kanban/shared";
+import { generateKeypair, isCloudAgentRuntime, type Task } from "@agent-kanban/shared";
 import { HTTPException } from "hono/http-exception";
 import { getAgent, updateAgentMetadataAnnotations } from "./agentRepo";
 import {
@@ -9,7 +9,14 @@ import {
   setAmaAgentSessionSecretCredential,
   setAmaAgentSessionUsageTotals,
 } from "./agentSessionRepo";
-import { getAmaProjectId, resolveAmaProjectId, resolveAmaSessionSecretVaultId } from "./amaOwnerIntegrationRepo";
+import {
+  ensureAmaOwnerIntegration,
+  getAmaProjectId,
+  resolveAmaCloudEnvironmentId,
+  resolveAmaProjectId,
+  resolveAmaSessionSecretVaultId,
+  upsertAmaOwnerIntegration,
+} from "./amaOwnerIntegrationRepo";
 import {
   type AmaRunner,
   createAmaAgent,
@@ -39,7 +46,13 @@ type Annotations = Record<string, unknown>;
 
 const logger = createLogger("taskDispatch");
 
-export async function dispatchTaskToAma(db: D1, env: Env, ownerId: string, task: Task, options: { apiOrigin: string }): Promise<Task> {
+export async function dispatchTaskToAma(
+  db: D1,
+  env: Env,
+  ownerId: string,
+  task: Task,
+  options: { apiOrigin: string; takeover?: boolean },
+): Promise<Task> {
   if (!task.assigned_to || !isAmaTaskDispatchConfigured(env)) {
     return task;
   }
@@ -55,26 +68,52 @@ export async function dispatchTaskToAma(db: D1, env: Env, ownerId: string, task:
   if (!akAgent) throw new HTTPException(404, { message: "Assigned agent not found" });
   const amaRuntime = amaRuntimeName(akAgent.runtime);
 
-  // Re-dispatch (assign retry, sweep retry after a failed session) must not
-  // leave the previous session running against the same task. This runs
-  // before the capacity check on purpose: the old session occupies a runner
-  // slot, and tearing it down first is what frees capacity for its
-  // replacement on a fully loaded runner.
-  task = await releaseTaskRuntimeBinding(db, env, task);
+  // Atomic dispatch claim: the create/assign request and the cron sweep can
+  // race on the same task; without the claim both create a session and the
+  // later one tears down the earlier one mid-run. Assign requests claim with
+  // takeover so a deliberate re-assign can kick an already-bound task, but
+  // even a takeover never interrupts a dispatch that is still in flight.
+  if (!(await claimTaskDispatch(db, task.id, { takeover: options.takeover === true }))) return task;
+  const refreshed = await getTask(db, task.id, ownerId);
+  if (!refreshed) return task;
+  task = refreshed;
 
-  const candidates = await listMachineEnvironmentCandidatesForRuntime(db, ownerId, akAgent.runtime);
-  if (candidates.length === 0) {
-    throw new HTTPException(409, { message: `Runtime "${akAgent.runtime}" is not available on any machine` });
+  // Re-dispatch (sweep retry after a failed session) must not leave the
+  // previous session running against the same task. This runs before the
+  // capacity check on purpose: the old session occupies a runner slot, and
+  // tearing it down first is what frees capacity for its replacement on a
+  // fully loaded runner. Teardown clears the dispatch claim, so re-claim.
+  const staleBinding = taskAnnotations(task);
+  if (stringAnnotation(staleBinding, "ama.sessionId") || stringAnnotation(staleBinding, "agentSessionId")) {
+    task = await releaseTaskRuntimeBinding(db, env, task);
+    if (!(await claimTaskDispatch(db, task.id))) return task;
   }
-  const machineRuntime = await firstRunnableCandidate(env, amaProjectId, candidates, amaRuntime);
-  // Capable machines exist but every runner is busy or offline: leave the task
-  // queued and let the dispatch sweep retry when capacity frees up.
-  if (!machineRuntime) return task;
-  const amaEnvironmentId = machineRuntime.environmentId;
+
+  let amaEnvironmentId: string;
+  if (isCloudAgentRuntime(akAgent.runtime)) {
+    // Cloud runtimes run on AMA's sandbox plane: no machine, no runner
+    // capacity gate — AMA scales sandboxes per session.
+    amaEnvironmentId = await resolveAmaCloudEnvironmentId(db, env, ownerId);
+  } else {
+    const candidates = await listMachineEnvironmentCandidatesForRuntime(db, ownerId, akAgent.runtime);
+    if (candidates.length === 0) {
+      throw new HTTPException(409, { message: `Runtime "${akAgent.runtime}" is not available on any machine` });
+    }
+    const machineRuntime = await firstRunnableCandidate(env, amaProjectId, candidates, amaRuntime);
+    // Capable machines exist but every runner is busy or offline: leave the task
+    // queued and let the dispatch sweep retry when capacity frees up.
+    if (!machineRuntime) {
+      return await annotateTask(db, task, { "ama.dispatch.result": null });
+    }
+    amaEnvironmentId = machineRuntime.environmentId;
+  }
   const amaAgent = await ensureAmaAgentForAkAgent(db, env, ownerId, assignedTo, amaProjectId, amaRuntime);
 
   const sessionIdentity = await createAkAgentSessionIdentity(db, env, ownerId, assignedTo);
   const vaultId = await resolveAmaSessionSecretVaultId(db, env, ownerId);
+  const cloudDispatch = isCloudAgentRuntime(akAgent.runtime);
+  const resourceRefs = await taskResourceRefs(db, task);
+  const githubTokenSecret = cloudDispatch ? await ownerGithubTokenSecretRef(db, env, ownerId, amaProjectId, vaultId) : null;
   let secret: Awaited<ReturnType<typeof createAmaSessionSecret>> | null = null;
   let dispatch: Awaited<ReturnType<typeof createAmaTaskSession>> | null = null;
   try {
@@ -93,8 +132,8 @@ export async function dispatchTaskToAma(db: D1, env: Env, ownerId: string, task:
       environmentId: amaEnvironmentId,
       runtime: amaRuntime,
       title: `AK task ${task.id}: ${task.title}`,
-      initialPrompt: taskInitialPrompt(task),
-      resourceRefs: await taskResourceRefs(db, task),
+      initialPrompt: cloudDispatch ? cloudTaskInitialPrompt(task, resourceRefs) : taskInitialPrompt(task),
+      resourceRefs,
       runtimeEnv: {
         AK_WORKER: "1",
         AK_AGENT_ID: assignedTo,
@@ -102,7 +141,7 @@ export async function dispatchTaskToAma(db: D1, env: Env, ownerId: string, task:
         AK_API_URL: apiUrl(env, options.apiOrigin),
         ...agentGitIdentityEnv(akAgent),
       },
-      runtimeSecretEnv: [{ name: "AK_AGENT_KEY", ref: secret.activeVersionId }],
+      runtimeSecretEnv: [{ name: "AK_AGENT_KEY", ref: secret.activeVersionId }, ...(githubTokenSecret ? [githubTokenSecret] : [])],
     });
     await bindAmaAgentSession(db, sessionIdentity.sessionId, dispatch.sessionId);
   } catch (error) {
@@ -110,6 +149,9 @@ export async function dispatchTaskToAma(db: D1, env: Env, ownerId: string, task:
       logger.warn(`failed to revoke session secret for ${sessionIdentity.sessionId}: ${revokeError}`);
     });
     await closeSession(db, sessionIdentity.sessionId);
+    await annotateTask(db, task, { "ama.dispatch.result": null }).catch(() => {
+      // claim cleanup is best-effort; the stale-claim sweep recovers it
+    });
     throw error;
   }
 
@@ -375,6 +417,53 @@ async function revokeAkAgentSessionSecret(db: D1, env: Env, akSessionId: string)
   await setAmaAgentSessionSecretCredential(db, akSessionId, null);
 }
 
+// Marks the task as being dispatched. The conditional update is the lock:
+// only one dispatcher (request or sweep) can flip the annotation to
+// "dispatching". A takeover claim may also seize a completed ("accepted")
+// dispatch — that is how re-assign kicks an already-bound task — but never
+// one that is still in flight.
+async function claimTaskDispatch(db: D1, taskId: string, options: { takeover?: boolean } = {}): Promise<boolean> {
+  const guard = options.takeover
+    ? `(json_extract(metadata, '$.annotations."ama.dispatch.result"') IS NULL
+        OR json_extract(metadata, '$.annotations."ama.dispatch.result"') = 'accepted')`
+    : `json_extract(metadata, '$.annotations."ama.dispatch.result"') IS NULL`;
+  const result = await db
+    .prepare(`
+      UPDATE tasks SET metadata = json_set(
+        json_set(COALESCE(metadata, '{}'), '$.annotations', json(COALESCE(json_extract(metadata, '$.annotations'), '{}'))),
+        '$.annotations."ama.dispatch.result"', 'dispatching'
+      )
+      WHERE id = ? AND ${guard}
+    `)
+    .bind(taskId)
+    .run();
+  return (result.meta?.changes ?? 0) > 0;
+}
+
+// A dispatcher that died mid-flight leaves the claim stuck on "dispatching"
+// and the task would never be swept again; release claims older than this.
+const STALE_DISPATCH_CLAIM_MS = 5 * 60_000;
+
+export async function releaseStaleDispatchClaims(db: D1): Promise<void> {
+  const threshold = new Date(Date.now() - STALE_DISPATCH_CLAIM_MS).toISOString();
+  const rows = await db
+    .prepare(`
+      SELECT t.id, b.owner_id FROM tasks t
+      JOIN boards b ON t.board_id = b.id
+      WHERE t.status = 'todo' AND t.assigned_to IS NOT NULL
+        AND json_extract(t.metadata, '$.annotations."ama.dispatch.result"') = 'dispatching'
+        AND json_extract(t.metadata, '$.annotations."ama.sessionId"') IS NULL
+        AND t.updated_at < ?
+    `)
+    .bind(threshold)
+    .all<{ id: string; owner_id: string }>();
+  for (const row of rows.results) {
+    const task = await getTask(db, row.id, row.owner_id);
+    if (!task) continue;
+    await annotateTask(db, task, { "ama.dispatch.result": null });
+  }
+}
+
 // Cron sweep: dispatch assigned todo tasks that have no runtime binding yet —
 // tasks deferred because they were blocked, scheduled in the future, or all
 // capable runners were busy, plus tasks released by the reconcile sweep.
@@ -508,6 +597,70 @@ function taskInitialPrompt(task: Task) {
     "When the work is complete, submit for review with `ak task review` and a PR URL when applicable.",
   ].filter(Boolean);
   return prompt.join("\n");
+}
+
+// Cloud sandboxes have no AK skill install and no gh CLI: the prompt has to
+// carry the whole workflow, step by step, for the sandbox-hosted agent.
+function cloudTaskInitialPrompt(task: Task, resourceRefs: { owner: string; repo: string }[]) {
+  const repo = resourceRefs[0] ?? null;
+  // AMA normalizes github_repository mounts to /workspace/repos/{owner}/{repo}.
+  const repoDir = repo ? `/workspace/repos/${repo.owner}/${repo.repo}` : null;
+  const branch = `ak/${task.id}`;
+  const prompt = [
+    `You are assigned AK task ${task.id}: ${task.title}`,
+    task.description ? `Task detail:\n${task.description}` : null,
+    "",
+    "You work inside a cloud sandbox. Run every shell command with the sandbox.exec tool. Environment variables (AK_*, GH_TOKEN, GIT_*) are already set for those commands.",
+    repo ? `The repository ${repo.owner}/${repo.repo} is already cloned at ${repoDir}; git push credentials are preconfigured.` : null,
+    "",
+    "Follow these steps in order, one sandbox.exec command at a time:",
+    "1. Install the AK CLI: npm install -g agent-kanban",
+    `2. Claim the task: ak task claim ${task.id}`,
+    ...(repo && repoDir
+      ? [
+          `3. Note the default branch: git -C ${repoDir} branch --show-current`,
+          `4. Create a work branch: git -C ${repoDir} checkout -b ${branch}`,
+          "5. Do the work described in the task detail (edit files under the repository).",
+          `6. Commit and push: git -C ${repoDir} add -A && git -C ${repoDir} commit -m "<summary>" && git -C ${repoDir} push -u origin ${branch}`,
+          `7. Create a pull request (replace <base> with the default branch from step 3): curl -s -X POST https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/json" -d '{"title":"${task.title.replaceAll('"', "'")}","head":"${branch}","base":"<base>"}' — the response JSON contains the PR URL in html_url.`,
+          `8. Submit for review: ak task review ${task.id} --pr-url <html_url>`,
+        ]
+      : ["3. Do the work described in the task detail.", `4. Submit for review: ak task review ${task.id}`]),
+  ].filter((line): line is string => line !== null);
+  return prompt.join("\n");
+}
+
+// The GitHub token cloud sessions push with. Interim source: a server-level
+// token (GITHUB_AGENT_TOKEN) stored once per owner in the AMA vault and
+// reused across sessions — per-owner GitHub credentials are a follow-up.
+async function ownerGithubTokenSecretRef(
+  db: D1,
+  env: Env,
+  ownerId: string,
+  projectId: string,
+  vaultId: string,
+): Promise<{ name: string; ref: string } | null> {
+  if (!env.GITHUB_AGENT_TOKEN) return null;
+  const integration = await ensureAmaOwnerIntegration(db, env, ownerId);
+  const existing = integration.metadata.githubTokenSecretVersionId;
+  if (typeof existing === "string" && existing) {
+    return { name: "GH_TOKEN", ref: existing };
+  }
+  const secret = await createAmaSessionSecret(env, {
+    projectId,
+    vaultId,
+    name: "GH_AGENT_TOKEN",
+    secretValue: env.GITHUB_AGENT_TOKEN,
+    metadata: { purpose: "github-agent-token" },
+  });
+  await upsertAmaOwnerIntegration(db, {
+    ownerId,
+    amaProjectId: integration.amaProjectId,
+    externalTenantId: integration.externalTenantId,
+    sessionSecretVaultId: integration.sessionSecretVaultId,
+    metadata: { ...integration.metadata, githubTokenSecretVersionId: secret.activeVersionId },
+  });
+  return { name: "GH_TOKEN", ref: secret.activeVersionId };
 }
 
 async function taskResourceRefs(db: D1, task: Task) {

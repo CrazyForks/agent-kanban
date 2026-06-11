@@ -22,6 +22,7 @@ export interface Env {
   AK_FEDERATED_RUNNER_SUBJECT_SECRET?: string;
   AMA_RUNNER_VERSION?: string;
   GITHUB_APP_WEBHOOK_SECRET?: string;
+  GITHUB_AGENT_TOKEN?: string;
   MIN_CLI_VERSION?: string;
 }
 

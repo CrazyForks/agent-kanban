@@ -2671,10 +2671,7 @@ describe("routes", () => {
       }
       if (url.startsWith("https://ama.test/api/sessions/session_default_params/events")) {
         capturedEventsUrl = url;
-        return new Response(
-          JSON.stringify({ data: [], pagination: { limit: 100, hasMore: false, nextCursor: null } }),
-          { status: 200 },
-        );
+        return new Response(JSON.stringify({ data: [], pagination: { limit: 100, hasMore: false, nextCursor: null } }), { status: 200 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2725,10 +2722,7 @@ describe("routes", () => {
       }
       if (url.startsWith("https://ama.test/api/sessions/session_order_limit/events")) {
         capturedEventsUrl = url;
-        return new Response(
-          JSON.stringify({ data: [], pagination: { limit: 10, hasMore: true, nextCursor: 11 } }),
-          { status: 200 },
-        );
+        return new Response(JSON.stringify({ data: [], pagination: { limit: 10, hasMore: true, nextCursor: 11 } }), { status: 200 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2778,10 +2772,7 @@ describe("routes", () => {
       }
       if (url.startsWith("https://ama.test/api/sessions/session_cursor_test/events")) {
         capturedEventsUrl = url;
-        return new Response(
-          JSON.stringify({ data: [], pagination: { limit: 10, hasMore: false, nextCursor: null } }),
-          { status: 200 },
-        );
+        return new Response(JSON.stringify({ data: [], pagination: { limit: 10, hasMore: false, nextCursor: null } }), { status: 200 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });

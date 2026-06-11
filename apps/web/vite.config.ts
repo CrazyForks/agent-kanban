@@ -9,6 +9,11 @@ const gitSha = execSync("git rev-parse --short HEAD").toString().trim();
 
 export default defineConfig({
   plugins: [react(), tailwindcss(), cloudflare()],
+  server: {
+    // Cloud smoke runs expose the dev server through a cloudflared quick
+    // tunnel so sandbox-hosted agents can call the AK API.
+    allowedHosts: [".trycloudflare.com"],
+  },
   define: {
     __APP_VERSION__: JSON.stringify(gitSha),
   },

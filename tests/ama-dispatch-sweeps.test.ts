@@ -299,8 +299,7 @@ describe("dispatchPendingAmaTasks", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/runners?environmentId=env_sweep&limit=100")
-        return activeRunnerResponse("env_sweep", "claude-code");
+      if (url === "https://ama.test/api/runners?environmentId=env_sweep&limit=100") return activeRunnerResponse("env_sweep", "claude-code");
       if (url === "https://ama.test/api/providers?limit=100")
         return new Response(JSON.stringify({ data: [{ id: "provider_claude", type: "anthropic", status: "active" }] }), { status: 200 });
       if (url === "https://ama.test/api/providers/provider_claude/models?limit=100")
@@ -405,8 +404,7 @@ describe("dispatchPendingAmaTasks", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/runners?environmentId=env_dep_sweep&limit=100")
-        return activeRunnerResponse("env_dep_sweep", "claude-code");
+      if (url === "https://ama.test/api/runners?environmentId=env_dep_sweep&limit=100") return activeRunnerResponse("env_dep_sweep", "claude-code");
       if (url === "https://ama.test/api/providers?limit=100")
         return new Response(JSON.stringify({ data: [{ id: "provider_claude", type: "anthropic", status: "active" }] }), { status: 200 });
       if (url === "https://ama.test/api/providers/provider_claude/models?limit=100")
@@ -422,7 +420,13 @@ describe("dispatchPendingAmaTasks", () => {
         sessionCount += 1;
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         return new Response(
-          JSON.stringify({ id: `session_dep_${sessionCount}`, agentId: body.agentId, environmentId: "env_dep_sweep", status: "pending", statusReason: null }),
+          JSON.stringify({
+            id: `session_dep_${sessionCount}`,
+            agentId: body.agentId,
+            environmentId: "env_dep_sweep",
+            status: "pending",
+            statusReason: null,
+          }),
           { status: 201 },
         );
       }
@@ -535,7 +539,9 @@ describe("reconcileAmaBoundTasks", () => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
       if (url === `https://ama.test/api/sessions/${sessionId}`)
-        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", status: "running", statusReason: null }), { status: 200 });
+        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", status: "running", statusReason: null }), {
+          status: 200,
+        });
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -972,8 +978,7 @@ describe("amaRuntime accessToken error handling", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === "https://auth.test/oauth/token")
-        return new Response(JSON.stringify({ error: "invalid_client" }), { status: 401 });
+      if (url === "https://auth.test/oauth/token") return new Response(JSON.stringify({ error: "invalid_client" }), { status: 401 });
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -993,8 +998,7 @@ describe("amaRuntime accessToken error handling", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === "https://auth.test/oauth/token")
-        return new Response(JSON.stringify({ token_type: "Bearer" }), { status: 200 });
+      if (url === "https://auth.test/oauth/token") return new Response(JSON.stringify({ token_type: "Bearer" }), { status: 200 });
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1153,8 +1157,7 @@ describe("amaRuntime createAmaFederatedRunnerToken error paths", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === "https://auth.test/oauth/token")
-        return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+      if (url === "https://auth.test/oauth/token") return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1173,9 +1176,7 @@ describe("amaRuntime createAmaFederatedRunnerToken error paths", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(createAmaFederatedRunnerToken(baseEnv, baseInput)).rejects.toThrow(
-      "AMA token exchange response did not include access_token",
-    );
+    await expect(createAmaFederatedRunnerToken(baseEnv, baseInput)).rejects.toThrow("AMA token exchange response did not include access_token");
   });
 
   it("throws when token exchange response is missing refresh_token", async () => {
@@ -1183,15 +1184,12 @@ describe("amaRuntime createAmaFederatedRunnerToken error paths", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === "https://auth.test/oauth/token")
-        return new Response(JSON.stringify({ access_token: "at", token_type: "Bearer" }), { status: 200 });
+      if (url === "https://auth.test/oauth/token") return new Response(JSON.stringify({ access_token: "at", token_type: "Bearer" }), { status: 200 });
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(createAmaFederatedRunnerToken(baseEnv, baseInput)).rejects.toThrow(
-      "AMA token exchange response did not include refresh_token",
-    );
+    await expect(createAmaFederatedRunnerToken(baseEnv, baseInput)).rejects.toThrow("AMA token exchange response did not include refresh_token");
   });
 });
 
@@ -1268,9 +1266,9 @@ describe("amaRuntime resolveAmaProviderModelProfile", () => {
       AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     };
 
-    await expect(
-      resolveAmaProviderModelProfile(env, "project_123", { runtime: "unknown-runtime-xyz" }),
-    ).rejects.toThrow("No AK runtime provider mapping is configured for runtime unknown-runtime-xyz");
+    await expect(resolveAmaProviderModelProfile(env, "project_123", { runtime: "unknown-runtime-xyz" })).rejects.toThrow(
+      "No AK runtime provider mapping is configured for runtime unknown-runtime-xyz",
+    );
   });
 
   it("creates a new provider when none exists for the runtime", async () => {

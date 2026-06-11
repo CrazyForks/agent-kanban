@@ -183,11 +183,7 @@ describe("POST /api/webhooks/github-app route", () => {
 describe("handleGithubPullRequestEvent", () => {
   const OWNER = "webhook-event-test-user";
 
-  async function seedTaskWithPrAndStatus(
-    prUrl: string,
-    status: string,
-    annotations: Record<string, unknown> = {},
-  ) {
+  async function seedTaskWithPrAndStatus(prUrl: string, status: string, annotations: Record<string, unknown> = {}) {
     const { createBoard } = await import("../apps/web/server/boardRepo");
     const { createTask } = await import("../apps/web/server/taskRepo");
 

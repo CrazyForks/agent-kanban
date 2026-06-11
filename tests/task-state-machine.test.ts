@@ -163,9 +163,8 @@ describe("validateTransition", () => {
     expect(err?.code).toBe("INVALID_TRANSITION");
   });
 
-  it("rejects cancel from todo", () => {
-    const err = validateTransition("cancel", "todo", "agent:leader");
-    expect(err?.code).toBe("INVALID_TRANSITION");
+  it("allows cancel: todo → cancelled (agent:leader)", () => {
+    expect(validateTransition("cancel", "todo", "agent:leader")).toBeNull();
   });
 
   it("rejects cancel from done", () => {
@@ -458,10 +457,12 @@ describe("task lifecycle repo functions", () => {
       expect(result!.status).toBe("cancelled");
     });
 
-    it("rejects cancel from todo", async () => {
+    it("allows cancel: todo → cancelled (agent:leader)", async () => {
       const { cancelTask } = await import("../apps/web/server/taskRepo");
       const task = await createTestTask();
-      await expect(cancelTask(env.DB, task.id, "agent:leader", "system", "agent:leader")).rejects.toThrow();
+      const result = await cancelTask(env.DB, task.id, "agent:leader", "system", "agent:leader");
+      expect(result!.status).toBe("cancelled");
+      expect(result!.assigned_to).toBeNull();
     });
 
     it("rejects cancel from done", async () => {

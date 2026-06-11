@@ -1,4 +1,4 @@
-import { createAmaProject, createAmaVault } from "./amaRuntime";
+import { createAmaEnvironment, createAmaProject, createAmaVault } from "./amaRuntime";
 import type { D1 } from "./db";
 import type { Env } from "./types";
 
@@ -96,6 +96,30 @@ export async function getAmaProjectId(db: D1, ownerId: string): Promise<string |
 
 export async function resolveAmaExternalTenantId(db: D1, env: Env, ownerId: string): Promise<string> {
   return (await ensureAmaOwnerIntegration(db, env, ownerId)).externalTenantId;
+}
+
+// One cloud AMA environment per owner: cloud sessions are sandbox-isolated by
+// AMA, so a single environment serves every cloud-runtime task of the tenant.
+export async function resolveAmaCloudEnvironmentId(db: D1, env: Env, ownerId: string): Promise<string> {
+  const integration = await ensureAmaOwnerIntegration(db, env, ownerId);
+  const existing = integration.metadata.cloudEnvironmentId;
+  if (typeof existing === "string" && existing) return existing;
+
+  const environment = await createAmaEnvironment(env, {
+    projectId: integration.amaProjectId,
+    name: "Cloud sandbox",
+    description: `Cloud execution environment for AK owner ${ownerId}.`,
+    hostingMode: "cloud",
+    metadata: { ownerId },
+  });
+  await upsertAmaOwnerIntegration(db, {
+    ownerId,
+    amaProjectId: integration.amaProjectId,
+    externalTenantId: integration.externalTenantId,
+    sessionSecretVaultId: integration.sessionSecretVaultId,
+    metadata: { ...integration.metadata, cloudEnvironmentId: environment.id },
+  });
+  return environment.id;
 }
 
 export async function resolveAmaSessionSecretVaultId(db: D1, env: Env, ownerId: string): Promise<string> {

@@ -29,10 +29,9 @@ import {
 } from "./agentRepo";
 import { closeSession, createSession, listSessions, reopenSession, updateSessionUsage } from "./agentSessionRepo";
 import { ensureAmaOwnerIntegration, getAmaProjectId, resolveAmaExternalTenantId, resolveAmaProjectId } from "./amaOwnerIntegrationRepo";
-import { handleGithubPullRequestEvent, verifyGithubSignature } from "./githubWebhook";
 import {
-  archiveAmaScheduledAgentTrigger,
   type AmaRunner,
+  archiveAmaScheduledAgentTrigger,
   createAmaEnvironment,
   createAmaExternalProjectBinding,
   createAmaFederatedRunnerToken,
@@ -70,6 +69,7 @@ import { createBoardSSEResponse, createPublicBoardSSEResponse } from "./boardSSE
 import { cliVersionMiddleware } from "./cliVersion";
 import type { D1 } from "./db";
 import { addAgentEmail, getGithubToken, removeAgentEmail, syncGpgKey } from "./githubService";
+import { handleGithubPullRequestEvent, verifyGithubSignature } from "./githubWebhook";
 import { getArmoredPrivateKey, getRootKeyInfo, getRootPublicKey, getSubkeyIds } from "./gpgKeyRepo";
 import { createLogger } from "./logger";
 import {
@@ -1311,7 +1311,10 @@ api.post("/api/tasks/:id/assign", async (c) => {
   const existing = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!existing) throw new HTTPException(404, { message: "Task not found" });
   if (existing.status === "todo" && existing.assigned_to === targetAgentId) {
-    const dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), existing, { apiOrigin: new URL(c.req.url).origin });
+    const dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), existing, {
+      apiOrigin: new URL(c.req.url).origin,
+      takeover: true,
+    });
     return c.json(dispatched);
   }
 
@@ -1321,7 +1324,10 @@ api.post("/api/tasks/:id/assign", async (c) => {
   if (!task) throw new HTTPException(404, { message: "Task not found" });
   let dispatched: Task;
   try {
-    dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), task, { apiOrigin: new URL(c.req.url).origin });
+    dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), task, {
+      apiOrigin: new URL(c.req.url).origin,
+      takeover: true,
+    });
   } catch (error) {
     await clearTaskAssignmentAfterFailedDispatch(c.env.DB, task.id, actorType, actorId, sessionId);
     throw error;

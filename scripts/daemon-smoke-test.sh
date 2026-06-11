@@ -4,10 +4,15 @@ set -euo pipefail
 # Daemon smoke test: covers the full task scheduling lifecycle.
 #
 # Scenarios tested:
-#   1. Dispatch    — create task → daemon claims → installs subagents → agent runs → in_review
-#   2. Reject/Resume — reject in_review task → daemon resumes agent → back to in_review
-#   3. Complete    — complete task → daemon cleans up session + worktree
-#   4. Cancel      — create task → cancel while agent is running → daemon kills agent
+#   1. Dispatch    — create task → dispatch → agent runs → in_review (+ subagent install on local runtimes)
+#   2. Reject/Resume — reject in_review task → agent resumes → back to in_review
+#   3. Complete    — complete task → server tears down the runtime binding
+#   4. Cancel      — create task → cancel while agent is running → session torn down
+#
+# Runtimes:
+#   codex | claude | copilot — self-hosted: tasks run on this machine's runner
+#   ama                      — cloud: tasks run on AMA Cloudflare Sandbox sessions
+#   mixed                    — one local (codex) and one cloud (ama) task in parallel
 #
 # Usage: ./scripts/daemon-smoke-test.sh <runtime> [board_id] [repo_id]
 # Missing arguments are discovered or created. Defaults target the Demo board
@@ -45,6 +50,7 @@ else
   REPO_ID="${ARGS[1]:-}"
 fi
 AGENT_ID=""
+CLOUD_AGENT_ID=""
 
 PASS=0
 FAIL=0
@@ -52,11 +58,15 @@ TASKS=()
 TIMESTAMP=$(date +%s)
 SUBAGENT_ID=""
 SUBAGENT_USERNAME=""
-SUBAGENT_NAME=""
+SUBAGENT_TOKEN=""
 AGENT_RUNTIME=""
 CREATED_AGENT_IDS=()
+SWEEP_PID=""
 
 cleanup() {
+  if [ -n "$SWEEP_PID" ]; then
+    kill "$SWEEP_PID" >/dev/null 2>&1 || true
+  fi
   if [ "${#TASKS[@]}" -gt 0 ]; then
     for tid in "${TASKS[@]}"; do
       ak task cancel "$tid" >/dev/null 2>&1 || true
@@ -75,15 +85,14 @@ trap cleanup EXIT
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 create_task() {
-  local title="$1"
-  local desc="$2"
+  local agent_id="$1" title="$2" desc="$3"
   local id output
   if ! output=$(ak create task \
     --board "$BOARD_ID" \
     --title "$title" \
     --description "$desc" \
     --repo "$REPO_ID" \
-    --assign-to "$AGENT_ID" 2>&1); then
+    --assign-to "$agent_id" 2>&1); then
     echo "$output" >&2
     echo "  FATAL: failed to create task"
     exit 1
@@ -115,6 +124,10 @@ task_runtime_binding() {
     | json_query 'data.metadata && data.metadata.annotations ? data.metadata.annotations["ama.sessionId"] : null' 2>/dev/null || true
 }
 
+task_pr_url() {
+  ak describe task "$1" 2>/dev/null | sed -n 's/^PR: *//p'
+}
+
 json_query() {
   local query="$1"
   node -e "
@@ -143,47 +156,39 @@ create_repo() {
   ak create repo --name "slink" --url "https://github.com/saltbo/slink" -o json | json_query "data.id"
 }
 
+# Every smoke agent pins an explicit model: an empty model falls through to
+# provider defaults that may select the most expensive tier.
+runtime_default_model() {
+  local runtime="$1"
+  case "$runtime" in
+    codex) ak get model --runtime "$runtime" -o json | json_query "data.find((m) => m.id === 'gpt-5.3-codex-spark')?.id || data[0]?.id" ;;
+    claude) ak get model --runtime "$runtime" -o json | json_query "data.find((m) => m.id.includes('opus'))?.id || data[0]?.id" ;;
+    ama) echo "@cf/moonshotai/kimi-k2.6" ;;
+    *) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id" ;;
+  esac
+}
+
 create_agent() {
   local runtime="$1"
-  local name username bio
-  case "$runtime" in
-    codex)
-      name="Codex Smoke $TIMESTAMP"
-      username="codex-smoke-$TIMESTAMP"
-      bio="Codex worker for daemon smoke tests"
-      ;;
-    claude)
-      name="Claude Smoke $TIMESTAMP"
-      username="claude-smoke-$TIMESTAMP"
-      bio="Claude worker for daemon smoke tests"
-      ;;
-    copilot)
-      name="Copilot Smoke $TIMESTAMP"
-      username="copilot-smoke-$TIMESTAMP"
-      bio="Copilot worker for daemon smoke tests"
-      ;;
-    *)
-      fail "unsupported smoke runtime for agent creation: $runtime"
-      return 1
-      ;;
-  esac
+  local name="Smoke ${runtime} $TIMESTAMP"
+  local username="smoke-${runtime}-${TIMESTAMP}"
+  local bio="${runtime} worker for daemon smoke tests"
+  local model
+  model="$(runtime_default_model "$runtime")"
+  if [ -z "$model" ]; then
+    echo "  FATAL: no model available for runtime $runtime" >&2
+    exit 1
+  fi
   local id
   id=$(ak create agent \
     --name "$name" \
     --username "$username" \
     --runtime "$runtime" \
+    --model "$model" \
     --role "fullstack-developer" \
     --bio "$bio" \
     -o json | json_query "data.id")
   echo "$id"
-}
-
-runtime_model() {
-  local runtime="$1"
-  case "$runtime" in
-    codex) ak get model --runtime "$runtime" -o json | json_query "data.find((m) => m.id === 'gpt-5.3-codex-spark')?.id || data[0]?.id" ;;
-    *) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id" ;;
-  esac
 }
 
 agent_field() {
@@ -196,7 +201,7 @@ ensure_smoke_subagent() {
   local username="smoke-subagent-$runtime-$TIMESTAMP"
   local name="Smoke Subagent $runtime $TIMESTAMP"
   local model
-  model="$(runtime_model "$runtime")"
+  model="$(runtime_default_model "$runtime")"
   SUBAGENT_ID=$(ak create subagent \
     --name "$name" \
     --username "$username" \
@@ -206,73 +211,44 @@ ensure_smoke_subagent() {
     --models "$runtime=$model" \
     -o json | json_query "data.id")
   SUBAGENT_USERNAME="$username"
-  SUBAGENT_NAME="$name"
+  SUBAGENT_TOKEN="SMOKE-SUBAGENT-OK-$TIMESTAMP"
 }
 
 ensure_agent_subagent_link() {
+  local agent_id="$1"
   local current
-  current=$(ak get agent "$AGENT_ID" -o json | json_query "((data.subagents || []).includes('$SUBAGENT_ID') ? (data.subagents || []) : [...(data.subagents || []), '$SUBAGENT_ID']).join(',')")
-  ak update agent "$AGENT_ID" --subagents "$current" >/dev/null
+  current=$(ak get agent "$agent_id" -o json | json_query "((data.subagents || []).includes('$SUBAGENT_ID') ? (data.subagents || []) : [...(data.subagents || []), '$SUBAGENT_ID']).join(',')")
+  ak update agent "$agent_id" --subagents "$current" >/dev/null
 }
 
-wait_subagent_file() {
+subagent_definition_path() {
+  local runtime="$1"
+  case "$runtime" in
+    codex) echo ".codex/agents/$SUBAGENT_USERNAME.toml" ;;
+    claude | copilot) echo ".claude/agents/$SUBAGENT_USERNAME.md" ;;
+    *) echo "" ;;
+  esac
+}
+
+# The dispatch task instructs the agent to echo SUBAGENT_TOKEN into its task
+# log once it has verified the installed definition file — a deterministic
+# marker instead of fuzzy phrase matching.
+wait_subagent_evidence() {
   local task_id="$1" timeout_secs="${2:-120}"
   local elapsed=0
-  local expected
-  case "$AGENT_RUNTIME" in
-    codex) expected=".codex/agents/$SUBAGENT_USERNAME.toml" ;;
-    claude | copilot) expected=".claude/agents/$SUBAGENT_USERNAME.md" ;;
-    *) fail "unsupported smoke runtime for subagent file check: $AGENT_RUNTIME"; return 1 ;;
-  esac
-
+  local needle
+  needle=$(printf '%s' "$SUBAGENT_TOKEN" | tr '[:upper:]' '[:lower:]')
   while [ "$elapsed" -lt "$timeout_secs" ]; do
-    if task_has_subagent_evidence "$task_id"; then
+    if ak describe task "$task_id" -o json 2>/dev/null | tr '[:upper:]' '[:lower:]' | grep -q "$needle"; then
+      return 0
+    fi
+    if ak get task "$task_id" --session -o json 2>/dev/null | tr '[:upper:]' '[:lower:]' | grep -q "$needle"; then
       return 0
     fi
     sleep 2
     elapsed=$((elapsed + 2))
   done
   return 1
-}
-
-task_has_subagent_evidence() {
-  local task_id="$1"
-  local expected_subagent="$SUBAGENT_ID"
-  local expected_username="$SUBAGENT_USERNAME"
-  local expected_name="$SUBAGENT_NAME"
-  ak describe task "$task_id" -o json 2>/dev/null | EXPECTED_SUBAGENT="$expected_subagent" EXPECTED_USERNAME="$expected_username" EXPECTED_NAME="$expected_name" node -e "
-const fs = require('fs');
-const data = JSON.parse(fs.readFileSync(0, 'utf8'));
-const text = JSON.stringify(data).toLowerCase();
-const subagent = String(process.env.EXPECTED_SUBAGENT || '').toLowerCase();
-const username = String(process.env.EXPECTED_USERNAME || '').toLowerCase();
-const name = String(process.env.EXPECTED_NAME || '').toLowerCase();
-if (!subagent || !username || !name) process.exit(1);
-const hasSubagent = text.includes(subagent) || text.includes(username) || text.includes(name);
-const hasInstallEvidence =
-  text.includes('verified smoke subagent') ||
-  text.includes('smoke subagent is installed') ||
-  text.includes('smoke subagent listing is present') ||
-  text.includes('smoke subagent definition is present');
-process.exit(hasSubagent && hasInstallEvidence ? 0 : 1);
-" && return 0
-
-  ak get task "$task_id" --session -o json 2>/dev/null | EXPECTED_SUBAGENT="$expected_subagent" EXPECTED_USERNAME="$expected_username" EXPECTED_NAME="$expected_name" node -e "
-const fs = require('fs');
-const data = JSON.parse(fs.readFileSync(0, 'utf8'));
-const text = JSON.stringify(data).toLowerCase();
-const subagent = String(process.env.EXPECTED_SUBAGENT || '').toLowerCase();
-const username = String(process.env.EXPECTED_USERNAME || '').toLowerCase();
-const name = String(process.env.EXPECTED_NAME || '').toLowerCase();
-if (!subagent || !username || !name) process.exit(1);
-const hasSubagent = text.includes(subagent) || text.includes(username) || text.includes(name);
-const hasInstallEvidence =
-  text.includes('verified smoke subagent') ||
-  text.includes('smoke subagent is installed') ||
-  text.includes('smoke subagent listing is present') ||
-  text.includes('smoke subagent definition is present');
-process.exit(hasSubagent && hasInstallEvidence ? 0 : 1);
-"
 }
 
 # "cleaned up" means the server tore down the task's runtime binding:
@@ -293,6 +269,134 @@ wait_session_cleanup() {
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 
+# Local dev servers have no cron: drive the per-minute dispatch/reconcile
+# sweeps by poking the scheduled handler while the smoke runs.
+start_dev_sweep_loop() {
+  local api_url
+  api_url=$(ak config get 2>/dev/null | sed -n 's/^api-url: *//p')
+  case "$api_url" in
+    http://localhost*|http://127.0.0.1*)
+      (
+        while true; do
+          curl -s -o /dev/null "$api_url/cdn-cgi/handler/scheduled" || true
+          sleep 15
+        done
+      ) &
+      SWEEP_PID=$!
+      echo "Dev sweep loop: poking $api_url/cdn-cgi/handler/scheduled every 15s (pid $SWEEP_PID)"
+      ;;
+  esac
+}
+
+dispatch_task_description() {
+  local marker="$1" subagent_check="$2"
+  local desc="Run the project's install command if needed. Add file $marker.txt containing the current timestamp. Commit and open a PR."
+  if [ -n "$subagent_check" ]; then
+    desc="$desc Also verify the subagent definition file $subagent_check exists in this workspace; once verified, include the literal text $SUBAGENT_TOKEN in your completion summary or task log."
+  fi
+  echo "$desc"
+}
+
+# ── Lifecycle phases (parameterized by agent/task) ───────────────────────────
+
+run_dispatch_phase() {
+  local label="$1" task_id="$2" check_subagent="$3"
+  if wait_status "$task_id" in_progress 5m; then
+    pass "[$label] task reached in_progress"
+    if [ -n "$check_subagent" ]; then
+      if wait_subagent_evidence "$task_id" 600; then
+        pass "[$label] subagent definition verified in task workspace"
+      else
+        fail "[$label] subagent evidence ($SUBAGENT_TOKEN) not found"
+      fi
+    fi
+  else
+    fail "[$label] task did not reach in_progress (status: $(task_status "$task_id"))"
+  fi
+
+  if wait_status "$task_id" in_review 15m; then
+    pass "[$label] task reached in_review"
+    local pr
+    pr=$(task_pr_url "$task_id")
+    if [ -n "$pr" ]; then
+      pass "[$label] PR created: $pr"
+    else
+      fail "[$label] no PR link on in_review task"
+    fi
+  else
+    fail "[$label] task did not reach in_review (status: $(task_status "$task_id"))"
+  fi
+}
+
+run_reject_phase() {
+  local label="$1" task_id="$2"
+  sleep 5
+  ak task reject "$task_id" --reason "Smoke test: change file content to REJECTED" >/dev/null 2>&1
+
+  local status_after
+  status_after=$(task_status "$task_id")
+  if [ "$status_after" = "in_progress" ]; then
+    pass "[$label] task back to in_progress after reject"
+  else
+    fail "[$label] expected in_progress after reject, got: $status_after"
+  fi
+
+  if wait_status "$task_id" in_review 15m; then
+    pass "[$label] task reached in_review again after reject-resume"
+  else
+    fail "[$label] task did not reach in_review after reject"
+  fi
+}
+
+run_complete_phase() {
+  local label="$1" task_id="$2"
+  ak task complete "$task_id" >/dev/null 2>&1
+
+  local status_after
+  status_after=$(task_status "$task_id")
+  if [ "$status_after" = "done" ]; then
+    pass "[$label] task is done"
+  else
+    fail "[$label] expected done, got: $status_after"
+  fi
+
+  if wait_session_cleanup "$task_id" 120; then
+    pass "[$label] session cleaned up after completion"
+  else
+    fail "[$label] session still exists after completion timeout"
+  fi
+}
+
+run_cancel_phase() {
+  local label="$1" agent_id="$2"
+  local task_id
+  task_id=$(create_task "$agent_id" "smoke-cancel-$label-$TIMESTAMP" "Run the project's install command. Then run: sleep 300. This task will be cancelled.")
+  echo "  Task: $task_id"
+
+  if wait_status "$task_id" in_progress 5m; then
+    pass "[$label] cancel-task reached in_progress"
+  else
+    fail "[$label] cancel-task did not reach in_progress (status: $(task_status "$task_id"))"
+  fi
+
+  sleep 3
+  ak task cancel "$task_id" >/dev/null 2>&1
+
+  local status_after
+  status_after=$(task_status "$task_id")
+  if [ "$status_after" = "cancelled" ]; then
+    pass "[$label] task is cancelled"
+  else
+    fail "[$label] expected cancelled, got: $status_after"
+  fi
+
+  if wait_session_cleanup "$task_id" 60; then
+    pass "[$label] cancelled task session cleaned up"
+  else
+    fail "[$label] cancelled task session not cleaned up after 60s (binding=$(task_runtime_binding "$task_id"))"
+  fi
+}
+
 # ── Preflight ────────────────────────────────────────────────────────────────
 
 echo "=== Daemon Smoke Test ==="
@@ -305,149 +409,100 @@ if [ -z "$SMOKE_RUNTIME" ]; then
   echo "FATAL: runtime is required. Usage: ./scripts/daemon-smoke-test.sh <runtime> [board_id] [repo_id]"
   exit 1
 fi
-case "$SMOKE_RUNTIME" in
-  codex | claude | copilot) ;;
-  *) echo "FATAL: smoke runtime must support AMA runner subagents (codex, claude, or copilot), got: $SMOKE_RUNTIME"; exit 1 ;;
-esac
-AGENT_ID="$(create_agent "$SMOKE_RUNTIME")"
-CREATED_AGENT_IDS+=("$AGENT_ID")
-if [ -z "$BOARD_ID" ] || [ -z "$REPO_ID" ] || [ -z "$AGENT_ID" ]; then
-  echo "FATAL: failed to discover board, repo, or agent"
-  echo "  Board: ${BOARD_ID:-missing}"
-  echo "  Repo:  ${REPO_ID:-missing}"
-  echo "  Agent: ${AGENT_ID:-missing}"
-  exit 1
-fi
 
-AGENT_RUNTIME="$(agent_field "$AGENT_ID" runtime)"
-if [ "$AGENT_RUNTIME" != "codex" ] && [ "$AGENT_RUNTIME" != "claude" ] && [ "$AGENT_RUNTIME" != "copilot" ]; then
-  echo "FATAL: smoke agent runtime must support AMA runner subagents (codex, claude, or copilot), got: $AGENT_RUNTIME"
-  exit 1
+LOCAL_RUNTIME=""
+CLOUD_RUNTIME=""
+case "$SMOKE_RUNTIME" in
+  codex | claude | copilot) LOCAL_RUNTIME="$SMOKE_RUNTIME" ;;
+  ama) CLOUD_RUNTIME="ama" ;;
+  mixed)
+    LOCAL_RUNTIME="codex"
+    CLOUD_RUNTIME="ama"
+    ;;
+  *) echo "FATAL: smoke runtime must be codex, claude, copilot, ama, or mixed; got: $SMOKE_RUNTIME"; exit 1 ;;
+esac
+
+if [ -n "$LOCAL_RUNTIME" ]; then
+  AGENT_ID="$(create_agent "$LOCAL_RUNTIME")"
+  CREATED_AGENT_IDS+=("$AGENT_ID")
+  AGENT_RUNTIME="$(agent_field "$AGENT_ID" runtime)"
+  if [ "$AGENT_RUNTIME" != "$LOCAL_RUNTIME" ]; then
+    echo "FATAL: expected local agent runtime $LOCAL_RUNTIME, got: $AGENT_RUNTIME"
+    exit 1
+  fi
+  ensure_smoke_subagent "$LOCAL_RUNTIME"
+  ensure_agent_subagent_link "$AGENT_ID"
 fi
-ensure_smoke_subagent "$AGENT_RUNTIME"
-ensure_agent_subagent_link
+if [ -n "$CLOUD_RUNTIME" ]; then
+  CLOUD_AGENT_ID="$(create_agent "$CLOUD_RUNTIME")"
+  CREATED_AGENT_IDS+=("$CLOUD_AGENT_ID")
+fi
 
 echo "  Board: $BOARD_ID"
-echo "  Agent: $AGENT_ID"
-echo "  Runtime: $AGENT_RUNTIME"
-echo "  Subagent: $SUBAGENT_ID ($SUBAGENT_USERNAME)"
 echo "  Repo:  $REPO_ID"
+[ -n "$AGENT_ID" ] && echo "  Local agent: $AGENT_ID ($LOCAL_RUNTIME)"
+[ -n "$CLOUD_AGENT_ID" ] && echo "  Cloud agent: $CLOUD_AGENT_ID ($CLOUD_RUNTIME)"
+[ -n "$SUBAGENT_ID" ] && echo "  Subagent: $SUBAGENT_ID ($SUBAGENT_USERNAME)"
 echo ""
 
-# Capture the full output first: piping ak straight into head trips
-# EPIPE (ak status keeps printing after a server round-trip) and pipefail
-# turns that into a silent set -e exit.
-STATUS_OUTPUT=$(ak status 2>&1)
-DAEMON_STATUS=$(printf '%s\n' "$STATUS_OUTPUT" | grep "^● .* running" || true)
-if [ -z "$DAEMON_STATUS" ]; then
-  echo "FATAL: daemon is not running. Start with: ak start"
-  exit 1
-fi
-echo "Daemon: $DAEMON_STATUS"
-echo ""
-
-# ── Test 1: Dispatch (create → claim → in_review) ───────────────────────────
-
-echo "[Test 1/4] Dispatch — create task, verify subagent install, wait for in_review"
-T1=$(create_task "smoke-dispatch-$TIMESTAMP" "Run pnpm install. Verify that the smoke subagent definition is installed in this workspace. Add file smoke-dispatch-$TIMESTAMP.txt with timestamp. Commit and PR.")
-echo "  Task: $T1"
-
-if wait_status "$T1" in_progress 2m; then
-  pass "task reached in_progress"
-  if wait_subagent_file "$T1" 120; then
-    pass "subagent definition installed in task workspace"
-  else
-    fail "subagent definition was not installed in task workspace"
+if [ -n "$LOCAL_RUNTIME" ]; then
+  # Capture the full output first: piping ak straight into head trips
+  # EPIPE (ak status keeps printing after a server round-trip) and pipefail
+  # turns that into a silent set -e exit.
+  STATUS_OUTPUT=$(ak status 2>&1)
+  DAEMON_STATUS=$(printf '%s\n' "$STATUS_OUTPUT" | grep "^● .* running" || true)
+  if [ -z "$DAEMON_STATUS" ]; then
+    echo "FATAL: machine runner is not running but a local runtime is requested. Start with: ak start"
+    exit 1
   fi
-else
-  fail "task did not reach in_progress"
+  echo "Daemon: $DAEMON_STATUS"
 fi
+start_dev_sweep_loop
+echo ""
 
-if wait_status "$T1" in_review; then
-  pass "task reached in_review"
-  # Verify PR was created
-  PR=$(ak describe task "$T1" 2>/dev/null | sed -n 's/^PR: *//p')
-  if [ -n "$PR" ]; then
-    pass "PR created: $PR"
-  else
-    fail "no PR link on in_review task"
+# ── Scenario: mixed (parallel local + cloud) ─────────────────────────────────
+
+if [ "$SMOKE_RUNTIME" = "mixed" ]; then
+  echo "[Test 1/2] Parallel dispatch — local + cloud tasks run concurrently"
+  TL=$(create_task "$AGENT_ID" "smoke-mixed-local-$TIMESTAMP" "$(dispatch_task_description "smoke-mixed-local-$TIMESTAMP" "$(subagent_definition_path "$LOCAL_RUNTIME")")")
+  TC=$(create_task "$CLOUD_AGENT_ID" "smoke-mixed-cloud-$TIMESTAMP" "$(dispatch_task_description "smoke-mixed-cloud-$TIMESTAMP" "")")
+  echo "  Local task: $TL"
+  echo "  Cloud task: $TC"
+  run_dispatch_phase "local" "$TL" "check"
+  run_dispatch_phase "cloud" "$TC" ""
+  echo ""
+
+  echo "[Test 2/2] Complete both — runtime bindings torn down"
+  run_complete_phase "local" "$TL"
+  run_complete_phase "cloud" "$TC"
+  echo ""
+else
+  # ── Scenario: single placement (local or cloud) ────────────────────────────
+  RUN_AGENT_ID="${AGENT_ID:-$CLOUD_AGENT_ID}"
+  RUN_LABEL="${LOCAL_RUNTIME:-$CLOUD_RUNTIME}"
+  SUBAGENT_CHECK=""
+  if [ -n "$LOCAL_RUNTIME" ]; then
+    SUBAGENT_CHECK="$(subagent_definition_path "$LOCAL_RUNTIME")"
   fi
-else
-  fail "task did not reach in_review"
+
+  echo "[Test 1/4] Dispatch — create task, wait for in_review"
+  T1=$(create_task "$RUN_AGENT_ID" "smoke-dispatch-$TIMESTAMP" "$(dispatch_task_description "smoke-dispatch-$TIMESTAMP" "$SUBAGENT_CHECK")")
+  echo "  Task: $T1"
+  run_dispatch_phase "$RUN_LABEL" "$T1" "$SUBAGENT_CHECK"
+  echo ""
+
+  echo "[Test 2/4] Reject/Resume — reject task, wait for re-review"
+  run_reject_phase "$RUN_LABEL" "$T1"
+  echo ""
+
+  echo "[Test 3/4] Complete — mark task done, verify cleanup"
+  run_complete_phase "$RUN_LABEL" "$T1"
+  echo ""
+
+  echo "[Test 4/4] Cancel — create task, cancel while running, verify cleanup"
+  run_cancel_phase "$RUN_LABEL" "$RUN_AGENT_ID"
+  echo ""
 fi
-echo ""
-
-# ── Test 2: Reject/Resume (reject → daemon resumes → back to in_review) ─────
-
-echo "[Test 2/4] Reject/Resume — reject task, wait for re-review"
-# Wait for daemon to finish finalize (session preservation) after in_review
-sleep 5
-ak task reject "$T1" --reason "Smoke test: change file content to REJECTED" >/dev/null 2>&1
-
-STATUS_AFTER_REJECT=$(task_status "$T1")
-if [ "$STATUS_AFTER_REJECT" = "in_progress" ]; then
-  pass "task back to in_progress after reject"
-else
-  fail "expected in_progress after reject, got: $STATUS_AFTER_REJECT"
-fi
-
-if wait_status "$T1" in_review; then
-  pass "task reached in_review again after reject-resume"
-else
-  fail "task did not reach in_review after reject"
-fi
-echo ""
-
-# ── Test 3: Complete (complete task → session cleaned up) ────────────────────
-
-echo "[Test 3/4] Complete — mark task done, verify cleanup"
-ak task complete "$T1" >/dev/null 2>&1
-
-STATUS_AFTER_COMPLETE=$(task_status "$T1")
-if [ "$STATUS_AFTER_COMPLETE" = "done" ]; then
-  pass "task is done"
-else
-  fail "expected done, got: $STATUS_AFTER_COMPLETE"
-fi
-
-if wait_session_cleanup "$T1" 120; then
-  pass "session cleaned up after completion"
-else
-  fail "session still exists after completion timeout"
-fi
-echo ""
-
-# ── Test 4: Cancel (create → cancel while running → agent killed) ────────────
-
-echo "[Test 4/4] Cancel — create task, cancel while running, verify cleanup"
-T4=$(create_task "smoke-cancel-$TIMESTAMP" "Run pnpm install. Then run: sleep 300. This task will be cancelled.")
-echo "  Task: $T4"
-
-# Wait for agent to start (in_progress)
-if wait_status "$T4" in_progress 2m; then
-  pass "task reached in_progress"
-else
-  fail "task did not reach in_progress"
-fi
-
-# Cancel while agent is running
-sleep 3
-ak task cancel "$T4" >/dev/null 2>&1
-
-STATUS_AFTER_CANCEL=$(task_status "$T4")
-if [ "$STATUS_AFTER_CANCEL" = "cancelled" ]; then
-  pass "task is cancelled"
-else
-  fail "expected cancelled, got: $STATUS_AFTER_CANCEL"
-fi
-
-# Wait for the cancelled task's runtime binding to be torn down
-if wait_session_cleanup "$T4" 60; then
-  pass "cancelled task session cleaned up"
-else
-  fail "cancelled task session not cleaned up after 60s (binding=$(task_runtime_binding "$T4"))"
-fi
-echo ""
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 

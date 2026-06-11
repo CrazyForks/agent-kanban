@@ -27,20 +27,18 @@ test.describe("Task chat runtime events", () => {
     const boardId = page.url().split("/boards/")[1];
 
     // 3. Create a worker agent via API (the user owns it; agent creation is allowed for users)
-    const { agentUsername } = await page.evaluate(
-      async () => {
-        const token = localStorage.getItem("auth-token");
-        const username = `chat-pg-agent-${Date.now()}`;
-        const res = await fetch(`${window.location.origin}/api/agents`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ username, runtime: "claude" }),
-        });
-        if (!res.ok) throw new Error(`agent create: ${res.status} ${await res.text()}`);
-        const agent = (await res.json()) as { id: string };
-        return { agentId: agent.id, agentUsername: username };
-      },
-    );
+    const { agentUsername } = await page.evaluate(async () => {
+      const token = localStorage.getItem("auth-token");
+      const username = `chat-pg-agent-${Date.now()}`;
+      const res = await fetch(`${window.location.origin}/api/agents`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ username, runtime: "claude" }),
+      });
+      if (!res.ok) throw new Error(`agent create: ${res.status} ${await res.text()}`);
+      const agent = (await res.json()) as { id: string };
+      return { agentId: agent.id, agentUsername: username };
+    });
 
     // 4. Tasks are created by agents only, so seed the task directly in D1 on the user's board,
     //    assigned to the agent and bound to the rich AMA session via its annotations. The runtime
@@ -48,7 +46,9 @@ test.describe("Task chat runtime events", () => {
     const taskId = `chatpg${Date.now()}`;
     const nowIso = new Date().toISOString();
     const metadataJson = JSON.stringify({ annotations: { "ama.sessionId": AMA_SESSION_ID, "ama.projectId": AMA_PROJECT_ID } });
-    const agentId = execFileSync("sqlite3", [d1DatabasePath(), `SELECT id FROM agents WHERE username = '${agentUsername}';`]).toString().trim();
+    const agentId = execFileSync("sqlite3", [d1DatabasePath(), `SELECT id FROM agents WHERE username = '${agentUsername}';`])
+      .toString()
+      .trim();
     execFileSync("sqlite3", [
       "-cmd",
       ".timeout 10000",

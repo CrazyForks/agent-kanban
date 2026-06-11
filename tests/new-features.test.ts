@@ -635,14 +635,12 @@ describe("POST /api/machines runner.version from env", () => {
         // Serves both the client-credentials flow and the runner token
         // exchange, which additionally requires a refresh_token.
         if (url === "https://auth.test/oauth/token") {
-          return new Response(
-            JSON.stringify({ access_token: "test-token", refresh_token: "test-refresh", token_type: "Bearer", expires_in: 3600 }),
-            { status: 200 },
-          );
+          return new Response(JSON.stringify({ access_token: "test-token", refresh_token: "test-refresh", token_type: "Bearer", expires_in: 3600 }), {
+            status: 200,
+          });
         }
         // createEnvironment
-        if (url === "https://ama.test/api/environments")
-          return new Response(JSON.stringify({ id: "env_verpinned" }), { status: 201 });
+        if (url === "https://ama.test/api/environments") return new Response(JSON.stringify({ id: "env_verpinned" }), { status: 201 });
         // createExternalProjectBinding
         if (url.includes("/external-bindings")) return new Response(JSON.stringify({}), { status: 201 });
         throw new Error(`Unexpected fetch in version test: ${url}`);
@@ -804,8 +802,7 @@ describe("dispatchTaskToAma includes git identity env in runtimeEnv", () => {
       }
       if (url === "https://ama.test/api/providers?limit=100")
         return new Response(JSON.stringify({ data: [{ id: "provider_claude", type: "anthropic", status: "active" }] }), { status: 200 });
-      if (url.includes("/providers/provider_claude/models"))
-        return new Response(JSON.stringify({ data: [] }), { status: 200 });
+      if (url.includes("/providers/provider_claude/models")) return new Response(JSON.stringify({ data: [] }), { status: 200 });
       if (url === "https://ama.test/api/vaults/vault_git/credentials")
         return new Response(JSON.stringify({ id: "vaultcred_git", activeVersionId: "vaultver_git" }), { status: 201 });
       if (url === "https://ama.test/api/agents")

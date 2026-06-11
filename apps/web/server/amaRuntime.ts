@@ -272,6 +272,11 @@ const RUNTIME_PROVIDER_PROFILES: Record<
     providerType: "other",
     providerDisplayName: "GitHub Copilot",
   },
+  // AMA cloud sandbox runtime: Workers AI is platform-hosted, no credential.
+  ama: {
+    providerType: "workers-ai",
+    providerDisplayName: "Workers AI",
+  },
 };
 
 export function isAmaRuntimeConfigured(env: Env): boolean {
