@@ -93,6 +93,31 @@ export async function createIdentity(input: { runtime: AgentRuntime; username: s
 }
 
 let cachedLeaderClient: AgentClient | null = null;
+let reapedThisProcess = false;
+
+// The old daemon heartbeat closed leader sessions whose runtime process had
+// exited and reported their usage. Without a local daemon, the CLI itself
+// reaps them lazily — once per process, on the first leader command.
+async function reapDeadLeaderSessions(client: MachineClient): Promise<void> {
+  if (reapedThisProcess) return;
+  reapedThisProcess = true;
+  for (const session of listSessions({ type: "leader" })) {
+    if (isPidAlive(session.pid)) continue;
+    try {
+      const { collectUsage } = await import("./usage.js");
+      const usage = await collectUsage(session.runtime, session.startedAt);
+      if (usage) await client.updateSessionUsage(session.agentId, session.sessionId, usage);
+    } catch {
+      // usage reporting is best-effort; the session still gets closed
+    }
+    try {
+      await client.closeSession(session.agentId, session.sessionId);
+    } catch {
+      // server may already have closed it
+    }
+    removeSession(session.sessionId);
+  }
+}
 
 /**
  * Returns AgentClient for the current identity.
@@ -120,6 +145,9 @@ export async function createClient(): Promise<ApiClient> {
   }
 
   const apiUrl = getCredentials().apiUrl;
+  await reapDeadLeaderSessions(new MachineClient()).catch(() => {
+    // reaping is opportunistic; never block the actual command
+  });
   const existing = listSessions({ type: "leader" }).find(
     (session) => session.pid === leaderPid && session.runtime === runtime && session.apiUrl === apiUrl,
   );

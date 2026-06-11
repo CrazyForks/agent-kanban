@@ -15,7 +15,6 @@ import {
 } from "node:fs";
 import { arch, platform, release } from "node:os";
 import { join } from "node:path";
-import { createInterface } from "node:readline/promises";
 import type { MachineRuntime } from "@agent-kanban/shared";
 import type { Command } from "commander";
 import { type AmaRunnerVersionInfo, resolveAmaRunnerBinary } from "../amaRunner.js";
@@ -25,19 +24,17 @@ import { generateDeviceId } from "../device.js";
 import { resolveMachineName } from "../machineName.js";
 import { DAEMON_STATE_FILE, LOGS_DIR, PID_FILE, SESSIONS_DIR, STATE_DIR } from "../paths.js";
 import { getAvailableProviders } from "../providers/registry.js";
-import { listSessions } from "../session/store.js";
 import { getVersion } from "../version.js";
 
 const MAX_LOG_ARCHIVES = 5;
 const DEFAULT_MAX_CONCURRENT = 5;
+const AMA_RUNNER_CONFIG_FILE = join(STATE_DIR, "ama-runner-config.json");
 interface DaemonState {
   providers: string[];
   maxConcurrent: number;
-  pollInterval: number;
-  taskTimeout: number;
   apiUrl: string;
   startedAt: string;
-  runtime?: "legacy-daemon" | "ama-runner";
+  runtime?: "ama-runner";
   runnerPath?: string;
   runnerVersion?: AmaRunnerVersionInfo | null;
   machineId?: string;
@@ -51,6 +48,7 @@ interface AmaRunnerOnboardingResponse {
   refreshToken: string;
   tokenType?: string;
   expiresIn?: number | null;
+  version?: string | null;
 }
 
 interface RegisteredMachine {
@@ -111,40 +109,6 @@ function formatUptime(startMs: number): string {
   return parts.join(" ");
 }
 
-function countActiveSessions(): number {
-  // Count worker sessions that are still doing work. "closed" sessions stay
-  // on disk for history lookup but are no longer active.
-  return listSessions({ type: "worker" }).filter((s) => s.status !== "closed").length;
-}
-
-export function listRunningTaskSessions(): { sessionId: string; taskId: string }[] {
-  return listSessions({ type: "worker", status: "active" })
-    .filter((s) => Boolean(s.taskId))
-    .map((s) => ({ sessionId: s.sessionId, taskId: s.taskId! }));
-}
-
-export async function confirmDaemonShutdown(action: "stop" | "restart", yes: boolean): Promise<void> {
-  const running = listRunningTaskSessions();
-  if (running.length === 0 || yes) return;
-
-  const taskList = running.map((s) => `  - ${s.taskId} (session ${s.sessionId.slice(0, 8)})`).join("\n");
-  const message = `${action === "stop" ? "Stopping" : "Restarting"} the daemon will release ${running.length} active task(s) back to todo:\n${taskList}`;
-
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    console.error(`${message}\nRe-run with -y/--yes to confirm.`);
-    process.exit(1);
-  }
-
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await rl.question(`${message}\nContinue? [y/N] `);
-  rl.close();
-
-  if (!["y", "yes"].includes(answer.trim().toLowerCase())) {
-    console.log("Cancelled");
-    process.exit(1);
-  }
-}
-
 function formatProviders(all: string[]): string {
   if (all.length === 0) return "none";
   return all.join(", ");
@@ -168,18 +132,12 @@ function amaRunnerArgs(opts: Record<string, unknown>): string[] {
   add("--api-server", opts.amaOrigin);
   add("--project-id", opts.amaProjectId);
   add("--environment-id", opts.amaEnvironmentId);
-  add("--workdir", opts.amaWorkdir);
   add("--max-concurrent", opts.maxConcurrent);
-  if (opts.amaAllowUnsafeProcess !== false) args.push("--allow-unsafe-process");
+  // Parity with the old daemon, which always ran agent processes directly on
+  // the host: AK acknowledges the unsandboxed process adapter on the user's
+  // behalf instead of exposing a runner flag.
+  args.push("--allow-unsafe-process");
   return args;
-}
-
-function amaRunnerOrigin(opts: Record<string, unknown>) {
-  return (typeof opts.amaOrigin === "string" && opts.amaOrigin) || "machine-runner";
-}
-
-function akApiUrl(opts: Record<string, unknown>) {
-  return (typeof opts.apiUrl === "string" && opts.apiUrl) || amaRunnerOrigin(opts);
 }
 
 function machineRuntimes(): MachineRuntime[] {
@@ -229,7 +187,7 @@ async function startAmaRunner(opts: Record<string, unknown>) {
   const logFile = join(LOGS_DIR, "daemon.log");
   const logFd = openSync(logFile, "a");
   await applyAmaRunnerOnboarding(opts);
-  const runner = await resolveAmaRunnerBinary();
+  const runner = await resolveAmaRunnerBinary(typeof opts.amaRunnerVersion === "string" ? opts.amaRunnerVersion : null);
   const args = amaRunnerArgs(opts);
   const env = { ...process.env };
   delete env.AMA_TOKEN;
@@ -244,11 +202,9 @@ async function startAmaRunner(opts: Record<string, unknown>) {
   mkdirSync(STATE_DIR, { recursive: true });
   writeFileSync(PID_FILE, String(pid));
   const state: DaemonState = {
-    providers: ["machine-runner"],
+    providers: Array.isArray(opts.providers) ? (opts.providers as string[]) : [],
     maxConcurrent: parseInt(String(opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT), 10),
-    pollInterval: 0,
-    taskTimeout: 0,
-    apiUrl: akApiUrl(opts),
+    apiUrl: opts.apiUrl as string,
     startedAt: new Date().toISOString(),
     runtime: "ama-runner",
     runnerPath: runner.path,
@@ -258,31 +214,20 @@ async function startAmaRunner(opts: Record<string, unknown>) {
   writeFileSync(DAEMON_STATE_FILE, JSON.stringify(state, null, 2));
   child.unref();
   console.log(`● Machine runner started (PID ${pid}, v${getVersion()})`);
-  console.log(`  API:         ${maskApiUrl((typeof opts.apiUrl === "string" && opts.apiUrl) || state.apiUrl)}`);
+  console.log(`  API:         ${maskApiUrl(state.apiUrl)}`);
   console.log(`  Concurrency: ${state.maxConcurrent}`);
-  if (state.runnerVersion?.version) console.log(`  Runner:      ama-runner ${state.runnerVersion.version}`);
+  if (state.runnerVersion?.version) console.log(`  Runner:      ${state.runnerVersion.version}`);
   console.log(`  Logs:        ${logFile}`);
 }
 
 async function applyAmaRunnerOnboarding(opts: Record<string, unknown>) {
-  let creds: { apiUrl: string; apiKey: string };
-  if (typeof opts.apiUrl === "string" && typeof opts.apiKey === "string") {
-    creds = { apiUrl: opts.apiUrl, apiKey: opts.apiKey };
-  } else if (typeof opts.apiUrl === "string") {
-    try {
-      creds = getCredentials(new URL(opts.apiUrl).host);
-    } catch {
-      return;
-    }
-  } else {
-    try {
-      creds = getCredentials();
-    } catch {
-      return;
-    }
+  if (typeof opts.apiUrl !== "string" || typeof opts.apiKey !== "string") {
+    throw new Error("API credentials are required to start the machine runner");
   }
+  const creds = { apiUrl: opts.apiUrl, apiKey: opts.apiKey };
 
   const runtimes = machineRuntimes();
+  opts.providers = runtimes.map((runtime) => runtime.name);
   const machineResponse = await fetch(`${creds.apiUrl.replace(/\/$/, "")}/api/machines`, {
     method: "POST",
     headers: {
@@ -303,18 +248,21 @@ async function applyAmaRunnerOnboarding(opts: Record<string, unknown>) {
   const machine = (await machineResponse.json()) as RegisteredMachine;
   const onboarding = machine.runner;
   if (!onboarding?.accessToken || !onboarding.refreshToken) {
-    throw new Error("Machine registration did not return AMA runner onboarding credentials");
+    throw new Error("Machine registration did not return runner onboarding credentials");
   }
   opts.machineId = machine.id;
-  opts.amaOrigin = onboarding.origin;
+  if (onboarding.version) opts.amaRunnerVersion = onboarding.version;
+  // The runner only adopts the saved token when the --api-server origin matches
+  // the saved origin exactly, so trim once and use the same value everywhere.
+  opts.amaOrigin = onboarding.origin.replace(/\/$/, "");
   opts.amaProjectId = onboarding.projectId;
   opts.amaEnvironmentId = onboarding.environmentId;
-  opts.amaConfigPath = writeAmaRunnerConfig(onboarding);
+  opts.amaConfigPath = writeAmaRunnerConfig({ ...onboarding, origin: opts.amaOrigin as string });
 }
 
 function writeAmaRunnerConfig(onboarding: AmaRunnerOnboardingResponse): string {
   mkdirSync(STATE_DIR, { recursive: true });
-  const configPath = join(STATE_DIR, "ama-runner-config.json");
+  const configPath = AMA_RUNNER_CONFIG_FILE;
   const expiresAt =
     typeof onboarding.expiresIn === "number" && onboarding.expiresIn > 0
       ? new Date(Date.now() + onboarding.expiresIn * 1000).toISOString()
@@ -323,7 +271,7 @@ function writeAmaRunnerConfig(onboarding: AmaRunnerOnboardingResponse): string {
     configPath,
     JSON.stringify(
       {
-        apiServer: onboarding.origin.replace(/\/$/, ""),
+        apiServer: onboarding.origin,
         accessToken: onboarding.accessToken,
         refreshToken: onboarding.refreshToken,
         tokenType: onboarding.tokenType ?? "Bearer",
@@ -346,8 +294,6 @@ export function registerStartCommand(program: Command) {
     .option("--api-url <url>", "API server URL")
     .option("--api-key <key>", "AK API key")
     .option("--max-concurrent <n>", "Max concurrent agents", String(DEFAULT_MAX_CONCURRENT))
-    .option("--poll-interval <ms>", "Poll interval in ms", "10000")
-    .option("--task-timeout <ms>", "Task timeout in ms (0 to disable)", "7200000")
     .action(async (opts) => {
       // Save or resolve credentials
       if (opts.apiUrl && opts.apiKey) {
@@ -385,15 +331,12 @@ export function registerStopCommand(program: Command) {
   program
     .command("stop")
     .description("Stop the Machine runner")
-    .option("-y, --yes", "Confirm stopping active tasks without prompting")
-    .action(async (opts) => {
+    .action(async () => {
       const pid = readDaemonPid();
       if (!pid) {
         console.log("○ Machine runner is not running");
         return;
       }
-
-      await confirmDaemonShutdown("stop", Boolean(opts.yes));
 
       let uptimeStr = "";
       const state = readDaemonState();
@@ -430,6 +373,9 @@ export function registerStopCommand(program: Command) {
       } else {
         console.log(`● Machine runner stopped (PID ${pid})`);
       }
+      // The config file holds live access/refresh tokens; a stopped runner
+      // must not leave them on disk. `ak start` re-onboards with fresh tokens.
+      rmSync(AMA_RUNNER_CONFIG_FILE, { force: true });
       if (uptimeStr) console.log(`  Uptime: ${uptimeStr}`);
     });
 }
@@ -458,8 +404,6 @@ export function registerStatusCommand(program: Command) {
         }
       }
 
-      const sessions = countActiveSessions();
-
       console.log(`● Machine runner running (PID ${pid}, v${getVersion()})`);
       if (uptimeStr) console.log(`  Uptime:      ${uptimeStr}`);
       if (state) {
@@ -468,20 +412,19 @@ export function registerStatusCommand(program: Command) {
         console.log(`  Concurrency: ${state.maxConcurrent}`);
         console.log(`  API:         ${maskApiUrl(state.apiUrl)}`);
       }
-      if (state?.runtime !== "ama-runner") console.log(`  Sessions:    ${sessions} active`);
 
-      // The ama-runner reports to AMA, not local stdout — surface its real health
-      // (a live local process does not imply the runner is registered/heartbeating).
+      // The runner reports to the server, not local stdout — surface its real
+      // health (a live local process does not imply it is heartbeating).
       if (state?.runtime === "ama-runner" && state.machineId) {
         try {
           const machine = await new MachineClient().getMachine(state.machineId);
           const online = machine.status === "online";
           const heartbeat = machine.last_heartbeat_at ? ` (heartbeat ${formatUptime(new Date(machine.last_heartbeat_at).getTime())} ago)` : "";
-          console.log(`  AMA runner:  ${online ? "●" : "○"} ${machine.status ?? "unknown"}${heartbeat}`);
+          console.log(`  Runner:      ${online ? "●" : "○"} ${machine.status ?? "unknown"}${heartbeat}`);
           const ready = (machine.runtimes ?? []).filter((runtime) => runtime.status === "ready").map((runtime) => runtime.name);
           if (ready.length > 0) console.log(`  Runtimes:    ${ready.join(", ")}`);
         } catch (error) {
-          console.log(`  AMA runner:  (could not reach AK API: ${(error as Error).message})`);
+          console.log(`  Runner:      (could not reach AK API: ${error instanceof Error ? error.message : String(error)})`);
         }
       }
     });
@@ -494,16 +437,12 @@ export function registerRestartCommand(program: Command) {
     .option("--api-url <url>", "API server URL")
     .option("--api-key <key>", "AK API key")
     .option("--max-concurrent <n>", "Max concurrent agents")
-    .option("--poll-interval <ms>", "Poll interval in ms")
-    .option("--task-timeout <ms>", "Task timeout in ms (0 to disable)")
-    .option("-y, --yes", "Confirm stopping active tasks without prompting")
     .action(async (opts) => {
       const prevState = readDaemonState();
 
       // Stop existing runtime if running
       const pid = readDaemonPid();
       if (pid) {
-        await confirmDaemonShutdown("restart", Boolean(opts.yes));
         process.kill(pid, "SIGTERM");
 
         const deadline = Date.now() + 10_000;

@@ -107,17 +107,12 @@ task_status() {
   ak describe task "$1" 2>/dev/null | sed -n 's/^Status: *//p'
 }
 
-task_session_file() {
+# The runtime binding lives in the task's metadata annotations server-side;
+# teardown clears ama.sessionId on complete/cancel/release.
+task_runtime_binding() {
   local task_id="$1"
-  ls ~/.local/state/agent-kanban/sessions/*.json 2>/dev/null \
-    | xargs grep -l "\"taskId\": *\"$task_id\"" 2>/dev/null | head -1
-}
-
-task_session_status() {
-  local task_id="$1"
-  local file
-  file="$(task_session_file "$task_id")"
-  [ -n "$file" ] && python3 -c "import json,sys; print(json.load(open('$file')).get('status',''))" 2>/dev/null || echo ""
+  ak get task "$task_id" -o json 2>/dev/null \
+    | json_query 'data.metadata && data.metadata.annotations ? data.metadata.annotations["ama.sessionId"] : null' 2>/dev/null || true
 }
 
 json_query() {
@@ -231,14 +226,6 @@ wait_subagent_file() {
   esac
 
   while [ "$elapsed" -lt "$timeout_secs" ]; do
-    local file cwd
-    file="$(task_session_file "$task_id")"
-    if [ -n "$file" ]; then
-      cwd=$(node -e "const s=require('$file'); console.log(s.workspace && s.workspace.cwd || '')" 2>/dev/null || true)
-      if [ -n "$cwd" ] && [ -f "$cwd/$expected" ]; then
-        return 0
-      fi
-    fi
     if task_has_subagent_evidence "$task_id"; then
       return 0
     fi
@@ -288,15 +275,13 @@ process.exit(hasSubagent && hasInstallEvidence ? 0 : 1);
 "
 }
 
-# Sessions are retained as "closed" after cleanup (for history lookup).
-# "cleaned up" means: session reached "closed" state (or file is gone).
+# "cleaned up" means the server tore down the task's runtime binding:
+# the ama.sessionId annotation is cleared on complete/cancel/release.
 wait_session_cleanup() {
   local task_id="$1" timeout_secs="${2:-120}"
   local elapsed=0
   while [ "$elapsed" -lt "$timeout_secs" ]; do
-    local status
-    status="$(task_session_status "$task_id")"
-    if [ -z "$status" ] || [ "$status" = "closed" ]; then
+    if [ -z "$(task_runtime_binding "$task_id")" ]; then
       return 0
     fi
     sleep 2
@@ -349,8 +334,12 @@ echo "  Subagent: $SUBAGENT_ID ($SUBAGENT_USERNAME)"
 echo "  Repo:  $REPO_ID"
 echo ""
 
-DAEMON_STATUS=$(ak status 2>&1 | head -1)
-if ! echo "$DAEMON_STATUS" | grep -q "^● .* running"; then
+# Capture the full output first: piping ak straight into head trips
+# EPIPE (ak status keeps printing after a server round-trip) and pipefail
+# turns that into a silent set -e exit.
+STATUS_OUTPUT=$(ak status 2>&1)
+DAEMON_STATUS=$(printf '%s\n' "$STATUS_OUTPUT" | grep "^● .* running" || true)
+if [ -z "$DAEMON_STATUS" ]; then
   echo "FATAL: daemon is not running. Start with: ak start"
   exit 1
 fi
@@ -452,13 +441,11 @@ else
   fail "expected cancelled, got: $STATUS_AFTER_CANCEL"
 fi
 
-# Wait for cancelled task's session to reach "closed" state
+# Wait for the cancelled task's runtime binding to be torn down
 if wait_session_cleanup "$T4" 60; then
-  T4_STATUS="$(task_session_status "$T4")"
-  pass "cancelled task session cleaned up (status=${T4_STATUS:-gone})"
+  pass "cancelled task session cleaned up"
 else
-  T4_STATUS="$(task_session_status "$T4")"
-  fail "cancelled task session not cleaned up after 60s (status=$T4_STATUS)"
+  fail "cancelled task session not cleaned up after 60s (binding=$(task_runtime_binding "$T4"))"
 fi
 echo ""
 

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { arch as nodeArch, platform as nodePlatform, tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { arch as nodeArch, platform as nodePlatform } from "node:os";
 import { join } from "node:path";
 import { BIN_DIR, DATA_DIR } from "./paths.js";
 
@@ -76,13 +76,6 @@ function installedRunnerMatches(path: string, version: string): boolean {
 }
 
 function cleanupLegacyInstalls(): void {
-  if (!existsSync(LEGACY_RUNNER_INSTALL_DIR)) return;
-  for (const entry of readdirSync(LEGACY_RUNNER_INSTALL_DIR)) {
-    const path = join(LEGACY_RUNNER_INSTALL_DIR, entry);
-    if (/^v\d/.test(entry) && statSync(path).isDirectory()) {
-      rmSync(path, { recursive: true, force: true });
-    }
-  }
   rmSync(LEGACY_RUNNER_INSTALL_DIR, { recursive: true, force: true });
 }
 
@@ -93,23 +86,29 @@ async function installAmaRunner(version: string, targetPath: string): Promise<vo
   const [archive, checksums] = await Promise.all([fetchBytes(`${baseUrl}/${artifactName}`), fetchText(`${baseUrl}/checksums.txt`)]);
   assertSha256(archive, expectedSha256(checksums, artifactName));
 
-  const tmpDir = mkdtempSync(join(tmpdir(), "ak-ama-runner-"));
-  const archivePath = join(tmpDir, artifactName);
-  writeFileSync(archivePath, archive);
-  const tar = spawnSync("tar", ["-xzf", archivePath, "-C", tmpDir], { encoding: "utf-8" });
-  if (tar.status !== 0) {
-    rmSync(tmpDir, { recursive: true, force: true });
-    throw new Error(`Failed to extract AMA runner: ${tar.stderr || tar.stdout}`);
-  }
+  // Extract inside BIN_DIR so the final rename stays on one filesystem —
+  // rename(2) from the OS temp dir fails with EXDEV when /tmp is tmpfs.
   mkdirSync(BIN_DIR, { recursive: true });
-  rmSync(targetPath, { force: true });
-  renameSync(join(tmpDir, "ama-runner"), targetPath);
-  rmSync(tmpDir, { recursive: true, force: true });
-  chmodSync(targetPath, 0o755);
+  const tmpDir = mkdtempSync(join(BIN_DIR, ".ama-runner-install-"));
+  try {
+    const archivePath = join(tmpDir, artifactName);
+    writeFileSync(archivePath, archive);
+    const tar = spawnSync("tar", ["-xzf", archivePath, "-C", tmpDir], { encoding: "utf-8" });
+    if (tar.status !== 0) {
+      throw new Error(`Failed to extract AMA runner: ${tar.stderr || tar.stdout}`);
+    }
+    rmSync(targetPath, { force: true });
+    renameSync(join(tmpDir, "ama-runner"), targetPath);
+    chmodSync(targetPath, 0o755);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
-export async function resolveAmaRunnerBinary(): Promise<ResolvedAmaRunner> {
-  const version = AMA_RUNNER_VERSION;
+// The server can pin the runner version via machine registration; the local
+// constant is the fallback for servers that don't.
+export async function resolveAmaRunnerBinary(requestedVersion?: string | null): Promise<ResolvedAmaRunner> {
+  const version = requestedVersion || AMA_RUNNER_VERSION;
   cleanupLegacyInstalls();
   if (!installedRunnerMatches(AMA_RUNNER_PATH, version)) {
     await installAmaRunner(version, AMA_RUNNER_PATH);
