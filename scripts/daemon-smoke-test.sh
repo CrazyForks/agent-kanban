@@ -290,7 +290,7 @@ start_dev_sweep_loop() {
 
 dispatch_task_description() {
   local marker="$1" subagent_check="$2"
-  local desc="Run the project's install command if needed. Add file $marker.txt containing the current timestamp. Commit and open a PR."
+  local desc="Add file $marker.txt containing the current timestamp. Commit and open a PR. No dependency installation is needed for this change."
   if [ -n "$subagent_check" ]; then
     desc="$desc Also verify the subagent definition file $subagent_check exists in this workspace; once verified, include the literal text $SUBAGENT_TOKEN in your completion summary or task log."
   fi
@@ -370,7 +370,7 @@ run_complete_phase() {
 run_cancel_phase() {
   local label="$1" agent_id="$2"
   local task_id
-  task_id=$(create_task "$agent_id" "smoke-cancel-$label-$TIMESTAMP" "Run the project's install command. Then run: sleep 300. This task will be cancelled.")
+  task_id=$(create_task "$agent_id" "smoke-cancel-$label-$TIMESTAMP" "Run this shell command and wait for it: sleep 300. This task will be cancelled while it runs.")
   echo "  Task: $task_id"
 
   if wait_status "$task_id" in_progress 5m; then
