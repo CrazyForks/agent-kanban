@@ -10,7 +10,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const testSessionsDir = join(tmpdir(), `ak-start-command-test-${randomUUID()}`);
 const testRunnerBin = join(testSessionsDir, "runners", "ama-runner");
 const spawnMock = vi.fn(() => ({ pid: 12345, unref: vi.fn() }));
-const assertDaemonDependenciesMock = vi.fn();
 
 vi.mock("node:child_process", () => ({ spawn: spawnMock }));
 vi.mock("../src/amaRunner.js", () => ({
@@ -19,7 +18,6 @@ vi.mock("../src/amaRunner.js", () => ({
     version: { name: "ama-runner", version: "0.1.0", commit: "test-commit", buildDate: "test-build" },
   })),
 }));
-vi.mock("../src/daemon/preflight.js", () => ({ assertDaemonDependencies: assertDaemonDependenciesMock }));
 vi.mock("../src/providers/registry.js", () => ({ getAvailableProviders: () => [{ name: "codex" }] }));
 vi.mock("../src/device.js", () => ({ generateDeviceId: () => "device-test" }));
 vi.mock("../src/machineName.js", () => ({ resolveMachineName: () => "test-machine" }));
@@ -66,7 +64,7 @@ vi.mock("../src/paths.js", async () => {
 });
 
 const { writeSession, clearAllSessions } = await import("../src/session/store.js");
-const { confirmDaemonShutdown, listRunningTaskSessions, registerRestartCommand, registerStartCommand, registerStatusCommand } = await import("../src/commands/start.js");
+const { registerRestartCommand, registerStartCommand, registerStatusCommand } = await import("../src/commands/start.js");
 const stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
 
@@ -93,7 +91,6 @@ function setTTY(stdin: boolean, stdout: boolean): void {
 beforeEach(() => {
   mkdirSync(testSessionsDir, { recursive: true });
   spawnMock.mockClear();
-  assertDaemonDependenciesMock.mockClear();
 });
 
 afterEach(() => {
@@ -175,7 +172,7 @@ describe("start runtime command", () => {
     expect(spawnMock.mock.calls[0]?.[2]?.env).not.toMatchObject({ AMA_TOKEN: "runner-token" });
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Machine runner started"));
     const state = JSON.parse(readFileSync(join(testSessionsDir, "daemon-state.json"), "utf-8"));
-    expect(state).toMatchObject({ runtime: "ama-runner", apiUrl: "https://ak.test", providers: ["machine-runner"] });
+    expect(state).toMatchObject({ runtime: "ama-runner", apiUrl: "https://ak.test", providers: ["codex"] });
     expect(state.runnerVersion).toMatchObject({ version: "0.1.0", commit: "test-commit" });
   });
 
@@ -303,7 +300,7 @@ describe("status command — ama-runner with machineId", () => {
     await program.parseAsync(["status"], { from: "user" });
 
     const logged = logSpy.mock.calls.map((c) => String(c[0]));
-    expect(logged.some((line) => line.includes("AMA runner") && line.includes("online"))).toBe(true);
+    expect(logged.some((line) => line.includes("Runner:") && line.includes("online"))).toBe(true);
     expect(logged.some((line) => line.includes("Runtimes") && line.includes("claude") && line.includes("codex"))).toBe(true);
   });
 
@@ -375,7 +372,7 @@ describe("status command — ama-runner with machineId", () => {
     await program.parseAsync(["status"], { from: "user" });
 
     const logged = logSpy.mock.calls.map((c) => String(c[0]));
-    expect(logged.some((line) => line.includes("AMA runner") && line.includes("could not reach AK API"))).toBe(true);
+    expect(logged.some((line) => line.includes("Runner:") && line.includes("could not reach AK API"))).toBe(true);
   });
 
   it("does not print AMA runner line when state has no machineId", async () => {
@@ -405,42 +402,3 @@ describe("status command — ama-runner with machineId", () => {
   });
 });
 
-describe("daemon shutdown confirmation", () => {
-  it("lists only active worker sessions with task IDs as running tasks", () => {
-    const active = makeSession({ taskId: "task-active" });
-    writeSession(active);
-    writeSession(makeSession({ status: "in_review", taskId: "task-review" }));
-    writeSession(makeSession({ status: "rate_limited", taskId: "task-rate-limited" }));
-    writeSession(makeSession({ status: "closed", taskId: "task-closed" }));
-    writeSession(makeSession({ taskId: undefined }));
-    writeSession(makeSession({ type: "leader", pid: process.pid, taskId: "task-leader" }));
-
-    expect(listRunningTaskSessions()).toEqual([{ sessionId: active.sessionId, taskId: "task-active" }]);
-  });
-
-  it("rejects non-TTY shutdown when active tasks exist and --yes is not set", async () => {
-    writeSession(makeSession({ sessionId: "session-active", taskId: "task-active" }));
-    setTTY(false, false);
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit");
-    }) as never);
-
-    await expect(confirmDaemonShutdown("stop", false)).rejects.toThrow("process.exit");
-
-    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("Re-run with -y/--yes to confirm."));
-    expect(exitSpy).toHaveBeenCalledWith(1);
-  });
-
-  it("allows non-TTY shutdown when --yes is set", async () => {
-    writeSession(makeSession({ taskId: "task-active" }));
-    setTTY(false, false);
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit");
-    }) as never);
-
-    await expect(confirmDaemonShutdown("restart", true)).resolves.toBeUndefined();
-
-    expect(exitSpy).not.toHaveBeenCalled();
-  });
-});

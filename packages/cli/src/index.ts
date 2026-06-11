@@ -285,20 +285,6 @@ registerStatusCommand(program);
 registerLogsCommand(program);
 registerUpgradeCommand(program);
 
-program
-  .command("__daemon", { hidden: true })
-  .option("--max-concurrent <n>", "", "3")
-  .option("--poll-interval <ms>", "", "10000")
-  .option("--task-timeout <ms>", "", "7200000")
-  .action(async (opts) => {
-    const { startDaemon } = await import("./daemon/index.js");
-    await startDaemon({
-      maxConcurrent: parseInt(opts.maxConcurrent, 10),
-      pollInterval: parseInt(opts.pollInterval, 10),
-      taskTimeout: parseInt(opts.taskTimeout, 10),
-    });
-  });
-
 // Fire update check in background for non-npx, non-worker invocations
 const updatePromise = !isNpx() && !isWorkerAgent() ? checkForUpdate() : Promise.resolve(null);
 
