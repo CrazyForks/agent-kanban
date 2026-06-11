@@ -102,6 +102,49 @@ environment. The runner command line contains the config path, AMA API server,
 project, environment, workdir, and concurrency because those are runner process
 inputs, but they are not exposed as AK CLI options.
 
+## Cloud Placement (AMA Sandbox Runtime)
+
+Placement is derived from the agent runtime, not from a per-task field:
+
+- Agent runtime `ama` (label "AMA Cloud") maps to AMA's `ama` runtime and runs
+  on the AMA Cloudflare Sandbox plane. All other runtimes map to machine-hosted
+  self-hosted runners as before.
+- Each owner gets one lazily created cloud AMA environment
+  (`hostingMode: "cloud"`), recorded as `cloudEnvironmentId` on the owner
+  integration. Cloud sessions are sandbox-isolated per session, so one
+  environment serves the whole tenant.
+- Cloud dispatch skips the runner capacity gate (AMA scales sandboxes per
+  session) and otherwise follows the same session/binding lifecycle.
+- Dispatch is serialized by an atomic claim: `ama.dispatch.result` flips
+  null → `dispatching` via a conditional update, so the create/assign request
+  and the cron sweep can no longer double-create sessions. Assign requests
+  claim with takeover (may seize an `accepted` dispatch to kick a bound task,
+  never an in-flight one). Stale `dispatching` claims are released by the
+  reconcile sweep.
+- Cloud sessions get `GH_TOKEN` for pushes from the server-level
+  `GITHUB_AGENT_TOKEN`, stored once per owner in the AMA vault and reused
+  across sessions (interim until per-owner GitHub credentials exist).
+- npm is unusable inside the sandbox (npm worker processes orphan the exec
+  pipe), so the CLI ships as a fully bundled single file
+  (`packages/cli` tsup `standalone` entry, provider SDKs stubbed) served by
+  the web app at `/cli/ak-standalone.mjs` with a `/cli/install.sh` bootstrap.
+  The cloud initial prompt is self-contained: install CLI, claim, branch,
+  commit/push (git identity + credential store are pre-configured by AMA
+  workspace preparation), create the PR via the GitHub API, submit review.
+- The dev server has no cron; the smoke script drives the dispatch/reconcile
+  sweeps by poking `/cdn-cgi/handler/scheduled`, and cloud runs against a
+  local dev server need a public `AK_API_URL` (cloudflared quick tunnel).
+
+AMA-side enablers shipped to AMA master for this placement: shared vault
+secret-env resolution for cloud session startup, sandbox session env
+injection, workspace clone with git identity/credential store, default
+sandbox toolset when the agent has no explicit allow-list, queue-consumer
+execution for session startup and turns (HTTP waitUntil killed any long
+sandbox command mid-run), a bounded 10-minute sandbox exec, a watchdog that
+errors stalled pending/running cloud sessions and reaps leaked sandboxes
+(container instance capacity), absolute `/workspace` paths in file tools, and
+idle-session reclaim for queued prompts (reject/resume race).
+
 ## Metadata
 
 AK task metadata annotations may contain:
@@ -182,18 +225,24 @@ Local AK checks:
 - `bash scripts/install-cli.sh`
 - `./scripts/daemon-smoke-test.sh --runtime codex`
 
-Real smoke evidence from the latest successful run (claude runtime, local AK
-dev server + deployed AMA + released runner v0.1.0):
+Real smoke evidence from the placement-scenario runs on 2026-06-11 (local AK
+dev server behind a cloudflared tunnel + deployed AMA + released runner
+v0.1.0):
 
-- generated PR: `https://github.com/saltbo/slink/pull/65`
-- smoke summary: `Passed 11 Failed 0`
-- the codex run was correctly refused by the new quota-aware dispatch (codex
-  5-hour window at 100% at the time), which is the intended behavior
+- pure cloud (`./scripts/daemon-smoke-test.sh ama`): `Passed 10 Failed 0`,
+  full lifecycle on the Cloudflare Sandbox — dispatch, claim via the
+  standalone CLI, work, PR `saltbo/slink#70` created through the GitHub API
+  with the vault-delivered `GH_TOKEN`, reject/resume re-review, completion
+  with binding teardown, cancel with sandbox teardown.
+- mixed (`./scripts/daemon-smoke-test.sh mixed`): `Passed 11 Failed 0` —
+  one codex task on the local runner and one ama task on the cloud sandbox
+  ran the dispatch→review→complete lifecycle concurrently
+  (PRs `saltbo/slink#73` local, `saltbo/slink#74` cloud).
+- pure local (`./scripts/daemon-smoke-test.sh codex`): full 4-test lifecycle
+  against the machine runner (see latest run log for the summary line).
 
-The smoke created real AK tasks, dispatched them through the online AMA
-environment with a local runner, verified claim, in-progress, review, reject,
-resume, second review, completion, session cleanup, cancellation, and cancelled
-session cleanup.
+Earlier claude-runtime evidence (PR `saltbo/slink#65`, `Passed 11 Failed 0`)
+still stands for the runner path.
 
 AMA support work was pushed separately in Any Managed Agents:
 
@@ -247,6 +296,18 @@ All of these are implemented and tested:
 
 ## Remaining Follow-Up
 
+- AMA's runtime catalog pins self-hosted session models to one id per runtime
+  (codex → `gpt-5.3-codex`); session creation 409s for any other model even
+  when the runner could serve it. Validation should defer to runner-declared
+  capabilities. (AMA)
+- AK reconcile does not recover tasks whose AMA session waits forever in
+  `pending`/`waiting-for-runner` (e.g. model/capability mismatch after
+  dispatch); add an age-based release. (AK)
+- Per-owner GitHub credentials for cloud pushes; `GITHUB_AGENT_TOKEN` is a
+  server-level interim. (AK)
+- The standalone CLI bundle is rebuilt by `apps/web` prebuild and
+  `scripts/install-cli.sh`; consider publishing it with the npm release so
+  cloud sessions don't depend on the serving AK instance's build. (AK)
 - GPG commit signing per agent (runner-side session signing key). (AMA)
 - Register the production GitHub App and add a "Connect GitHub" install link
   in the web UI (the receiver endpoint is live; the app itself is a one-time
