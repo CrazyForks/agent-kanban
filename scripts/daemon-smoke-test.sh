@@ -299,9 +299,20 @@ dispatch_task_description() {
 
 # ── Lifecycle phases (parameterized by agent/task) ───────────────────────────
 
+# The parallel scenario checks tasks sequentially; a fast task may already be
+# past the awaited status by the time its check runs.
+wait_status_reached_or_passed() {
+  local task_id="$1" timeout="$2"
+  if wait_status "$task_id" in_progress "$timeout"; then return 0; fi
+  case "$(task_status "$task_id")" in
+    in_review | done) return 0 ;;
+  esac
+  return 1
+}
+
 run_dispatch_phase() {
   local label="$1" task_id="$2" check_subagent="$3"
-  if wait_status "$task_id" in_progress 5m; then
+  if wait_status_reached_or_passed "$task_id" 5m; then
     pass "[$label] task reached in_progress"
     if [ -n "$check_subagent" ]; then
       if wait_subagent_evidence "$task_id" 600; then
