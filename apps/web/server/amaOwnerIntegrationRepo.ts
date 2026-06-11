@@ -89,6 +89,11 @@ export async function resolveAmaProjectId(db: D1, env: Env, ownerId: string): Pr
   return (await ensureAmaOwnerIntegration(db, env, ownerId)).amaProjectId;
 }
 
+// Read-only variant for GET paths: a read must never provision AMA resources.
+export async function getAmaProjectId(db: D1, ownerId: string): Promise<string | null> {
+  return (await getAmaOwnerIntegration(db, ownerId))?.amaProjectId ?? null;
+}
+
 export async function resolveAmaExternalTenantId(db: D1, env: Env, ownerId: string): Promise<string> {
   return (await ensureAmaOwnerIntegration(db, env, ownerId)).externalTenantId;
 }

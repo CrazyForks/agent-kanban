@@ -82,6 +82,39 @@ export async function bindAmaAgentSession(db: D1, sessionId: string, amaSessionI
   await db.prepare("UPDATE ama_agent_sessions SET ama_session_id = ? WHERE id = ?").bind(amaSessionId, sessionId).run();
 }
 
+export async function setAmaAgentSessionSecretCredential(db: D1, sessionId: string, credentialId: string | null): Promise<void> {
+  await db.prepare("UPDATE ama_agent_sessions SET secret_credential_id = ? WHERE id = ?").bind(credentialId, sessionId).run();
+}
+
+// Absolute set (idempotent) — usage comes pre-aggregated from the AMA usage
+// summary at teardown time, unlike the legacy delta-based updateSessionUsage.
+export async function setAmaAgentSessionUsageTotals(
+  db: D1,
+  sessionId: string,
+  totals: { promptTokens: number; completionTokens: number; costMicros: number },
+): Promise<void> {
+  await db
+    .prepare("UPDATE ama_agent_sessions SET input_tokens = ?, output_tokens = ?, cost_micro_usd = ? WHERE id = ?")
+    .bind(totals.promptTokens, totals.completionTokens, totals.costMicros, sessionId)
+    .run();
+}
+
+export interface AmaAgentSessionRow {
+  id: string;
+  owner_id: string;
+  agent_id: string;
+  ama_session_id: string | null;
+  status: "active" | "closed";
+  secret_credential_id: string | null;
+}
+
+export async function getAmaAgentSession(db: D1, sessionId: string): Promise<AmaAgentSessionRow | null> {
+  return db
+    .prepare("SELECT id, owner_id, agent_id, ama_session_id, status, secret_credential_id FROM ama_agent_sessions WHERE id = ?")
+    .bind(sessionId)
+    .first<AmaAgentSessionRow>();
+}
+
 async function registerBetterAuthAgentSession(
   env: Env,
   db: D1,
@@ -164,19 +197,6 @@ export async function closeSession(db: D1, sessionId: string): Promise<void> {
   const now = new Date().toISOString();
   await db.prepare("UPDATE agent_sessions SET status = 'closed', closed_at = ? WHERE id = ?").bind(now, sessionId).run();
   await db.prepare("UPDATE ama_agent_sessions SET status = 'closed', closed_at = ? WHERE id = ?").bind(now, sessionId).run();
-}
-
-export async function closeAmaAgentSessionForTask(db: D1, task: { metadata?: unknown }): Promise<void> {
-  const metadata =
-    task.metadata && typeof task.metadata === "object" && !Array.isArray(task.metadata) ? (task.metadata as Record<string, unknown>) : {};
-  const annotations =
-    metadata.annotations && typeof metadata.annotations === "object" && !Array.isArray(metadata.annotations)
-      ? (metadata.annotations as Record<string, unknown>)
-      : {};
-  const sessionId = annotations.agentSessionId;
-  if (typeof sessionId === "string" && sessionId.length > 0) {
-    await closeSession(db, sessionId);
-  }
 }
 
 export async function reopenSession(db: D1, sessionId: string): Promise<void> {

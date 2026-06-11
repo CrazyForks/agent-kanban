@@ -20,8 +20,8 @@ export interface Env {
   AMA_OAUTH_CLIENT_SECRET?: string;
   AMA_OAUTH_SCOPE?: string;
   AK_FEDERATED_RUNNER_SUBJECT_SECRET?: string;
-  AK_ENABLE_LEGACY_DAEMON_API?: string;
-  AK_ENABLE_LEGACY_TUNNEL?: string;
+  AMA_RUNNER_VERSION?: string;
+  GITHUB_APP_WEBHOOK_SECRET?: string;
   MIN_CLI_VERSION?: string;
 }
 

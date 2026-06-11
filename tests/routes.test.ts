@@ -1796,9 +1796,9 @@ describe("routes", () => {
         "ama.environmentId": "env_123",
         "ama.runtime": "claude-code",
         "ama.sessionId": "session_ama_123",
-        "ama.runtimeSecretEnv.AK_AGENT_KEY": "vaultver_123",
         "ama.dispatch.result": "accepted",
       });
+      expect(body.metadata.annotations).not.toHaveProperty("ama.runtimeSecretEnv.AK_AGENT_KEY");
       expect(body.metadata.annotations.agentSessionId).toEqual(expect.any(String));
       const taskRow = await env.DB.prepare("SELECT description FROM tasks WHERE id = ?").bind(body.id).first<{ description: string }>();
       expect(taskRow?.description).toBe(taskDetail);
@@ -2059,6 +2059,9 @@ describe("routes", () => {
       }
       if (url === "https://ama.test/api/sessions/session_release_old/stop?reason=user_requested") {
         return new Response(JSON.stringify({ id: "session_release_old", status: "stopped" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/sessions/session_release_1/stop?reason=user_requested") {
+        return new Response(JSON.stringify({ id: "session_release_1", status: "stopped" }), { status: 200 });
       }
       if (url === "https://ama.test/api/sessions") {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
@@ -2434,7 +2437,10 @@ describe("routes", () => {
       const cancelRes = await apiRequest("POST", `/api/tasks/${cancelTask.id}/cancel`, {}, leaderJwt);
       expect(cancelRes.status).toBe(200);
       const cancelled = (await cancelRes.json()) as any;
-      expect(cancelled.metadata.annotations).toMatchObject({ "ama.lastCommand": "stop", "ama.lastCommand.result": "accepted" });
+      // cancel does best-effort teardown: binding annotations are cleared, no ama.lastCommand written
+      expect(cancelled.status).toBe("cancelled");
+      expect(cancelled.metadata.annotations["ama.sessionId"]).toBeNull();
+      expect(cancelled.metadata.annotations["ama.dispatch.result"]).toBeNull();
 
       expect(runtimeMessages).toEqual([
         "Please continue",
@@ -2490,13 +2496,15 @@ describe("routes", () => {
       const leaderJwt = await signLeaderSessionJWT();
       const rejectRes = await apiRequest("POST", `/api/tasks/${rejectTarget.id}/reject`, { reason: "try again" }, leaderJwt);
       const cancelRes = await apiRequest("POST", `/api/tasks/${cancelTarget.id}/cancel`, {}, leaderJwt);
+      // reject: non-404/409 AMA failure → rollback to in_review, return 500
       expect(rejectRes.status).toBe(500);
-      expect(cancelRes.status).toBe(500);
+      // cancel: best-effort teardown → always 200 + cancelled, even when AMA stop fails
+      expect(cancelRes.status).toBe(200);
+      const cancelledBody = (await cancelRes.json()) as any;
+      expect(cancelledBody.status).toBe("cancelled");
 
       const rejectRow = await env.DB.prepare("SELECT status FROM tasks WHERE id = ?").bind(rejectTarget.id).first<{ status: string }>();
-      const cancelRow = await env.DB.prepare("SELECT status FROM tasks WHERE id = ?").bind(cancelTarget.id).first<{ status: string }>();
       expect(rejectRow?.status).toBe("in_review");
-      expect(cancelRow?.status).toBe("in_progress");
     } finally {
       Object.assign(env, previousAma);
       vi.unstubAllGlobals();

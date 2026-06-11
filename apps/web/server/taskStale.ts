@@ -1,6 +1,11 @@
 import { STALE_TIMEOUT_MS } from "@agent-kanban/shared";
 import type { D1 } from "./db";
-import { releaseTask } from "./taskRepo";
+import { createLogger } from "./logger";
+import { releaseTaskRuntimeBinding } from "./taskDispatch";
+import { getTask, releaseTask } from "./taskRepo";
+import type { Env } from "./types";
+
+const logger = createLogger("taskStale");
 
 export async function detectAndReleaseStale(db: D1, boardId: string): Promise<void> {
   const cutoff = new Date(Date.now() - STALE_TIMEOUT_MS).toISOString();
@@ -29,21 +34,30 @@ export async function detectAndReleaseStale(db: D1, boardId: string): Promise<vo
 // safely batch). Under a long cron outage this degrades to a serialized
 // chain, but the stale timeout (24h) means such volumes are rare and the
 // cron will make steady progress on subsequent ticks either way.
-export async function detectAndReleaseStaleAll(db: D1): Promise<void> {
+export async function detectAndReleaseStaleAll(db: D1, env: Env): Promise<void> {
   const cutoff = new Date(Date.now() - STALE_TIMEOUT_MS).toISOString();
 
   const staleTasks = await db
     .prepare(`
-    SELECT t.id FROM tasks t
+    SELECT t.id, b.owner_id FROM tasks t
+    JOIN boards b ON t.board_id = b.id
     WHERE t.status = 'in_progress' AND t.assigned_to IS NOT NULL
     AND (
       SELECT MAX(tl.created_at) FROM task_actions tl WHERE tl.task_id = t.id
     ) < ?
   `)
     .bind(cutoff)
-    .all<{ id: string }>();
+    .all<{ id: string; owner_id: string }>();
 
   for (const stale of staleTasks.results) {
+    // Stop the wedged runtime session before releasing, so it doesn't keep
+    // burning quota against a task that is no longer running it.
+    try {
+      const task = await getTask(db, stale.id, stale.owner_id);
+      if (task) await releaseTaskRuntimeBinding(db, env, task, "timeout");
+    } catch (error) {
+      logger.warn(`runtime teardown failed for stale task ${stale.id}: ${error}`);
+    }
     await releaseTask(db, stale.id, "machine", "system", "machine", "timed_out");
   }
 }

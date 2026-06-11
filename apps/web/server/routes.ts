@@ -27,8 +27,9 @@ import {
   updateAgent,
   upsertLatestAgent,
 } from "./agentRepo";
-import { closeAmaAgentSessionForTask, closeSession, createSession, listSessions, reopenSession, updateSessionUsage } from "./agentSessionRepo";
-import { ensureAmaOwnerIntegration, resolveAmaExternalTenantId, resolveAmaProjectId } from "./amaOwnerIntegrationRepo";
+import { closeSession, createSession, listSessions, reopenSession, updateSessionUsage } from "./agentSessionRepo";
+import { ensureAmaOwnerIntegration, getAmaProjectId, resolveAmaExternalTenantId, resolveAmaProjectId } from "./amaOwnerIntegrationRepo";
+import { handleGithubPullRequestEvent, verifyGithubSignature } from "./githubWebhook";
 import {
   archiveAmaScheduledAgentTrigger,
   type AmaRunner,
@@ -99,9 +100,9 @@ import {
   dispatchTaskToAma,
   ensureAmaAgentForAkAgent,
   getReadyAmaMachineEnvironmentForRuntime,
+  releaseTaskRuntimeBinding,
   sendTaskMessageToAma,
   sendTaskRejectToAma,
-  stopTaskAmaSession,
 } from "./taskDispatch";
 import {
   addTaskAction,
@@ -297,7 +298,8 @@ async function publicBoardMaintainerWithAmaStatus(db: D1, env: Env, ownerId: str
   const publicMaintainer = publicBoardMaintainer(maintainer);
   if (!isAmaTaskDispatchConfigured(env)) return publicMaintainer;
 
-  const projectId = await resolveAmaProjectId(db, env, ownerId);
+  const projectId = await getAmaProjectId(db, ownerId);
+  if (!projectId) return publicMaintainer;
   const runs = await listAmaScheduledTriggerRuns(env, projectId, maintainer.ama_schedule_id, { limit: 1 });
   const latestRun = runs.data[0];
   return {
@@ -319,7 +321,8 @@ async function availableAmaRuntimes(db: D1, env: Env, ownerId: string): Promise<
   const environmentIds = [...new Set(machines.map((machine) => machine.ama_environment_id).filter((id): id is string => Boolean(id)))];
   const runtimes = new Set<string>();
   if (environmentIds.length === 0) return runtimes;
-  const projectId = await resolveAmaProjectId(db, env, ownerId);
+  const projectId = await getAmaProjectId(db, ownerId);
+  if (!projectId) return runtimes;
   const runnerLists = await Promise.all(environmentIds.map((environmentId) => listAmaRunners(env, projectId, environmentId)));
   for (const runners of runnerLists) {
     for (const runner of runners.data) {
@@ -435,7 +438,10 @@ async function machinesWithRuntimeStatus<T extends MachineRecord | MachineWithAg
   if (machines.every((machine) => !machine.ama_environment_id)) {
     return machines.map((machine) => ({ ...machine, status: "offline", last_heartbeat_at: null, runtimes: [] }));
   }
-  const projectId = await resolveAmaProjectId(db, env, ownerId);
+  const projectId = await getAmaProjectId(db, ownerId);
+  if (!projectId) {
+    return machines.map((machine) => ({ ...machine, status: "offline", last_heartbeat_at: null, runtimes: [] }));
+  }
   return await Promise.all(machines.map((machine) => machineWithAmaRunnerStatus(env, projectId, machine)));
 }
 
@@ -450,9 +456,12 @@ async function machinesWithRuntimeStatusByOwner<T extends MachineRecord | Machin
         return { ...machine, status: "offline", last_heartbeat_at: null, runtimes: [] };
       }
       let projectId = projectIds.get(machine.owner_id);
-      if (!projectId) {
-        projectId = await resolveAmaProjectId(db, env, machine.owner_id);
+      if (projectId === undefined) {
+        projectId = (await getAmaProjectId(db, machine.owner_id)) ?? "";
         projectIds.set(machine.owner_id, projectId);
+      }
+      if (!projectId) {
+        return { ...machine, status: "offline", last_heartbeat_at: null, runtimes: [] };
       }
       return await machineWithAmaRunnerStatus(env, projectId, machine);
     }),
@@ -503,6 +512,9 @@ async function createMachineRunnerOnboarding(env: Env, machine: MachineRecord, o
     refreshToken: token.refreshToken,
     tokenType: token.tokenType,
     expiresIn: token.expiresIn,
+    // Server-pinned runner version: lets the control plane roll the runner
+    // forward without a CLI release. Absent → the CLI falls back to its pin.
+    version: env.AMA_RUNNER_VERSION ?? null,
   };
 }
 
@@ -547,6 +559,28 @@ api.on(["GET", "POST"], "/api/auth/**", async (c) => {
 });
 
 api.get("/api/ping", (c) => c.json({ pong: true }));
+
+// ─── GitHub App webhook receiver (no session auth — HMAC-verified) ───
+// Registered BEFORE the `api.use("/api/*", authMiddleware)` block below:
+// Hono applies middleware only to routes registered after the use() call, so
+// moving this route (or the middleware) changes its auth exposure.
+// One platform GitHub App delivers all installations' pull_request events
+// here, signed with the app webhook secret (GITHUB_APP_WEBHOOK_SECRET).
+// Users only install the app on their repositories — no per-user setup.
+
+api.post("/api/webhooks/github-app", async (c) => {
+  const secret = c.env.GITHUB_APP_WEBHOOK_SECRET;
+  if (!secret) throw new HTTPException(503, { message: "GitHub App webhook is not configured" });
+  const signature = c.req.header("x-hub-signature-256");
+  const body = await c.req.text();
+  if (!signature || !(await verifyGithubSignature(secret, body, signature))) {
+    throw new HTTPException(401, { message: "Invalid webhook signature" });
+  }
+  const event = c.req.header("x-github-event");
+  if (event !== "pull_request") return c.json({ ok: true, handled: false });
+  const result = await handleGithubPullRequestEvent(c.env.DB, c.env, JSON.parse(body));
+  return c.json({ ok: true, ...result });
+});
 
 // ─── Public Share Routes (no auth required) ───
 
@@ -1071,7 +1105,8 @@ api.get("/api/agents/:agentId/sessions", async (c) => {
   if (!isAmaTaskDispatchConfigured(c.env)) return c.json(sessions);
 
   const ownerId = c.get("ownerId");
-  const projectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
+  const projectId = await getAmaProjectId(c.env.DB, ownerId);
+  if (!projectId) return c.json(sessions);
   const enriched = await Promise.all(
     sessions.map(async (session) => {
       const amaSessionId = typeof (session as any).ama_session_id === "string" ? (session as any).ama_session_id : null;
@@ -1231,23 +1266,40 @@ api.post("/api/tasks/:id/claim", async (c) => {
 api.post("/api/tasks/:id/complete", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
 
-  const existing = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
-  if (existing) await stopTaskAmaSession(c.env.DB, c.env, existing);
   const task = await completeTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), sessionId);
-  if (task) await closeAmaAgentSessionForTask(c.env.DB, task);
-  return c.json(task);
+  if (!task) return c.json(task);
+  // Best-effort runtime teardown: the task is done either way, and the
+  // reconcile sweep mops up if AMA is unreachable right now.
+  let unbound: Task | null = null;
+  try {
+    unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, task);
+  } catch (error) {
+    logger.warn(`runtime teardown failed for completed task ${task.id}: ${error}`);
+  }
+  return c.json(unbound ?? task);
 });
 
 api.post("/api/tasks/:id/release", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
-  const existing = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
-  if (existing) await stopTaskAmaSession(c.env.DB, c.env, existing);
   const task = await releaseTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), "released", sessionId);
-  if (task) await closeAmaAgentSessionForTask(c.env.DB, task);
   if (!task) return c.json(task);
 
-  const dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), task, { apiOrigin: new URL(c.req.url).origin });
-  return c.json(dispatched);
+  // Best-effort teardown: the release already happened; if AMA is unreachable
+  // the reconcile sweep tears the leftover binding down later.
+  let unbound: Task;
+  try {
+    unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, task);
+  } catch (error) {
+    logger.warn(`runtime teardown failed for released task ${task.id}: ${error}`);
+    return c.json(task);
+  }
+  try {
+    return c.json(await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), unbound, { apiOrigin: new URL(c.req.url).origin }));
+  } catch (error) {
+    // The release itself succeeded; the dispatch sweep retries the re-dispatch.
+    logger.warn(`re-dispatch after release failed for task ${task.id}: ${error}`);
+    return c.json(unbound);
+  }
 });
 
 api.post("/api/tasks/:id/assign", async (c) => {
@@ -1279,12 +1331,17 @@ api.post("/api/tasks/:id/assign", async (c) => {
 
 api.post("/api/tasks/:id/cancel", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
-  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
-  if (!task) throw new HTTPException(404, { message: "Task not found" });
-  await stopTaskAmaSession(c.env.DB, c.env, task);
   const cancelled = await cancelTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), sessionId);
-  if (cancelled) await closeAmaAgentSessionForTask(c.env.DB, cancelled);
-  return c.json(cancelled);
+  if (!cancelled) throw new HTTPException(404, { message: "Task not found" });
+  // Best-effort runtime teardown: the task is cancelled either way, and the
+  // reconcile sweep mops up if AMA is unreachable right now.
+  let unbound: Task | null = null;
+  try {
+    unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, cancelled);
+  } catch (error) {
+    logger.warn(`runtime teardown failed for cancelled task ${cancelled.id}: ${error}`);
+  }
+  return c.json(unbound ?? cancelled);
 });
 
 api.post("/api/tasks/:id/review", async (c) => {
@@ -1303,6 +1360,17 @@ api.post("/api/tasks/:id/reject", async (c) => {
   try {
     return c.json(await sendTaskRejectToAma(c.env.DB, c.env, task, body.reason));
   } catch (error) {
+    const status = (error as { status?: unknown }).status;
+    if (status === 404 || status === 409) {
+      // The session died since review was submitted, so there is nothing to
+      // resume. Tear down the dead binding and release the task; the dispatch
+      // sweep starts a fresh session, and the rejection reason stays visible
+      // in the task notes.
+      const unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, task, "runtime_error");
+      // System-initiated recovery release, not a reviewer action.
+      const released = await releaseTask(c.env.DB, task.id, "machine", "system", "machine", "released", sessionId);
+      return c.json(released ?? unbound);
+    }
     await rollbackRejectedTask(c.env.DB, task.id);
     throw error;
   }

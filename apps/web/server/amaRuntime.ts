@@ -1,4 +1,4 @@
-import { AmaClient } from "@any-managed-agents/sdk";
+import { AmaClient, type AmaOperationId, type AmaRequestOptions } from "@any-managed-agents/sdk";
 import type { Env } from "./types";
 
 export type AmaResourceRef = Record<string, unknown>;
@@ -580,6 +580,34 @@ export async function createAmaSessionSecret(env: Env, input: AmaSessionSecretIn
   return { credentialId: credential.id, activeVersionId: credential.activeVersionId };
 }
 
+export interface AmaSessionUsageTotals {
+  promptTokens: number;
+  completionTokens: number;
+  costMicros: number;
+}
+
+export async function readAmaSessionUsageTotals(env: Env, projectId: string, sessionId: string): Promise<AmaSessionUsageTotals | null> {
+  const client = await createAmaClient(env, projectId);
+  const summary = await client.request<{ totals?: { records?: number; promptTokens?: number; completionTokens?: number; costMicros?: number } }>(
+    "readUsageSummary",
+    { query: { sessionId } },
+  );
+  if (!summary.totals?.records) return null;
+  return {
+    promptTokens: summary.totals.promptTokens ?? 0,
+    completionTokens: summary.totals.completionTokens ?? 0,
+    costMicros: summary.totals.costMicros ?? 0,
+  };
+}
+
+export async function revokeAmaVaultCredential(env: Env, projectId: string, vaultId: string, credentialId: string): Promise<void> {
+  const client = await createAmaClient(env, projectId);
+  await client.request("updateVaultCredential", {
+    path: { vaultId, credentialId },
+    body: { status: "revoked", revokeReason: "AK agent session closed" },
+  });
+}
+
 export async function sendAmaSessionMessage(env: Env, projectId: string, sessionId: string, message: string): Promise<AmaRuntimeCommandResult> {
   const client = await createAmaClient(env, projectId);
   const result = await client.request<{ accepted?: boolean }>("createSessionCommand", {
@@ -718,11 +746,25 @@ export async function archiveAmaScheduledAgentTrigger(env: Env, projectId: strin
 }
 
 async function createAmaClient(env: Env, projectId?: string) {
-  return new AmaClient({
-    origin: requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN"),
-    accessToken: await accessToken(env),
-    projectId,
-  });
+  const origin = requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN");
+  const attempt = async <T>(operationId: AmaOperationId, options?: AmaRequestOptions) =>
+    new AmaClient({ origin, accessToken: await accessToken(env), projectId }).request<T>(operationId, options);
+  return {
+    // A cached token can be revoked server-side before its TTL expires; on the
+    // first 401 drop the cache and re-authenticate once.
+    async request<T>(operationId: AmaOperationId, options?: AmaRequestOptions): Promise<T> {
+      const usedCachedToken = cachedAmaToken !== null;
+      try {
+        return await attempt<T>(operationId, options);
+      } catch (error) {
+        if ((error as { status?: unknown }).status === 401 && usedCachedToken) {
+          cachedAmaToken = null;
+          return await attempt<T>(operationId, options);
+        }
+        throw error;
+      }
+    },
+  };
 }
 
 // The client-credentials token is valid for ~1h; cache it per isolate so each

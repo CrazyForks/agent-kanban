@@ -3,6 +3,7 @@ export { TunnelRelay } from "../server/tunnelRelay";
 import { createLogger } from "../server/logger";
 import { detectStaleMachines } from "../server/machineRepo";
 import { api } from "../server/routes";
+import { dispatchPendingAmaTasks, reconcileAmaBoundTasks } from "../server/taskDispatch";
 import { detectAndReleaseStaleAll } from "../server/taskStale";
 import type { Env } from "../server/types";
 
@@ -21,7 +22,15 @@ export default {
     ctx.waitUntil(
       Promise.all([
         detectStaleMachines(env.DB).catch((err) => logger.warn(`detectStaleMachines failed: ${err}`)),
-        detectAndReleaseStaleAll(env.DB).catch((err) => logger.warn(`detectAndReleaseStaleAll failed: ${err}`)),
+        // Task sweeps run sequentially: stale and reconcile sweeps both tear
+        // down runtime bindings and must not race each other on the same
+        // task, and dispatch last picks up everything they released.
+        detectAndReleaseStaleAll(env.DB, env)
+          .catch((err) => logger.warn(`detectAndReleaseStaleAll failed: ${err}`))
+          .then(() => reconcileAmaBoundTasks(env.DB, env))
+          .catch((err) => logger.warn(`reconcileAmaBoundTasks failed: ${err}`))
+          .then(() => dispatchPendingAmaTasks(env.DB, env))
+          .catch((err) => logger.warn(`dispatchPendingAmaTasks failed: ${err}`)),
       ]),
     );
   },

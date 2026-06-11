@@ -1,8 +1,15 @@
 import { generateKeypair, type Task } from "@agent-kanban/shared";
 import { HTTPException } from "hono/http-exception";
 import { getAgent, updateAgentMetadataAnnotations } from "./agentRepo";
-import { bindAmaAgentSession, closeSession, createAmaAgentSession } from "./agentSessionRepo";
-import { resolveAmaProjectId, resolveAmaSessionSecretVaultId } from "./amaOwnerIntegrationRepo";
+import {
+  bindAmaAgentSession,
+  closeSession,
+  createAmaAgentSession,
+  getAmaAgentSession,
+  setAmaAgentSessionSecretCredential,
+  setAmaAgentSessionUsageTotals,
+} from "./agentSessionRepo";
+import { getAmaProjectId, resolveAmaProjectId, resolveAmaSessionSecretVaultId } from "./amaOwnerIntegrationRepo";
 import {
   type AmaRunner,
   createAmaAgent,
@@ -12,34 +19,61 @@ import {
   isAmaTaskDispatchConfigured,
   listAmaRunners,
   readAmaAgent,
+  readAmaSession,
+  readAmaSessionUsageTotals,
   resolveAmaProviderModelProfile,
+  revokeAmaVaultCredential,
   sendAmaSessionMessage,
   stopAmaSession,
   updateAmaAgentConfig,
 } from "./amaRuntime";
 import type { D1 } from "./db";
+import { createLogger } from "./logger";
 import { listMachineEnvironmentCandidatesForRuntime } from "./machineRepo";
 import { getSubagent } from "./subagentRepo";
-import { updateTask } from "./taskRepo";
+import { computeBlocked } from "./taskDeps";
+import { getTask, releaseTask, updateTask } from "./taskRepo";
 import type { Env } from "./types";
 
 type Annotations = Record<string, unknown>;
+
+const logger = createLogger("taskDispatch");
 
 export async function dispatchTaskToAma(db: D1, env: Env, ownerId: string, task: Task, options: { apiOrigin: string }): Promise<Task> {
   if (!task.assigned_to || !isAmaTaskDispatchConfigured(env)) {
     return task;
   }
 
+  // Blocked or not-yet-due tasks stay todo+assigned without a runtime binding;
+  // the dispatch sweep picks them up once they become runnable.
+  if (task.scheduled_at && Date.parse(task.scheduled_at) > Date.now()) return task;
+  if ((await computeBlocked(db, [task.id])).has(task.id)) return task;
+
+  const assignedTo = task.assigned_to;
   const amaProjectId = await resolveAmaProjectId(db, env, ownerId);
-  const akAgent = await getAgent(db, task.assigned_to, ownerId);
+  const akAgent = await getAgent(db, assignedTo, ownerId);
   if (!akAgent) throw new HTTPException(404, { message: "Assigned agent not found" });
   const amaRuntime = amaRuntimeName(akAgent.runtime);
-  const machineRuntime = await getReadyAmaMachineEnvironmentForRuntime(db, env, ownerId, amaProjectId, akAgent.runtime);
-  if (!machineRuntime) throw new HTTPException(409, { message: `Runtime "${akAgent.runtime}" is not available on any active AMA environment` });
-  const amaEnvironmentId = machineRuntime.environmentId;
-  const amaAgent = await ensureAmaAgentForAkAgent(db, env, ownerId, task.assigned_to, amaProjectId, amaRuntime);
 
-  const sessionIdentity = await createAkAgentSessionIdentity(db, env, ownerId, task.assigned_to);
+  // Re-dispatch (assign retry, sweep retry after a failed session) must not
+  // leave the previous session running against the same task. This runs
+  // before the capacity check on purpose: the old session occupies a runner
+  // slot, and tearing it down first is what frees capacity for its
+  // replacement on a fully loaded runner.
+  task = await releaseTaskRuntimeBinding(db, env, task);
+
+  const candidates = await listMachineEnvironmentCandidatesForRuntime(db, ownerId, akAgent.runtime);
+  if (candidates.length === 0) {
+    throw new HTTPException(409, { message: `Runtime "${akAgent.runtime}" is not available on any machine` });
+  }
+  const machineRuntime = await firstRunnableCandidate(env, amaProjectId, candidates, amaRuntime);
+  // Capable machines exist but every runner is busy or offline: leave the task
+  // queued and let the dispatch sweep retry when capacity frees up.
+  if (!machineRuntime) return task;
+  const amaEnvironmentId = machineRuntime.environmentId;
+  const amaAgent = await ensureAmaAgentForAkAgent(db, env, ownerId, assignedTo, amaProjectId, amaRuntime);
+
+  const sessionIdentity = await createAkAgentSessionIdentity(db, env, ownerId, assignedTo);
   const vaultId = await resolveAmaSessionSecretVaultId(db, env, ownerId);
   let secret: Awaited<ReturnType<typeof createAmaSessionSecret>> | null = null;
   let dispatch: Awaited<ReturnType<typeof createAmaTaskSession>> | null = null;
@@ -51,6 +85,7 @@ export async function dispatchTaskToAma(db: D1, env: Env, ownerId: string, task:
       secretValue: JSON.stringify(sessionIdentity.privateKeyJwk),
       metadata: { purpose: "agent-session" },
     });
+    await setAmaAgentSessionSecretCredential(db, sessionIdentity.sessionId, secret.credentialId);
 
     dispatch = await createAmaTaskSession(env, {
       projectId: amaProjectId,
@@ -62,26 +97,29 @@ export async function dispatchTaskToAma(db: D1, env: Env, ownerId: string, task:
       resourceRefs: await taskResourceRefs(db, task),
       runtimeEnv: {
         AK_WORKER: "1",
-        AK_AGENT_ID: task.assigned_to,
+        AK_AGENT_ID: assignedTo,
         AK_SESSION_ID: sessionIdentity.sessionId,
         AK_API_URL: apiUrl(env, options.apiOrigin),
+        ...agentGitIdentityEnv(akAgent),
       },
       runtimeSecretEnv: [{ name: "AK_AGENT_KEY", ref: secret.activeVersionId }],
     });
     await bindAmaAgentSession(db, sessionIdentity.sessionId, dispatch.sessionId);
   } catch (error) {
+    await revokeAkAgentSessionSecret(db, env, sessionIdentity.sessionId).catch((revokeError) => {
+      logger.warn(`failed to revoke session secret for ${sessionIdentity.sessionId}: ${revokeError}`);
+    });
     await closeSession(db, sessionIdentity.sessionId);
     throw error;
   }
 
   return await annotateTask(db, task, {
     "ama.projectId": dispatch.projectId,
-    agentId: task.assigned_to,
+    agentId: assignedTo,
     "ama.agentId": amaAgent.id,
     "ama.environmentId": dispatch.environmentId,
     "ama.runtime": amaRuntime,
     "ama.sessionId": dispatch.sessionId,
-    "ama.runtimeSecretEnv.AK_AGENT_KEY": secret.activeVersionId,
     agentSessionId: sessionIdentity.sessionId,
     "ama.dispatch.result": "accepted",
   });
@@ -174,6 +212,19 @@ export function amaRuntimeName(runtime: string): string {
   return runtime === "claude" ? "claude-code" : runtime;
 }
 
+// Commits made by the agent carry its AK identity, not the host user's
+// (parity with the old daemon's buildAgentEnv).
+export function agentGitIdentityEnv(agent: { name?: string | null; username: string }): Record<string, string> {
+  const name = agent.name || agent.username;
+  const email = `${agent.username}@mails.agent-kanban.dev`;
+  return {
+    GIT_AUTHOR_NAME: name,
+    GIT_AUTHOR_EMAIL: email,
+    GIT_COMMITTER_NAME: name,
+    GIT_COMMITTER_EMAIL: email,
+  };
+}
+
 export async function getReadyAmaMachineEnvironmentForRuntime(
   db: D1,
   env: Env,
@@ -181,8 +232,16 @@ export async function getReadyAmaMachineEnvironmentForRuntime(
   projectId: string,
   runtime: string,
 ): Promise<{ machineId: string; environmentId: string } | null> {
-  const amaRuntime = amaRuntimeName(runtime);
   const candidates = await listMachineEnvironmentCandidatesForRuntime(db, ownerId, runtime);
+  return firstRunnableCandidate(env, projectId, candidates, amaRuntimeName(runtime));
+}
+
+async function firstRunnableCandidate(
+  env: Env,
+  projectId: string,
+  candidates: { machineId: string; environmentId: string }[],
+  amaRuntime: string,
+): Promise<{ machineId: string; environmentId: string } | null> {
   for (const candidate of candidates) {
     const runners = await listAmaRunners(env, projectId, candidate.environmentId);
     if (runners.data.some((runner) => amaRunnerCanRunRuntime(runner, amaRuntime))) {
@@ -196,8 +255,20 @@ export function amaRunnerCanRunRuntime(runner: AmaRunner, runtime: string): bool
   return (
     runner.status === "active" &&
     runner.currentLoad < runner.maxConcurrent &&
-    runner.capabilities.some((capability) => capability === runtime || capability.startsWith(`runtime-provider-model:${runtime}:`))
+    runner.capabilities.some((capability) => capability === runtime || capability.startsWith(`runtime-provider-model:${runtime}:`)) &&
+    !runtimeQuotaExhausted(runner, runtime)
   );
+}
+
+// Runners report provider quota windows in their heartbeat usage; dispatching
+// to a runtime whose quota is fully used just burns work-item attempts. The
+// dispatch sweep retries once the window resets.
+function runtimeQuotaExhausted(runner: AmaRunner, runtime: string): boolean {
+  const usage = (runner.runtimeUsage ?? []).find((entry) => entry.runtime === runtime);
+  if (!usage) return false;
+  const now = Date.now();
+  // utilization is a 0-100 percentage (bridge normalizes provider scales)
+  return usage.windows.some((window) => window.utilization >= 100 && Date.parse(window.resetsAt) > now);
 }
 
 export async function sendTaskMessageToAma(env: Env, task: Task, message: string): Promise<Task> {
@@ -235,22 +306,154 @@ export async function sendTaskRejectToAma(db: D1, env: Env, task: Task, reason: 
   });
 }
 
-export async function stopTaskAmaSession(
+// Tears down a task's runtime binding: stops the AMA session, revokes the
+// session secret, closes the AK agent session, and clears the binding
+// annotations so the dispatch sweep can re-dispatch the task later.
+export async function releaseTaskRuntimeBinding(
   db: D1,
   env: Env,
   task: Task,
   reason: "user_requested" | "timeout" | "policy" | "runtime_error" = "user_requested",
-) {
-  const sessionId = amaSessionId(task);
-  const projectId = amaProjectId(task);
-  if (!sessionId || !projectId || !isAmaRuntimeConfigured(env)) {
-    return task;
+): Promise<Task> {
+  const annotations = taskAnnotations(task);
+  const sessionId = stringAnnotation(annotations, "ama.sessionId");
+  const projectId = stringAnnotation(annotations, "ama.projectId");
+  const akSessionId = stringAnnotation(annotations, "agentSessionId");
+  if (!sessionId && !akSessionId) return task;
+
+  if (sessionId && projectId && isAmaRuntimeConfigured(env)) {
+    try {
+      await stopAmaSession(env, projectId, sessionId, reason);
+    } catch (error) {
+      // 404: session no longer exists; 409: already archived. Both terminal.
+      const status = (error as { status?: unknown }).status;
+      if (status !== 404 && status !== 409) throw error;
+    }
   }
-  await stopAmaSession(env, projectId, sessionId, reason);
+  if (akSessionId) {
+    await collectAkAgentSessionUsage(db, env, akSessionId).catch((error) => {
+      logger.warn(`failed to collect session usage for ${akSessionId}: ${error}`);
+    });
+    await revokeAkAgentSessionSecret(db, env, akSessionId).catch((error) => {
+      logger.warn(`failed to revoke session secret for ${akSessionId}: ${error}`);
+    });
+    await closeSession(db, akSessionId);
+  }
   return await annotateTask(db, task, {
-    "ama.lastCommand": "stop",
-    "ama.lastCommand.result": "accepted",
+    "ama.sessionId": null,
+    "ama.environmentId": null,
+    "ama.dispatch.result": null,
+    agentSessionId: null,
   });
+}
+
+// Copies the AMA usage summary for the session into ama_agent_sessions so AK
+// session listings show token/cost totals without mirroring AMA event history.
+async function collectAkAgentSessionUsage(db: D1, env: Env, akSessionId: string): Promise<void> {
+  if (!isAmaRuntimeConfigured(env)) return;
+  const session = await getAmaAgentSession(db, akSessionId);
+  if (!session?.ama_session_id || session.status !== "active") return;
+  const projectId = await getAmaProjectId(db, session.owner_id);
+  if (!projectId) return;
+  const totals = await readAmaSessionUsageTotals(env, projectId, session.ama_session_id);
+  if (totals) await setAmaAgentSessionUsageTotals(db, akSessionId, totals);
+}
+
+async function revokeAkAgentSessionSecret(db: D1, env: Env, akSessionId: string): Promise<void> {
+  if (!isAmaRuntimeConfigured(env)) return;
+  const session = await getAmaAgentSession(db, akSessionId);
+  if (!session?.secret_credential_id) return;
+  const projectId = await resolveAmaProjectId(db, env, session.owner_id);
+  const vaultId = await resolveAmaSessionSecretVaultId(db, env, session.owner_id);
+  try {
+    await revokeAmaVaultCredential(env, projectId, vaultId, session.secret_credential_id);
+  } catch (error) {
+    // 404: credential already gone; 400: already revoked.
+    const status = (error as { status?: unknown }).status;
+    if (status !== 404 && status !== 400) throw error;
+  }
+  await setAmaAgentSessionSecretCredential(db, akSessionId, null);
+}
+
+// Cron sweep: dispatch assigned todo tasks that have no runtime binding yet —
+// tasks deferred because they were blocked, scheduled in the future, or all
+// capable runners were busy, plus tasks released by the reconcile sweep.
+export async function dispatchPendingAmaTasks(db: D1, env: Env): Promise<void> {
+  if (!isAmaTaskDispatchConfigured(env)) return;
+  if (!env.AK_API_URL) {
+    logger.warn("AK_API_URL is not set; skipping AMA dispatch sweep");
+    return;
+  }
+  const now = new Date().toISOString();
+  const rows = await db
+    .prepare(`
+      SELECT t.id, b.owner_id FROM tasks t
+      JOIN boards b ON t.board_id = b.id
+      WHERE t.status = 'todo' AND t.assigned_to IS NOT NULL
+        AND json_extract(t.metadata, '$.annotations."ama.dispatch.result"') IS NULL
+        AND (t.scheduled_at IS NULL OR t.scheduled_at <= ?)
+    `)
+    .bind(now)
+    .all<{ id: string; owner_id: string }>();
+  for (const row of rows.results) {
+    try {
+      const task = await getTask(db, row.id, row.owner_id);
+      if (!task || task.blocked) continue;
+      await dispatchTaskToAma(db, env, row.owner_id, task, { apiOrigin: env.AK_API_URL });
+    } catch (error) {
+      logger.warn(`dispatch sweep failed for task ${row.id}: ${error}`);
+    }
+  }
+}
+
+const DEAD_AMA_SESSION_STATUSES = new Set(["error", "stopped", "archived"]);
+// A freshly dispatched task may briefly reference a session AMA has not fully
+// materialized; don't treat a 404 as terminal inside this window.
+const RECONCILE_MIN_TASK_AGE_MS = 2 * 60_000;
+
+// Cron sweep: reconcile AK task state with AMA session state. A session that
+// died (runner crash, lease retries exhausted, stopped outside AK) leaves the
+// task stranded; release it so the dispatch sweep can re-dispatch. Done and
+// cancelled tasks that kept a binding (best-effort cleanup failed during
+// complete/cancel) are torn down here.
+export async function reconcileAmaBoundTasks(db: D1, env: Env): Promise<void> {
+  if (!isAmaRuntimeConfigured(env)) return;
+  const rows = await db
+    .prepare(`
+      SELECT t.id, t.status, b.owner_id FROM tasks t
+      JOIN boards b ON t.board_id = b.id
+      WHERE t.status IN ('todo', 'in_progress', 'done', 'cancelled')
+        AND json_extract(t.metadata, '$.annotations."ama.sessionId"') IS NOT NULL
+    `)
+    .all<{ id: string; status: string; owner_id: string }>();
+  for (const row of rows.results) {
+    try {
+      const task = await getTask(db, row.id, row.owner_id);
+      if (!task) continue;
+      if (row.status === "done" || row.status === "cancelled") {
+        await releaseTaskRuntimeBinding(db, env, task);
+        continue;
+      }
+      const sessionId = amaSessionId(task);
+      const projectId = amaProjectId(task);
+      if (!sessionId || !projectId) continue;
+      const session = await readAmaSession(env, sessionId, projectId);
+      if (!session && Date.parse(task.updated_at) > Date.now() - RECONCILE_MIN_TASK_AGE_MS) continue;
+      const status = session ? String(session.status) : null;
+      if (status && !DEAD_AMA_SESSION_STATUSES.has(status)) {
+        // An idle session on a todo task means the agent's turn ended without
+        // claiming (or a release teardown failed mid-way); nothing will resume
+        // it, so tear it down and let the dispatch sweep restart the task.
+        if (!(row.status === "todo" && status === "idle")) continue;
+      }
+      await releaseTaskRuntimeBinding(db, env, task, "runtime_error");
+      if (row.status === "in_progress") {
+        await releaseTask(db, task.id, "machine", "system", "machine", "released");
+      }
+    } catch (error) {
+      logger.warn(`reconcile sweep failed for task ${row.id}: ${error}`);
+    }
+  }
 }
 
 export async function createAkAgentSessionIdentity(db: D1, env: Env, ownerId: string, agentId: string) {
