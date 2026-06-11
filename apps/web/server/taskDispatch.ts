@@ -35,6 +35,7 @@ import {
   updateAmaAgentConfig,
 } from "./amaRuntime";
 import type { D1 } from "./db";
+import { isGithubAppConfigured, mintGithubInstallationToken } from "./githubApp";
 import { createLogger } from "./logger";
 import { listMachineEnvironmentCandidatesForRuntime } from "./machineRepo";
 import { getSubagent } from "./subagentRepo";
@@ -113,7 +114,9 @@ export async function dispatchTaskToAma(
   const vaultId = await resolveAmaSessionSecretVaultId(db, env, ownerId);
   const cloudDispatch = isCloudAgentRuntime(akAgent.runtime);
   const resourceRefs = await taskResourceRefs(db, task);
-  const githubTokenSecret = cloudDispatch ? await ownerGithubTokenSecretRef(db, env, ownerId, amaProjectId, vaultId) : null;
+  const githubTokenSecret = cloudDispatch
+    ? await cloudGithubTokenSecretRef(db, env, ownerId, amaProjectId, vaultId, sessionIdentity.sessionId, resourceRefs)
+    : null;
   let secret: Awaited<ReturnType<typeof createAmaSessionSecret>> | null = null;
   let dispatch: Awaited<ReturnType<typeof createAmaTaskSession>> | null = null;
   try {
@@ -141,7 +144,10 @@ export async function dispatchTaskToAma(
         AK_API_URL: apiUrl(env, options.apiOrigin),
         ...agentGitIdentityEnv(akAgent),
       },
-      runtimeSecretEnv: [{ name: "AK_AGENT_KEY", ref: secret.activeVersionId }, ...(githubTokenSecret ? [githubTokenSecret] : [])],
+      runtimeSecretEnv: [
+        { name: "AK_AGENT_KEY", ref: secret.activeVersionId },
+        ...(githubTokenSecret ? [{ name: githubTokenSecret.name, ref: githubTokenSecret.ref }] : []),
+      ],
     });
     await bindAmaAgentSession(db, sessionIdentity.sessionId, dispatch.sessionId);
   } catch (error) {
@@ -164,6 +170,7 @@ export async function dispatchTaskToAma(
     "ama.sessionId": dispatch.sessionId,
     agentSessionId: sessionIdentity.sessionId,
     "ama.dispatch.result": "accepted",
+    ...(githubTokenSecret?.credentialId ? { "ama.ghCredentialId": githubTokenSecret.credentialId } : {}),
   });
 }
 
@@ -379,6 +386,13 @@ export async function releaseTaskRuntimeBinding(
     await revokeAkAgentSessionSecret(db, env, akSessionId).catch((error) => {
       logger.warn(`failed to revoke session secret for ${akSessionId}: ${error}`);
     });
+    const ghCredentialId = stringAnnotation(annotations, "ama.ghCredentialId");
+    if (ghCredentialId) {
+      // Best effort: the installation token expires within the hour anyway.
+      await revokeGithubTokenCredential(db, env, akSessionId, ghCredentialId).catch((error) => {
+        logger.warn(`failed to revoke GitHub token credential for ${akSessionId}: ${error}`);
+      });
+    }
     await closeSession(db, akSessionId);
   }
   return await annotateTask(db, task, {
@@ -386,7 +400,23 @@ export async function releaseTaskRuntimeBinding(
     "ama.environmentId": null,
     "ama.dispatch.result": null,
     agentSessionId: null,
+    "ama.ghCredentialId": null,
   });
+}
+
+async function revokeGithubTokenCredential(db: D1, env: Env, akSessionId: string, credentialId: string): Promise<void> {
+  if (!isAmaRuntimeConfigured(env)) return;
+  const session = await getAmaAgentSession(db, akSessionId);
+  if (!session) return;
+  const projectId = await resolveAmaProjectId(db, env, session.owner_id);
+  const vaultId = await resolveAmaSessionSecretVaultId(db, env, session.owner_id);
+  try {
+    await revokeAmaVaultCredential(env, projectId, vaultId, credentialId);
+  } catch (error) {
+    // 404: credential already gone; 400: already revoked.
+    const status = (error as { status?: unknown }).status;
+    if (status !== 404 && status !== 400) throw error;
+  }
 }
 
 // Copies the AMA usage summary for the session into ama_agent_sessions so AK
@@ -632,9 +662,38 @@ function cloudTaskInitialPrompt(task: Task, resourceRefs: { owner: string; repo:
   return prompt.join("\n");
 }
 
-// The GitHub token cloud sessions push with. Interim source: a server-level
-// token (GITHUB_AGENT_TOKEN) stored once per owner in the AMA vault and
-// reused across sessions — per-owner GitHub credentials are a follow-up.
+// The GitHub credential cloud sessions push with. Preferred source: a
+// repository-scoped ~1h GitHub App installation token minted per session and
+// revoked at binding teardown. Fallback: the server-level GITHUB_AGENT_TOKEN
+// stored once per owner in the AMA vault.
+async function cloudGithubTokenSecretRef(
+  db: D1,
+  env: Env,
+  ownerId: string,
+  projectId: string,
+  vaultId: string,
+  akSessionId: string,
+  resourceRefs: { owner: string; repo: string }[],
+): Promise<{ name: string; ref: string; credentialId?: string } | null> {
+  const repo = resourceRefs[0];
+  if (repo && isGithubAppConfigured(env)) {
+    try {
+      const minted = await mintGithubInstallationToken(env, repo.owner, repo.repo);
+      const secret = await createAmaSessionSecret(env, {
+        projectId,
+        vaultId,
+        name: `GH_TOKEN_${akSessionId.replaceAll(/[^A-Za-z0-9_]/g, "_")}`,
+        secretValue: minted.token,
+        metadata: { purpose: "github-installation-token", repository: `${repo.owner}/${repo.repo}`, expiresAt: minted.expiresAt },
+      });
+      return { name: "GH_TOKEN", ref: secret.activeVersionId, credentialId: secret.credentialId };
+    } catch (error) {
+      logger.warn(`GitHub App token minting failed for ${repo.owner}/${repo.repo}, falling back: ${error}`);
+    }
+  }
+  return await ownerGithubTokenSecretRef(db, env, ownerId, projectId, vaultId);
+}
+
 async function ownerGithubTokenSecretRef(
   db: D1,
   env: Env,

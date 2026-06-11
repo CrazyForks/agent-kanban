@@ -488,7 +488,10 @@ async function createMachineRunnerOnboarding(env: Env, machine: MachineRecord, o
 
   const projectId = await resolveAmaProjectId(env.DB, env, ownerId);
   const externalTenantId = await resolveAmaExternalTenantId(env.DB, env, ownerId);
-  const issuer = apiUrl(env, requestOrigin);
+  // Federation issuer is the AK instance's stable identity registered with
+  // the OIDC provider's trusted issuers — not necessarily the URL agents
+  // call back on (AK_API_URL may be an ephemeral dev tunnel).
+  const issuer = env.AK_FEDERATED_ISSUER ?? apiUrl(env, requestOrigin);
 
   await createAmaExternalProjectBinding(env, {
     projectId,

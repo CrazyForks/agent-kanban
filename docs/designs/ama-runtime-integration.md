@@ -121,9 +121,17 @@ Placement is derived from the agent runtime, not from a per-task field:
   claim with takeover (may seize an `accepted` dispatch to kick a bound task,
   never an in-flight one). Stale `dispatching` claims are released by the
   reconcile sweep.
-- Cloud sessions get `GH_TOKEN` for pushes from the server-level
-  `GITHUB_AGENT_TOKEN`, stored once per owner in the AMA vault and reused
-  across sessions (interim until per-owner GitHub credentials exist).
+- Cloud sessions get `GH_TOKEN` from the AK GitHub App (AgentKanban, App ID
+  4029578): a repository-scoped ~1h installation access token minted per
+  dispatch, delivered through a per-session AMA vault credential
+  (`ama.ghCredentialId` annotation) and revoked at binding teardown. The PR
+  is authored by `app/agentkanban`. Server env: `GITHUB_APP_ID` +
+  `GITHUB_APP_PRIVATE_KEY` (base64 PKCS#8 PEM). `GITHUB_AGENT_TOKEN` remains
+  only as a fallback when the App is unconfigured or not installed on the
+  repository.
+- Runner federation uses `AK_FEDERATED_ISSUER` (default `AK_API_URL`) as the
+  stable issuer identity registered with the OIDC provider's trusted issuers,
+  so an ephemeral dev tunnel in `AK_API_URL` does not break `ak start`.
 - npm is unusable inside the sandbox (npm worker processes orphan the exec
   pipe), so the CLI ships as a fully bundled single file
   (`packages/cli` tsup `standalone` entry, provider SDKs stubbed) served by
@@ -303,8 +311,15 @@ All of these are implemented and tested:
 - AK reconcile does not recover tasks whose AMA session waits forever in
   `pending`/`waiting-for-runner` (e.g. model/capability mismatch after
   dispatch); add an age-based release. (AK)
-- Per-owner GitHub credentials for cloud pushes; `GITHUB_AGENT_TOKEN` is a
-  server-level interim. (AK)
+- Slim the npm CLI package: the provider runtime SDKs (claude/codex/copilot/
+  ACP) are only used by `ak get model` and `ak start` runtime detection and
+  belong runner-side; removing them makes `npm install -g agent-kanban`
+  light enough for sandboxes and retires the standalone-bundle stopgap. (AK)
+- Unbounded turn duration: split cloud turns per step (one model call + tool
+  batch per queue message, context already rebuilt from events) so a turn is
+  not capped by a single consumer invocation's wall clock. (AMA)
+- Remove the unused in-container pi-bridge from the sandbox image (first
+  version remnant; the worker-side loop is authoritative). (AMA)
 - The standalone CLI bundle is rebuilt by `apps/web` prebuild and
   `scripts/install-cli.sh`; consider publishing it with the npm release so
   cloud sessions don't depend on the serving AK instance's build. (AK)

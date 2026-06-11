@@ -48,3 +48,4 @@ test-results/
 .claude/skills/
 .agents/
 skills-lock.json
+.secrets/

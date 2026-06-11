@@ -20,8 +20,16 @@ export interface Env {
   AMA_OAUTH_CLIENT_SECRET?: string;
   AMA_OAUTH_SCOPE?: string;
   AK_FEDERATED_RUNNER_SUBJECT_SECRET?: string;
+  // Stable issuer identity for runner federation; defaults to AK_API_URL.
+  // Needed when AK_API_URL is an ephemeral tunnel (dev) but the flareauth
+  // trusted-issuer registration is a fixed origin.
+  AK_FEDERATED_ISSUER?: string;
   AMA_RUNNER_VERSION?: string;
   GITHUB_APP_WEBHOOK_SECRET?: string;
+  GITHUB_APP_ID?: string;
+  // base64 of the App's PKCS#8 PEM private key
+  GITHUB_APP_PRIVATE_KEY?: string;
+  // interim server-level fallback push token for cloud sessions
   GITHUB_AGENT_TOKEN?: string;
   MIN_CLI_VERSION?: string;
 }
