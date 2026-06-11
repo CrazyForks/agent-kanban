@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import type { EditArgs, GlobArgs, GrepArgs, MultiEditArgs, ReadArgs, WriteArgs } from "@agent-kanban/shared";
 import { ToolName } from "@agent-kanban/shared";
 import type { CopilotSession, SessionEvent } from "@github/copilot-sdk";
-import { approveAll, CopilotClient } from "@github/copilot-sdk";
 import { createLogger } from "../logger.js";
 import type {
   AgentEvent,
@@ -19,6 +18,14 @@ import type {
 import { availabilityFromUsage, availabilityFromUsageError, parseRetryAfterMs, UsageFetchError } from "./types.js";
 
 const logger = createLogger("copilot");
+
+async function sdk() {
+  try {
+    return await import("@github/copilot-sdk");
+  } catch {
+    throw new Error("@github/copilot-sdk is not installed; provider features need it on this host");
+  }
+}
 
 const COPILOT_USER_API = "https://api.github.com/copilot_internal/user";
 
@@ -297,6 +304,7 @@ export const copilotProvider: AgentProvider = {
   },
 
   async listModels(): Promise<RuntimeModel[]> {
+    const { CopilotClient } = await sdk();
     const client = new CopilotClient({ useLoggedInUser: true });
     await client.start();
     try {
@@ -318,6 +326,7 @@ export const copilotProvider: AgentProvider = {
   },
 
   async execute(opts: ExecuteOpts): Promise<AgentHandle> {
+    const { CopilotClient, approveAll } = await sdk();
     const systemPrompt = opts.systemPromptFile ? readFileSync(opts.systemPromptFile, "utf-8") : undefined;
 
     const client = new CopilotClient({
@@ -505,6 +514,7 @@ export const copilotProvider: AgentProvider = {
     }
 
     // Otherwise start a fresh client just to read history, then tear it down
+    const { CopilotClient, approveAll } = await sdk();
     const client = new CopilotClient({ useLoggedInUser: true });
     await client.start();
     try {

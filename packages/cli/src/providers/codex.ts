@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { BashArgs, ReadArgs } from "@agent-kanban/shared";
 import { ToolName } from "@agent-kanban/shared";
-import { Codex, type ThreadEvent } from "@openai/codex-sdk";
+import type { ThreadEvent } from "@openai/codex-sdk";
 import type {
   AgentEvent,
   AgentHandle,
@@ -17,6 +17,14 @@ import type {
   UsageWindow,
 } from "./types.js";
 import { availabilityFromUsage, availabilityFromUsageError, parseRetryAfterMs, UsageFetchError } from "./types.js";
+
+async function sdk() {
+  try {
+    return await import("@openai/codex-sdk");
+  } catch {
+    throw new Error("@openai/codex-sdk is not installed; provider features need it on this host");
+  }
+}
 
 const AUTH_PATH = join(homedir(), ".codex", "auth.json");
 const CODEX_SESSIONS_DIR = join(homedir(), ".codex", "sessions");
@@ -273,6 +281,7 @@ export const codexProvider: AgentProvider = {
     const model = resolveCodexModel(opts) ?? "o3";
     let resumeToken: string | undefined = opts.resumeToken;
 
+    const { Codex } = await sdk();
     const codex = new Codex({ env: opts.env, codexPathOverride: resolveCodexPath() });
     const threadOpts = {
       model: resolveCodexModel(opts),

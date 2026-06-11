@@ -19,6 +19,10 @@ export default defineConfig([
     splitting: false,
     banner: { js: "#!/usr/bin/env node" },
     noExternal: ["@agent-kanban/shared"],
+    // The provider SDKs moved to devDependencies (npm consumers don't install
+    // them), so tsup would bundle them by default — keep them external; the
+    // providers load them lazily and fail gracefully when absent.
+    external: PROVIDER_SDKS,
   },
   // Fully self-contained build for environments without npm (AMA cloud
   // sandboxes fetch this single file from the AK server and run it with node).

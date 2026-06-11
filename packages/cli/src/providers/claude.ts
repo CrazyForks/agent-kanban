@@ -5,7 +5,6 @@ import { join } from "node:path";
 import type { SubtaskStatus } from "@agent-kanban/shared";
 import { ToolName } from "@agent-kanban/shared";
 import type { SDKAssistantMessage, SDKMessage, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { getSessionMessages, query } from "@anthropic-ai/claude-agent-sdk";
 import { createLogger } from "../logger.js";
 import type {
   AgentEvent,
@@ -19,6 +18,14 @@ import type {
   UsageWindow,
 } from "./types.js";
 import { availabilityFromUsage, availabilityFromUsageError, parseRetryAfterMs, UsageFetchError } from "./types.js";
+
+async function sdk() {
+  try {
+    return await import("@anthropic-ai/claude-agent-sdk");
+  } catch {
+    throw new Error("@anthropic-ai/claude-agent-sdk is not installed; provider features need it on this host");
+  }
+}
 
 const SUBTASK_STATUSES: readonly SubtaskStatus[] = ["completed", "failed", "stopped"] as const;
 
@@ -398,6 +405,7 @@ export const claudeProvider: AgentProvider = {
   },
 
   async listModels(): Promise<RuntimeModel[]> {
+    const { query } = await sdk();
     const q = query({
       prompt: "",
       options: {
@@ -426,7 +434,8 @@ export const claudeProvider: AgentProvider = {
     }
   },
 
-  execute(opts: ExecuteOpts): Promise<AgentHandle> {
+  async execute(opts: ExecuteOpts): Promise<AgentHandle> {
+    const { query } = await sdk();
     const systemPrompt = opts.systemPromptFile ? readFileSync(opts.systemPromptFile, "utf-8") : undefined;
     const abortController = new AbortController();
 
@@ -462,7 +471,7 @@ export const claudeProvider: AgentProvider = {
     })();
 
     let aborted = false;
-    return Promise.resolve({
+    return {
       events,
       async abort() {
         if (aborted) return;
@@ -479,7 +488,7 @@ export const claudeProvider: AgentProvider = {
         };
         await q.streamInput(userMsg());
       },
-    });
+    };
   },
 
   async fetchUsage(): Promise<UsageInfo | null> {
@@ -523,6 +532,7 @@ export const claudeProvider: AgentProvider = {
   },
 
   async getHistory(sessionId) {
+    const { getSessionMessages } = await sdk();
     const messages = await getSessionMessages(sessionId);
     const events: HistoryEvent[] = [];
     let counter = 0;

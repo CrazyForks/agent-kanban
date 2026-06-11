@@ -19,20 +19,27 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import { ToolName } from "@agent-kanban/shared";
-import {
-  type Client,
+import type {
+  Client,
   ClientSideConnection,
-  ndJsonStream,
-  PROTOCOL_VERSION,
-  type PromptResponse,
-  type RequestPermissionRequest,
-  type RequestPermissionResponse,
-  type SessionNotification,
-  type SessionUpdate,
-  type ToolCallContent,
-  type ToolKind,
+  PromptResponse,
+  RequestPermissionRequest,
+  RequestPermissionResponse,
+  SessionNotification,
+  SessionUpdate,
+  ToolCallContent,
+  ToolKind,
 } from "@agentclientprotocol/sdk";
 import { createLogger } from "../logger.js";
+
+async function sdk() {
+  try {
+    return await import("@agentclientprotocol/sdk");
+  } catch {
+    throw new Error("@agentclientprotocol/sdk is not installed; provider features need it on this host");
+  }
+}
+
 import type { AgentEvent, AgentHandle, AgentProvider, AgentRuntime, ContentBlock, ExecuteOpts, HistoryEvent } from "./types.js";
 
 export interface AcpRuntimeConfig {
@@ -58,6 +65,7 @@ interface RuntimeState {
 }
 
 async function acpExecute(config: AcpRuntimeConfig, opts: ExecuteOpts): Promise<AgentHandle> {
+  const { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } = await sdk();
   const logger = createLogger(`acp:${config.runtime}`);
   const proc = spawn(config.command, config.args, {
     cwd: opts.cwd,
@@ -189,6 +197,7 @@ export function buildTurnEnd(resp: PromptResponse): AgentEvent {
  */
 async function acpGetHistory(config: AcpRuntimeConfig, resumeToken: string | undefined): Promise<HistoryEvent[]> {
   if (!resumeToken) return [];
+  const { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } = await sdk();
   const logger = createLogger(`acp:${config.runtime}:history`);
   const proc = spawn(config.command, config.args, {
     cwd: process.cwd(),
