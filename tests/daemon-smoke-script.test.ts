@@ -40,7 +40,7 @@ describe("daemon smoke script", () => {
 
     // runtime_default_model() maps each runtime to an explicit model
     expect(script).toContain("runtime_default_model()");
-    expect(script).toContain("gpt-5.3-codex-spark");
+    expect(script).toContain("gpt-5.3-codex");
     expect(script).toContain("opus");
     expect(script).toContain('"@cf/moonshotai/kimi-k2.6"');
 

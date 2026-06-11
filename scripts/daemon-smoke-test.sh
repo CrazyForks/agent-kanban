@@ -161,7 +161,7 @@ create_repo() {
 runtime_default_model() {
   local runtime="$1"
   case "$runtime" in
-    codex) ak get model --runtime "$runtime" -o json | json_query "data.find((m) => m.id === 'gpt-5.3-codex-spark')?.id || data[0]?.id" ;;
+    codex) ak get model --runtime "$runtime" -o json | json_query "data.find((m) => m.id === 'gpt-5.3-codex')?.id || 'gpt-5.3-codex'" ;;
     claude) ak get model --runtime "$runtime" -o json | json_query "data.find((m) => m.id.includes('opus'))?.id || data[0]?.id" ;;
     ama) echo "@cf/moonshotai/kimi-k2.6" ;;
     *) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id" ;;
