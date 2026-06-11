@@ -45,7 +45,8 @@ Assigned AK tasks dispatch through AMA:
    to an AMA environment server-side.
 3. AK ensures the AK agent has a mapped AMA AgentDefinition.
 4. AK creates a short-lived AK agent session identity.
-5. AK stores the private runtime credential in AMA vault as a session secret.
+5. AK stores the private runtime credential in AMA vault as a session secret
+   and records the credential id in `ama_agent_sessions` for later revocation.
 6. AK creates an AMA session with AK runtime env and vault-backed secret refs.
 7. AK stores AMA ids and dispatch result in task metadata annotations.
 8. The AMA runner starts the session; the agent uses AK CLI/API for claim,
@@ -53,6 +54,32 @@ Assigned AK tasks dispatch through AMA:
 
 The public task API and CLI still speak AK concepts. `ak create task` and task
 assignment do not require AMA agent, environment, or runner flags.
+
+### Dispatch policy
+
+Dispatch is deferred — the task stays todo+assigned without a runtime
+binding — when the task is dependency-blocked, `scheduled_at` is in the
+future, or capable machines exist but every runner is busy or offline.
+Dispatch fails (409) only when no machine supports the agent's runtime at all.
+
+A per-minute cron closes the loop, replacing the old daemon poll loop:
+
+- `reconcileAmaBoundTasks` — releases tasks whose AMA session died
+  (error/stopped/archived/missing) and tears down bindings left behind by
+  best-effort cleanup on complete/cancel.
+- `dispatchPendingAmaTasks` — dispatches assigned, unblocked, due,
+  undispatched todo tasks (requires `AK_API_URL`).
+- The stale sweep stops the bound AMA session before releasing a stale task.
+
+### Binding teardown
+
+`releaseTaskRuntimeBinding` is the single teardown path: stop the AMA session
+(404/409 tolerated as already-terminal), revoke the vault session secret,
+close the AK agent session, clear the binding annotations. Complete and cancel
+transition locally first and tear down best-effort (the reconcile sweep mops
+up if AMA is unreachable); release tears down strictly before re-dispatch;
+re-dispatch always tears down the previous session first. Reject falls back
+from resume to restart (teardown + release) when the session is already dead.
 
 ## Runner Onboarding
 
@@ -85,8 +112,8 @@ AK task metadata annotations may contain:
   "ama.agentId": "agent_...",
   "ama.environmentId": "env_...",
   "ama.sessionId": "session_...",
-  "ak.agentId": "agent_...",
-  "ak.runtimeSessionId": "session_uuid",
+  "agentId": "agent_...",
+  "agentSessionId": "session_uuid",
   "ama.dispatch.result": "accepted"
 }
 ```
@@ -155,10 +182,13 @@ Local AK checks:
 - `bash scripts/install-cli.sh`
 - `./scripts/daemon-smoke-test.sh --runtime codex`
 
-Real smoke evidence from the latest successful run:
+Real smoke evidence from the latest successful run (claude runtime, local AK
+dev server + deployed AMA + released runner v0.1.0):
 
-- generated PR: `https://github.com/saltbo/agent-kanban/pull/206`
+- generated PR: `https://github.com/saltbo/slink/pull/65`
 - smoke summary: `Passed 11 Failed 0`
+- the codex run was correctly refused by the new quota-aware dispatch (codex
+  5-hour window at 100% at the time), which is the intended behavior
 
 The smoke created real AK tasks, dispatched them through the online AMA
 environment with a local runner, verified claim, in-progress, review, reject,
@@ -172,12 +202,57 @@ AMA support work was pushed separately in Any Managed Agents:
 That fix prevents an older completed runner lease from overwriting newer queued
 work for the same session during AK reject/resume.
 
+## Closed Daemon-Parity Gaps
+
+All of these are implemented and tested:
+
+- PR state sync via a platform GitHub App: users install the app on their
+  repositories (one click, no secrets, no per-user setup); GitHub delivers
+  all installations' pull_request events to `POST /api/webhooks/github-app`,
+  signed with the app webhook secret (`GITHUB_APP_WEBHOOK_SECRET`, platform
+  env — never distributed). Events map PR merged→done and closed→cancelled
+  in real time, routed by `pr_url`, which only matches tasks inside the PR
+  owner's own boards — replacing the old daemon's 30s `gh` poll.
+  One-time platform setup: create a GitHub App with webhook URL
+  `<origin>/api/webhooks/github-app`, a generated webhook secret,
+  Pull requests (Read) permission, and the Pull request event subscription;
+  put the secret in the deployment env. A GitLab handler can be added as a
+  sibling endpoint. (AK)
+- Git author/committer identity rides `runtimeEnv` per agent. GPG signing
+  remains open — needs a runner-side session signing key capability. (AK)
+- Provider-native subagent files (`.claude/agents/*.md`, `.codex/agents/*.toml`)
+  are materialized in the session worktree by the runner. (AMA)
+- Quota-aware dispatch: runners report per-runtime quota windows; dispatch
+  skips runners whose target runtime is at 100% utilization until the window
+  resets, and the dispatch sweep retries. Mid-run rate-limit pause remains
+  delegated to the runtime CLIs. (AK + AMA)
+- Session usage accounting: AMA usage summary totals are copied into
+  `ama_agent_sessions` at binding teardown. (AK)
+- Leader session reaping: the CLI closes dead-PID leader sessions (with usage
+  report) on the first leader command of a process. (AK)
+- Session max duration: runner-side timeout (default 2h, configurable) fails
+  the lease explicitly instead of renewing forever. (AMA)
+- Runner capabilities are detected from installed CLIs and refreshed on every
+  heartbeat. (AMA)
+- Mid-run chat: prompts to a running claude-code/copilot session are delivered
+  live over the runner channel into the runtime; codex (and any channel
+  failure) falls back to the queued resume turn. (AMA)
+- Codex/copilot resume tokens ride lease renewals and survive interrupts, so
+  all three runtimes resume after a runner restart. (AMA)
+- Runner version is pinned by the server via the machine registration
+  response (`AMA_RUNNER_VERSION` env), with the CLI constant as fallback. (AK)
+- The legacy CLI daemon is deleted (`packages/cli/src/daemon/`, `__daemon`
+  command, daemon-only modules and tests — net −17k lines). Server legacy
+  API surfaces stay until the 2026-09-01 sunset. (AK)
+
 ## Remaining Follow-Up
 
-- Broaden maintainer negative-case validation after this PR lands.
-- Improve AMA event rendering in AK task detail as AMA canonical event shapes
-  evolve.
-- Continue migrating old machine/session compatibility tables once rollout
-  safety is agreed.
-- Add AMA agent memory/notebook UX when the generic AMA memory capability is
-  ready for product use.
+- GPG commit signing per agent (runner-side session signing key). (AMA)
+- Register the production GitHub App and add a "Connect GitHub" install link
+  in the web UI (the receiver endpoint is live; the app itself is a one-time
+  manual registration). (AK ops/UI)
+- Broaden maintainer negative-case validation; improve AMA event rendering;
+  add memory/notebook UX when the AMA capability is ready. (AK)
+- AMA-side changes require an AMA deploy and an ama-runner release (and a
+  bump of the server runner-version pin) before they are live end-to-end;
+  the latest smoke ran against the released runner v0.1.0. (ops)
