@@ -529,6 +529,9 @@ const DEAD_AMA_SESSION_STATUSES = new Set(["error", "stopped", "archived"]);
 // A freshly dispatched task may briefly reference a session AMA has not fully
 // materialized; don't treat a 404 as terminal inside this window.
 const RECONCILE_MIN_TASK_AGE_MS = 2 * 60_000;
+// A session waiting for a runner longer than this has lost its chance (queued
+// cloud startup and runner leases both resolve within minutes when healthy).
+const STALE_PENDING_SESSION_MS = 10 * 60_000;
 
 // Cron sweep: reconcile AK task state with AMA session state. A session that
 // died (runner crash, lease retries exhausted, stopped outside AK) leaves the
@@ -563,7 +566,12 @@ export async function reconcileAmaBoundTasks(db: D1, env: Env): Promise<void> {
         // An idle session on a todo task means the agent's turn ended without
         // claiming (or a release teardown failed mid-way); nothing will resume
         // it, so tear it down and let the dispatch sweep restart the task.
-        if (!(row.status === "todo" && status === "idle")) continue;
+        const idleUnclaimed = row.status === "todo" && status === "idle";
+        // A session stuck waiting for a runner (runner offline right after
+        // dispatch, capability mismatch) never progresses on its own; release
+        // it so the dispatch sweep retries when capacity actually exists.
+        const stalePending = status === "pending" && Date.parse(task.updated_at) < Date.now() - STALE_PENDING_SESSION_MS;
+        if (!idleUnclaimed && !stalePending) continue;
       }
       await releaseTaskRuntimeBinding(db, env, task, "runtime_error");
       if (row.status === "in_progress") {

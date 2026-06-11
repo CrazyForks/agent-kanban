@@ -646,6 +646,72 @@ describe("reconcileAmaBoundTasks", () => {
     expect(meta?.annotations?.["ama.sessionId"]).toBeNull();
   });
 
+  it("releases binding on a todo+assigned task whose AMA session is 'pending' and updated_at is older than 10 minutes", async () => {
+    const { reconcileAmaBoundTasks } = await import("../apps/web/server/taskDispatch");
+
+    const stalePendingOwner = `reconcile-stale-pending-owner-${randomUUID()}`;
+    await seedUser(db, stalePendingOwner, `${stalePendingOwner}@test.local`);
+    await configureAmaIntegration(stalePendingOwner);
+
+    const sessionId = `session_stale_pending_${randomUUID()}`;
+    // Set updated_at to more than 10 minutes ago
+    const staleTime = new Date(Date.now() - 11 * 60 * 1000).toISOString();
+    const { task } = await seedTaskWithBinding(stalePendingOwner, "todo", sessionId, staleTime);
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === `https://ama.test/api/sessions/${sessionId}`)
+        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", status: "pending", statusReason: null }), {
+          status: 200,
+        });
+      if (url.includes(`/sessions/${sessionId}/stop`)) return new Response(JSON.stringify({ id: sessionId, status: "stopped" }), { status: 200 });
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const env = makeEnv();
+    await reconcileAmaBoundTasks(db, env);
+
+    const row = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(task.id).first<{ metadata: string }>();
+    const meta = JSON.parse(row!.metadata ?? "{}");
+    // Binding annotations must be cleared so the dispatch sweep can re-dispatch
+    expect(meta?.annotations?.["ama.sessionId"]).toBeNull();
+    expect(meta?.annotations?.["ama.dispatch.result"]).toBeNull();
+  });
+
+  it("does not touch binding on a task whose AMA session is 'pending' but updated_at is recent", async () => {
+    const { reconcileAmaBoundTasks } = await import("../apps/web/server/taskDispatch");
+
+    const freshPendingOwner = `reconcile-fresh-pending-owner-${randomUUID()}`;
+    await seedUser(db, freshPendingOwner, `${freshPendingOwner}@test.local`);
+    await configureAmaIntegration(freshPendingOwner);
+
+    const sessionId = `session_fresh_pending_${randomUUID()}`;
+    // Set updated_at to just 1 minute ago — well within the 10-minute window
+    const recentTime = new Date(Date.now() - 60 * 1000).toISOString();
+    const { task } = await seedTaskWithBinding(freshPendingOwner, "todo", sessionId, recentTime);
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === `https://ama.test/api/sessions/${sessionId}`)
+        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", status: "pending", statusReason: null }), {
+          status: 200,
+        });
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const env = makeEnv();
+    await reconcileAmaBoundTasks(db, env);
+
+    const row = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(task.id).first<{ metadata: string }>();
+    const meta = JSON.parse(row!.metadata ?? "{}");
+    // Binding must remain intact — the session is still pending within the grace window
+    expect(meta?.annotations?.["ama.sessionId"]).toBe(sessionId);
+  });
+
   it("tears down an idle session on a todo task (agent ended turn without claiming)", async () => {
     const { reconcileAmaBoundTasks } = await import("../apps/web/server/taskDispatch");
 
