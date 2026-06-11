@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
+    "prebuild": "pnpm --filter agent-kanban build && mkdir -p public/cli && cp ../../packages/cli/dist/standalone.js public/cli/ak-standalone.mjs",
     "build": "[ \"$WORKERS_CI\" = \"1\" ] && [ \"$WORKERS_CI_BRANCH\" != \"main\" ] && export CLOUDFLARE_ENV=staging; vite build",
     "preview": "vite preview",
     "deploy": "vite build && npx wrangler deploy",

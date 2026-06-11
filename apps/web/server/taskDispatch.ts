@@ -614,7 +614,9 @@ function cloudTaskInitialPrompt(task: Task, resourceRefs: { owner: string; repo:
     repo ? `The repository ${repo.owner}/${repo.repo} is already cloned at ${repoDir}; git push credentials are preconfigured.` : null,
     "",
     "Follow these steps in order, one sandbox.exec command at a time:",
-    "1. Install the AK CLI: npm install -g agent-kanban",
+    // npm is unusable inside the sandbox (orphaned workers hang the exec
+    // pipe), so the CLI ships as a single-file bundle served by this server.
+    `1. Install the AK CLI: curl -fsS "$AK_API_URL/cli/install.sh" | sh`,
     `2. Claim the task: ak task claim ${task.id}`,
     ...(repo && repoDir
       ? [
