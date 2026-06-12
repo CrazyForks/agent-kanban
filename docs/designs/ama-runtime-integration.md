@@ -304,22 +304,26 @@ All of these are implemented and tested:
 
 ## Remaining Follow-Up
 
-- AMA's runtime catalog pins self-hosted session models to one id per runtime
-  (codex → `gpt-5.3-codex`); session creation 409s for any other model even
-  when the runner could serve it. Validation should defer to runner-declared
-  capabilities. (AMA)
-- AK reconcile does not recover tasks whose AMA session waits forever in
-  `pending`/`waiting-for-runner` (e.g. model/capability mismatch after
-  dispatch); add an age-based release. (AK)
-- Slim the npm CLI package: the provider runtime SDKs (claude/codex/copilot/
-  ACP) are only used by `ak get model` and `ak start` runtime detection and
-  belong runner-side; removing them makes `npm install -g agent-kanban`
-  light enough for sandboxes and retires the standalone-bundle stopgap. (AK)
-- Unbounded turn duration: split cloud turns per step (one model call + tool
-  batch per queue message, context already rebuilt from events) so a turn is
-  not capped by a single consumer invocation's wall clock. (AMA)
-- Remove the unused in-container pi-bridge from the sandbox image (first
-  version remnant; the worker-side loop is authoritative). (AMA)
+All five 2026-06-12 placement gaps are closed and re-verified by a full
+three-scenario regression (codex 11/11, ama 10/10, mixed 11/11):
+
+- self-hosted runtimes accept any model; work leases at the runtime level
+  (AMA catalog)
+- reconcile releases tasks whose session waits in `pending` past 10 minutes
+  (AK)
+- the npm CLI dropped the provider runtime SDKs (lazy imports +
+  devDependencies; fresh install ~6MB instead of ~851MB); the served
+  standalone bundle remains the sandbox install path (AK)
+- cloud turns chain across queue invocations (`session.step` continuations
+  with a 4-minute soft budget per invocation) — total turn duration is no
+  longer capped (AMA)
+- the dead in-container pi-bridge is removed from the image and config (AMA)
+
+Still open:
+
+- AMA master CI e2e has been red since the runner-loop commits (cde108c era,
+  pre-dating the placement work): runner-bridge event scenarios fail in CI.
+  Local repro requires `--enable-containers=false` on hosts without Docker.
 - The standalone CLI bundle is rebuilt by `apps/web` prebuild and
   `scripts/install-cli.sh`; consider publishing it with the npm release so
   cloud sessions don't depend on the serving AK instance's build. (AK)
