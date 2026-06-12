@@ -662,8 +662,8 @@ function cloudTaskInitialPrompt(task: Task, resourceRefs: { owner: string; repo:
           `4. Create a work branch: git -C ${repoDir} checkout -b ${branch}`,
           "5. Do the work described in the task detail (edit files under the repository).",
           `6. Commit and push: git -C ${repoDir} add -A && git -C ${repoDir} commit -m "<summary>" && git -C ${repoDir} push -u origin ${branch}`,
-          `7. Create a pull request (replace <base> with the default branch from step 3): curl -s -X POST https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/json" -d '{"title":"${task.title.replaceAll('"', "'")}","head":"${branch}","base":"<base>"}' — the response JSON contains the PR URL in html_url.`,
-          `8. Submit for review: ak task review ${task.id} --pr-url <html_url>`,
+          `7. Create a pull request (replace <base> with the default branch from step 3): gh pr create --repo ${repo.owner}/${repo.repo} --head ${branch} --base <base> --title "${task.title.replaceAll('"', "'")}" --body "AK task ${task.id}" — the command prints the PR URL.`,
+          `8. Submit for review: ak task review ${task.id} --pr-url <PR URL>`,
         ]
       : ["3. Do the work described in the task detail.", `4. Submit for review: ak task review ${task.id}`]),
   ].filter((line): line is string => line !== null);
