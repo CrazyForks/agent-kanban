@@ -1103,6 +1103,141 @@ describe("routes", () => {
     }
   });
 
+  // ─── Models ───
+
+  it("GET /api/models requires a valid runtime", async () => {
+    const missing = await apiRequest("GET", "/api/models", undefined, apiKey);
+    expect(missing.status).toBe(400);
+
+    const invalid = await apiRequest("GET", "/api/models?runtime=not-a-runtime", undefined, apiKey);
+    expect(invalid.status).toBe(400);
+  });
+
+  it("GET /api/models returns the cloud catalog for the ama runtime", async () => {
+    const res = await apiRequest("GET", "/api/models?runtime=ama", undefined, apiKey);
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual([{ id: "@cf/moonshotai/kimi-k2.6", name: "Kimi K2.6 (Workers AI)" }]);
+  });
+
+  it("GET /api/models returns an empty list for machine runtimes when AMA dispatch is not configured", async () => {
+    const res = await apiRequest("GET", "/api/models?runtime=codex", undefined, apiKey);
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual([]);
+  });
+
+  it("GET /api/models lists models declared by live AMA runners for machine runtimes", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    });
+    await configureAmaOwnerRuntime(userId, "gemini", "env_models");
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/runners?environmentId=env_models&limit=100") {
+        return new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "runner_models_1",
+                environmentId: "env_models",
+                status: "active",
+                capabilities: [
+                  "gemini",
+                  "runtime-provider-model:gemini:google:gemini-3-pro",
+                  // model segment is the remainder after the provider and may contain colons
+                  "runtime-provider-model:gemini:*:models/gemini:exp",
+                  // wildcard model declarations are not concrete models
+                  "runtime-provider-model:gemini:*:*",
+                  // other runtimes are ignored
+                  "runtime-provider-model:codex:openai:gpt-5.3-codex",
+                ],
+                currentLoad: 0,
+                maxConcurrent: 2,
+                lastHeartbeatAt: new Date().toISOString(),
+              },
+              {
+                id: "runner_models_2",
+                environmentId: "env_models",
+                status: "active",
+                // duplicate model declared by a second runner is deduped
+                capabilities: ["runtime-provider-model:gemini:openai:gemini-3-pro"],
+                currentLoad: 2,
+                maxConcurrent: 2,
+                lastHeartbeatAt: new Date().toISOString(),
+              },
+              {
+                id: "runner_models_offline",
+                environmentId: "env_models",
+                status: "draining",
+                capabilities: ["runtime-provider-model:gemini:google:offline-model"],
+                currentLoad: 0,
+                maxConcurrent: 2,
+                lastHeartbeatAt: null,
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const res = await apiRequest("GET", "/api/models?runtime=gemini", undefined, apiKey);
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual([{ id: "gemini-3-pro" }, { id: "models/gemini:exp" }]);
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("GET /api/models returns an empty list when no runner is online", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    });
+    await configureAmaOwnerRuntime(userId, "hermes", "env_models_empty");
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/runners?environmentId=env_models_empty&limit=100") {
+        return new Response(JSON.stringify({ data: [] }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const res = await apiRequest("GET", "/api/models?runtime=hermes", undefined, apiKey);
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual([]);
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("GET /api/agents rejects invalid filters", async () => {
     const invalidRole = await apiRequest("GET", "/api/agents?role=BadRole", undefined, apiKey);
     expect(invalidRole.status).toBe(400);

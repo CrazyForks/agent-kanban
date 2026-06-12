@@ -100,7 +100,7 @@ export async function dispatchTaskToAma(
     if (candidates.length === 0) {
       throw new HTTPException(409, { message: `Runtime "${akAgent.runtime}" is not available on any machine` });
     }
-    const machineRuntime = await firstRunnableCandidate(env, amaProjectId, candidates, amaRuntime);
+    const machineRuntime = await firstRunnableCandidate(env, amaProjectId, candidates, amaRuntime, akAgent.model);
     // Capable machines exist but every runner is busy or offline: leave the task
     // queued and let the dispatch sweep retry when capacity frees up.
     if (!machineRuntime) {
@@ -114,9 +114,7 @@ export async function dispatchTaskToAma(
   const vaultId = await resolveAmaSessionSecretVaultId(db, env, ownerId);
   const cloudDispatch = isCloudAgentRuntime(akAgent.runtime);
   const resourceRefs = await taskResourceRefs(db, task);
-  const githubTokenSecret = cloudDispatch
-    ? await cloudGithubTokenSecretRef(db, env, ownerId, amaProjectId, vaultId, sessionIdentity.sessionId, resourceRefs)
-    : null;
+  const githubTokenSecret = await githubTokenSecretRef(db, env, ownerId, amaProjectId, vaultId, sessionIdentity.sessionId, resourceRefs);
   let secret: Awaited<ReturnType<typeof createAmaSessionSecret>> | null = null;
   let dispatch: Awaited<ReturnType<typeof createAmaTaskSession>> | null = null;
   try {
@@ -280,9 +278,10 @@ export async function getReadyAmaMachineEnvironmentForRuntime(
   ownerId: string,
   projectId: string,
   runtime: string,
+  model: string | null = null,
 ): Promise<{ machineId: string; environmentId: string } | null> {
   const candidates = await listMachineEnvironmentCandidatesForRuntime(db, ownerId, runtime);
-  return firstRunnableCandidate(env, projectId, candidates, amaRuntimeName(runtime));
+  return firstRunnableCandidate(env, projectId, candidates, amaRuntimeName(runtime), model);
 }
 
 async function firstRunnableCandidate(
@@ -290,23 +289,52 @@ async function firstRunnableCandidate(
   projectId: string,
   candidates: { machineId: string; environmentId: string }[],
   amaRuntime: string,
+  model: string | null,
 ): Promise<{ machineId: string; environmentId: string } | null> {
+  // Prefer an environment whose runner declares the pinned model; keep the
+  // first merely runtime-capable environment as a transitional fallback for
+  // runners that predate model declarations.
+  let fallback: { machineId: string; environmentId: string } | null = null;
   for (const candidate of candidates) {
     const runners = await listAmaRunners(env, projectId, candidate.environmentId);
-    if (runners.data.some((runner) => amaRunnerCanRunRuntime(runner, amaRuntime))) {
-      return candidate;
-    }
+    const runnable = runners.data.filter((runner) => amaRunnerCanRunRuntime(runner, amaRuntime, model));
+    if (runnable.length === 0) continue;
+    if (!model || runnable.some((runner) => amaRunnerDeclaresModel(runner, amaRuntime, model))) return candidate;
+    fallback ??= candidate;
   }
-  return null;
+  return fallback;
 }
 
-export function amaRunnerCanRunRuntime(runner: AmaRunner, runtime: string): boolean {
-  return (
-    runner.status === "active" &&
-    runner.currentLoad < runner.maxConcurrent &&
-    runner.capabilities.some((capability) => capability === runtime || capability.startsWith(`runtime-provider-model:${runtime}:`)) &&
-    !runtimeQuotaExhausted(runner, runtime)
+export function amaRunnerCanRunRuntime(runner: AmaRunner, runtime: string, model: string | null = null): boolean {
+  if (runner.status !== "active" || runner.currentLoad >= runner.maxConcurrent || runtimeQuotaExhausted(runner, runtime)) {
+    return false;
+  }
+  const runtimeCapable = runner.capabilities.some(
+    (capability) => capability === runtime || capability.startsWith(`runtime-provider-model:${runtime}:`),
   );
+  if (!runtimeCapable) return false;
+  if (!model) return true;
+  // Model-precise gating: a runner declaring specific models only takes tasks
+  // pinned to one of them. A bare runtime capability (no model declaration)
+  // stays acceptable as a transitional fallback.
+  return amaRunnerDeclaresModel(runner, runtime, model) || runner.capabilities.includes(runtime);
+}
+
+export function amaRunnerDeclaresModel(runner: AmaRunner, runtime: string, model: string): boolean {
+  return runner.capabilities.some((capability) => {
+    const declared = amaCapabilityModel(capability, runtime);
+    return declared === model || declared === "*";
+  });
+}
+
+// Capability grammar: runtime-provider-model:<runtime>:<provider>:<model>.
+// The model is the remainder after the third colon and may itself contain colons.
+export function amaCapabilityModel(capability: string, runtime: string): string | null {
+  const prefix = `runtime-provider-model:${runtime}:`;
+  if (!capability.startsWith(prefix)) return null;
+  const rest = capability.slice(prefix.length);
+  const separator = rest.indexOf(":");
+  return separator === -1 ? null : rest.slice(separator + 1);
 }
 
 // Runners report provider quota windows in their heartbeat usage; dispatching
@@ -670,11 +698,11 @@ function cloudTaskInitialPrompt(task: Task, resourceRefs: { owner: string; repo:
   return prompt.join("\n");
 }
 
-// The GitHub credential cloud sessions push with. Preferred source: a
+// The GitHub credential sessions push with. Preferred source: a
 // repository-scoped ~1h GitHub App installation token minted per session and
 // revoked at binding teardown. Fallback: the server-level GITHUB_AGENT_TOKEN
 // stored once per owner in the AMA vault.
-async function cloudGithubTokenSecretRef(
+async function githubTokenSecretRef(
   db: D1,
   env: Env,
   ownerId: string,

@@ -270,6 +270,202 @@ describe("dispatchTaskToAma policy", () => {
   });
 });
 
+// ─── 1b. Model-precise dispatch gating ───────────────────────────────────────
+
+describe("amaRunnerCanRunRuntime model gating", () => {
+  function runner(capabilities: string[]) {
+    return {
+      id: "runner_gating",
+      environmentId: "env_gating",
+      status: "active",
+      capabilities,
+      currentLoad: 0,
+      maxConcurrent: 1,
+      lastHeartbeatAt: new Date().toISOString(),
+    };
+  }
+
+  it("matches a runner declaring the pinned model with wildcard or explicit provider", async () => {
+    const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
+    expect(amaRunnerCanRunRuntime(runner(["runtime-provider-model:codex:*:gpt-5.3-codex"]), "codex", "gpt-5.3-codex")).toBe(true);
+    expect(amaRunnerCanRunRuntime(runner(["runtime-provider-model:codex:openai:gpt-5.3-codex"]), "codex", "gpt-5.3-codex")).toBe(true);
+  });
+
+  it("matches a wildcard model declaration for any pinned model", async () => {
+    const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
+    expect(amaRunnerCanRunRuntime(runner(["runtime-provider-model:codex:*:*"]), "codex", "gpt-5.3-codex")).toBe(true);
+  });
+
+  it("matches a pinned model that itself contains colons", async () => {
+    const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
+    expect(amaRunnerCanRunRuntime(runner(["runtime-provider-model:codex:openai:vendor:model:v2"]), "codex", "vendor:model:v2")).toBe(true);
+  });
+
+  it("rejects a runner declaring only a different model", async () => {
+    const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
+    expect(amaRunnerCanRunRuntime(runner(["runtime-provider-model:codex:openai:gpt-5.2"]), "codex", "gpt-5.3-codex")).toBe(false);
+  });
+
+  it("accepts a bare runtime capability as transitional fallback", async () => {
+    const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
+    expect(amaRunnerCanRunRuntime(runner(["codex"]), "codex", "gpt-5.3-codex")).toBe(true);
+    expect(amaRunnerCanRunRuntime(runner(["codex", "runtime-provider-model:codex:openai:gpt-5.2"]), "codex", "gpt-5.3-codex")).toBe(true);
+  });
+
+  it("keeps existing capability matching when no model is pinned", async () => {
+    const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
+    expect(amaRunnerCanRunRuntime(runner(["runtime-provider-model:codex:openai:gpt-5.2"]), "codex")).toBe(true);
+    expect(amaRunnerCanRunRuntime(runner(["codex"]), "codex")).toBe(true);
+    expect(amaRunnerCanRunRuntime(runner(["claude-code"]), "codex")).toBe(false);
+  });
+});
+
+describe("dispatchTaskToAma model-precise candidate selection", () => {
+  async function insertMachineEnvironment(ownerId: string, key: string, runtime: string, environmentId: string, heartbeatAt: string) {
+    const now = new Date().toISOString();
+    await db
+      .prepare(
+        `INSERT INTO machines (id, owner_id, device_id, name, os, version, runtimes, status, last_heartbeat_at, created_at, ama_environment_id)
+         VALUES (?, ?, ?, ?, 'test', '1.0.0', ?, 'online', ?, ?, ?)`,
+      )
+      .bind(
+        `machine-${ownerId}-${key}`,
+        ownerId,
+        `device-${ownerId}-${key}`,
+        `machine-${key}`,
+        JSON.stringify([{ name: runtime, status: "ready", checked_at: now }]),
+        heartbeatAt,
+        now,
+        environmentId,
+      )
+      .run();
+  }
+
+  function runnersResponse(environmentId: string, capabilities: string[]) {
+    return new Response(
+      JSON.stringify({
+        data: [
+          {
+            id: `runner-${environmentId}`,
+            environmentId,
+            status: "active",
+            capabilities,
+            currentLoad: 0,
+            maxConcurrent: 1,
+            lastHeartbeatAt: new Date().toISOString(),
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+  }
+
+  it("prefers the environment whose runner declares the pinned model over a bare-capability one", async () => {
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createTask } = await import("../apps/web/server/taskRepo");
+    const { dispatchTaskToAma } = await import("../apps/web/server/taskDispatch");
+
+    const owner = `model-prefer-owner-${randomUUID()}`;
+    await seedUser(db, owner, `${owner}@test.local`);
+    await configureAmaIntegration(owner);
+    // The bare-capability machine has the most recent heartbeat, so it is the
+    // first candidate; preference for the model-declaring runner must win.
+    await insertMachineEnvironment(owner, "bare", "claude", "env_prefer_bare", new Date().toISOString());
+    await insertMachineEnvironment(owner, "model", "claude", "env_prefer_model", new Date(Date.now() - 60_000).toISOString());
+
+    const board = await createBoard(db, owner, `model-prefer-board-${randomUUID()}`, "ops");
+    const agent = await createTestAgent(db, owner, {
+      name: "ModelPreferAgent",
+      username: `model-prefer-agent-${randomUUID()}`,
+      runtime: "claude",
+      model: "claude-opus-4-6",
+    });
+    const task = await createTask(db, owner, {
+      title: "Model prefer task",
+      board_id: board.id,
+      assigned_to: agent.id,
+      skipRuntimeAvailability: true,
+    });
+
+    let sessionEnvironmentId: string | null = null;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://ama.test/api/runners?environmentId=env_prefer_bare&limit=100") return runnersResponse("env_prefer_bare", ["claude-code"]);
+      if (url === "https://ama.test/api/runners?environmentId=env_prefer_model&limit=100")
+        return runnersResponse("env_prefer_model", ["runtime-provider-model:claude-code:anthropic:claude-opus-4-6"]);
+      if (url === "https://ama.test/api/providers?limit=100")
+        return new Response(JSON.stringify({ data: [{ id: "provider_claude", type: "anthropic", status: "active" }] }), { status: 200 });
+      if (url === "https://ama.test/api/providers/provider_claude/models")
+        return new Response(JSON.stringify({ id: "claude-opus-4-6" }), { status: 200 });
+      if (url === "https://ama.test/api/vaults/vault_123/credentials")
+        return new Response(JSON.stringify({ id: "vaultcred_prefer", activeVersionId: "vaultver_prefer" }), { status: 201 });
+      if (url === "https://ama.test/api/agents")
+        return new Response(
+          JSON.stringify({ id: "ama_agent_prefer", projectId: "project_123", name: "prefer", provider: "provider_claude", model: "claude-opus-4-6" }),
+          { status: 201 },
+        );
+      if (url === "https://ama.test/api/sessions") {
+        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+        sessionEnvironmentId = body.environmentId;
+        return new Response(
+          JSON.stringify({ id: "session_prefer_1", agentId: body.agentId, environmentId: body.environmentId, status: "pending", statusReason: null }),
+          { status: 201 },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const env = makeEnv();
+    await dispatchTaskToAma(db, env, owner, task, { apiOrigin: "https://ak.test" });
+
+    expect(sessionEnvironmentId).toBe("env_prefer_model");
+  });
+
+  it("leaves the task queued when every runner declares only other models", async () => {
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createTask } = await import("../apps/web/server/taskRepo");
+    const { dispatchTaskToAma } = await import("../apps/web/server/taskDispatch");
+
+    const owner = `model-mismatch-owner-${randomUUID()}`;
+    await seedUser(db, owner, `${owner}@test.local`);
+    await configureAmaIntegration(owner);
+    await insertMachineEnvironment(owner, "mismatch", "claude", "env_model_mismatch", new Date().toISOString());
+
+    const board = await createBoard(db, owner, `model-mismatch-board-${randomUUID()}`, "ops");
+    const agent = await createTestAgent(db, owner, {
+      name: "ModelMismatchAgent",
+      username: `model-mismatch-agent-${randomUUID()}`,
+      runtime: "claude",
+      model: "claude-opus-4-6",
+    });
+    const task = await createTask(db, owner, {
+      title: "Model mismatch task",
+      board_id: board.id,
+      assigned_to: agent.id,
+      skipRuntimeAvailability: true,
+    });
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://ama.test/api/runners?environmentId=env_model_mismatch&limit=100")
+        return runnersResponse("env_model_mismatch", ["runtime-provider-model:claude-code:anthropic:claude-sonnet-4-6"]);
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const env = makeEnv();
+    await expect(dispatchTaskToAma(db, env, owner, task, { apiOrigin: "https://ak.test" })).resolves.toMatchObject({ id: task.id });
+
+    const row = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(task.id).first<{ metadata: string }>();
+    const meta = JSON.parse(row!.metadata ?? "{}");
+    expect(meta?.annotations?.["ama.dispatch.result"]).toBeFalsy();
+    expect(fetchMock.mock.calls.some(([url]) => String(url) === "https://ama.test/api/sessions")).toBe(false);
+  });
+});
+
 // ─── 2. dispatchPendingAmaTasks sweep ─────────────────────────────────────────
 
 describe("dispatchPendingAmaTasks", () => {

@@ -89,6 +89,7 @@ import { createMailbox, deleteMailbox, getEmail, getInbox } from "./mailsService
 import { createMessage, listMessages } from "./messageRepo";
 import { metricsMiddleware } from "./metrics";
 import { getMachineMetrics } from "./metricsRepo";
+import { listRuntimeModels } from "./modelCatalog";
 import { createRepository, deleteRepository, getRepository, listRepositories } from "./repositoryRepo";
 import { createSSEResponse } from "./sse";
 import { getSystemStats } from "./statsRepo";
@@ -858,6 +859,16 @@ api.delete("/api/machines/:id", async (c) => {
   await authCtx.adapter.delete({ model: "agentHost", where: [{ field: "id", value: machineId }] });
 
   return c.json({ ok: true });
+});
+
+// ─── Models ───
+
+api.get("/api/models", async (c) => {
+  const runtime = c.req.query("runtime");
+  if (!runtime) throw new HTTPException(400, { message: `runtime is required. Must be one of: ${AGENT_RUNTIMES.join(", ")}` });
+  assertValidAgentRuntime(runtime);
+  const models = await listRuntimeModels(c.env.DB, c.env, c.get("ownerId"), runtime as AgentRuntime);
+  return c.json(models);
 });
 
 // ─── Agents ───

@@ -2,16 +2,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const listModels = vi.fn();
-const getProvider = vi.fn();
+const createClient = vi.fn();
 const output = vi.fn();
 
 vi.mock("../packages/cli/src/agent/leader.js", () => ({
-  createClient: vi.fn(),
-}));
-
-vi.mock("../packages/cli/src/providers/registry.js", () => ({
-  normalizeRuntime: vi.fn((runtime: string) => runtime.toLowerCase()),
-  getProvider,
+  createClient,
 }));
 
 vi.mock("../packages/cli/src/output.js", async (importOriginal) => {
@@ -68,9 +63,9 @@ async function registerGetModel(): Promise<CapturedCommand> {
 describe("registerGetCommand model", () => {
   beforeEach(() => {
     listModels.mockReset();
-    getProvider.mockReset();
+    createClient.mockReset();
     output.mockReset();
-    getProvider.mockReturnValue({ label: "Claude Code", listModels });
+    createClient.mockResolvedValue({ listModels });
   });
 
   it("requires a runtime option", async () => {
@@ -79,15 +74,14 @@ describe("registerGetCommand model", () => {
     expect(command.options).toContain("--runtime <runtime>");
   });
 
-  it("lists models for the normalized runtime", async () => {
+  it("lists models from the API for the normalized runtime", async () => {
     const command = await registerGetModel();
     const models = [{ id: "claude-opus-4-1", name: "Claude Opus 4.1" }];
     listModels.mockResolvedValue(models);
 
-    await command.action!({ runtime: "Claude", output: "json" });
+    await command.action!({ runtime: "claude-code", output: "json" });
 
-    expect(getProvider).toHaveBeenCalledWith("claude");
-    expect(listModels).toHaveBeenCalledOnce();
+    expect(listModels).toHaveBeenCalledWith("claude");
     expect(output).toHaveBeenCalledWith(models, "json", expect.any(Function), { kind: "model" });
   });
 });

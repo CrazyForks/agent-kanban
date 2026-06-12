@@ -203,6 +203,11 @@ export abstract class ApiClient {
     return this.request("POST", "/api/subagents", input);
   }
 
+  // Models
+  listModels(runtime: string) {
+    return this.request<{ id: string; name?: string; description?: string }[]>("GET", `/api/models?runtime=${encodeURIComponent(runtime)}`);
+  }
+
   // Boards
   createBoard(input: { name: string; type: import("@agent-kanban/shared").BoardType; description?: string }) {
     return this.request("POST", "/api/boards", input);
