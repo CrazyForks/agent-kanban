@@ -1,5 +1,5 @@
 {
-  "name": "agent-kanban",
+  "name": "agent-kanban-monorepo",
   "version": "1.0.0",
   "private": true,
   "description": "Agent-first cross-project kanban board",
