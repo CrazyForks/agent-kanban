@@ -321,11 +321,29 @@ three-scenario regression (codex 11/11, ama 10/10, mixed 11/11):
   longer capped (AMA)
 - the dead in-container pi-bridge is removed from the image and config (AMA)
 
-Still open:
+Closed after that regression (runner v0.2.1, verified by a codex 11/11 smoke):
 
-- AMA master CI e2e has been red since the runner-loop commits (cde108c era,
-  pre-dating the placement work): runner-bridge event scenarios fail in CI.
-  Local repro requires `--enable-containers=false` on hosts without Docker.
+- Runners enumerate real host models at registration (claude via SDK
+  `supportedModels`, codex via `~/.codex/models_cache.json`, copilot via
+  `CopilotClient.listModels`) and declare per-model
+  `runtime-provider-model:<runtime>:*:<model>` capabilities; AMA matching is
+  model-precise again, with a transitional bare-runtime fallback for older
+  runners. (AMA)
+- `ak get model` asks the server (`GET /api/models?runtime=`), which
+  aggregates runner capabilities across the owner's machine environments
+  (cloud runtimes keep the platform catalog), instead of loading provider
+  SDKs locally. (AK)
+- Self-hosted dispatches get the same GitHub App `GH_TOKEN` as cloud ones;
+  the runner writes it into a worktree-scoped git credential store for
+  pushes. (AK + AMA)
+- Local PRs are authored by `app/agentkanban`: the codex CLI exposed the
+  host user's personal Codex Apps GitHub connector to managed sessions and
+  the agent used its `create_pull_request` tool (host identity) instead of
+  `gh pr create`. The runtime-bridge codex provider now passes
+  `features.apps=false`, so managed sessions only see session credentials.
+  (AMA)
+
+Still open:
 - The standalone CLI bundle is rebuilt by `apps/web` prebuild and
   `scripts/install-cli.sh`; consider publishing it with the npm release so
   cloud sessions don't depend on the serving AK instance's build. (AK)
