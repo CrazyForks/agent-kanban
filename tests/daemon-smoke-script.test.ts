@@ -38,9 +38,10 @@ describe("daemon smoke script", () => {
     expect(script).toContain('LOCAL_RUNTIME="codex"');
     expect(script).toContain('CLOUD_RUNTIME="ama"');
 
-    // runtime_default_model() maps each runtime to an explicit model
+    // runtime_default_model() maps each runtime to a model
     expect(script).toContain("runtime_default_model()");
-    expect(script).toContain("gpt-5.3-codex");
+    // codex now queries the server for declared models and picks the first one
+    expect(script).toContain('codex) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id"');
     expect(script).toContain("opus");
     expect(script).toContain('"@cf/moonshotai/kimi-k2.6"');
 
