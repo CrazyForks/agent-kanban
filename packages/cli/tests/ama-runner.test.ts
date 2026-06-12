@@ -15,6 +15,12 @@ vi.mock("../src/paths.js", async () => {
   return { ...actual, BIN_DIR: binDir, DATA_DIR: testDir };
 });
 
+// Version probe stub — updated whenever AMA_RUNNER_VERSION is bumped.
+// Kept as a plain string (not derived from the import) because vi.mock factories
+// are hoisted and cannot safely call vi.importActual on a module that itself
+// imports the module being mocked (node:child_process), causing a circular dep.
+const PROBE_VERSION = "0.2.0";
+
 vi.mock("node:child_process", async () => {
   const fs = await import("node:fs");
   const path = await import("node:path");
@@ -26,14 +32,14 @@ vi.mock("node:child_process", async () => {
         return { status: 0, stdout: "", stderr: "" };
       }
       if (args[0] === "version") {
-        return { status: 0, stdout: JSON.stringify({ name: "ama-runner", version: "0.1.0", commit: "test" }), stderr: "" };
+        return { status: 0, stdout: JSON.stringify({ name: "ama-runner", version: PROBE_VERSION, commit: "test" }), stderr: "" };
       }
       return { status: 1, stdout: "", stderr: "unexpected command" };
     }),
   };
 });
 
-const { resolveAmaRunnerBinary } = await import("../src/amaRunner.js");
+const { resolveAmaRunnerBinary, AMA_RUNNER_VERSION } = await import("../src/amaRunner.js");
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -50,10 +56,10 @@ describe("resolveAmaRunnerBinary", () => {
         const checksum = "0eb3e36bfb24dcd9bb1d1bece1531216b59539a8fde17ee80224af0653c92aa3";
         return new Response(
           [
-            `${checksum} ama-runner-v0.1.0-darwin-arm64.tar.gz`,
-            `${checksum} ama-runner-v0.1.0-darwin-amd64.tar.gz`,
-            `${checksum} ama-runner-v0.1.0-linux-arm64.tar.gz`,
-            `${checksum} ama-runner-v0.1.0-linux-amd64.tar.gz`,
+            `${checksum} ama-runner-v${AMA_RUNNER_VERSION}-darwin-arm64.tar.gz`,
+            `${checksum} ama-runner-v${AMA_RUNNER_VERSION}-darwin-amd64.tar.gz`,
+            `${checksum} ama-runner-v${AMA_RUNNER_VERSION}-linux-arm64.tar.gz`,
+            `${checksum} ama-runner-v${AMA_RUNNER_VERSION}-linux-amd64.tar.gz`,
           ].join("\n"),
         );
       }
@@ -63,7 +69,7 @@ describe("resolveAmaRunnerBinary", () => {
     const resolved = await resolveAmaRunnerBinary();
 
     expect(resolved.path).toBe(join(binDir, "ama-runner"));
-    expect(resolved.version).toMatchObject({ version: "0.1.0", commit: "test" });
+    expect(resolved.version).toMatchObject({ version: AMA_RUNNER_VERSION, commit: "test" });
     expect(existsSync(join(legacyRunnersDir, "ama-runner"))).toBe(false);
     expect(existsSync(join(binDir, "ama-runner"))).toBe(true);
   });
