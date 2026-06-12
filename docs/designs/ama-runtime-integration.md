@@ -138,7 +138,9 @@ Placement is derived from the agent runtime, not from a per-task field:
   the web app at `/cli/ak-standalone.mjs` with a `/cli/install.sh` bootstrap.
   The cloud initial prompt is self-contained: install CLI, claim, branch,
   commit/push (git identity + credential store are pre-configured by AMA
-  workspace preparation), create the PR via the GitHub API, submit review.
+  workspace preparation), create the PR with `gh pr create` (the sandbox
+  image `ama-sandbox:0.10.1-gh1` ships the GitHub CLI, which reads the
+  session `GH_TOKEN` natively), submit review.
 - The dev server has no cron; the smoke script drives the dispatch/reconcile
   sweeps by poking `/cdn-cgi/handler/scheduled`, and cloud runs against a
   local dev server need a public `AK_API_URL` (cloudflared quick tunnel).
