@@ -1146,7 +1146,11 @@ describe("routes", () => {
   it("GET /api/models returns the cloud catalog for the ama runtime", async () => {
     const res = await apiRequest("GET", "/api/models?runtime=ama", undefined, apiKey);
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual([{ id: "@cf/moonshotai/kimi-k2.6", name: "Kimi K2.6 (Workers AI)" }]);
+    await expect(res.json()).resolves.toEqual([
+      { id: "@cf/moonshotai/kimi-k2.7-code", name: "Kimi K2.7 Code (Workers AI)" },
+      { id: "@cf/openai/gpt-oss-120b", name: "GPT-OSS 120B (Workers AI)" },
+      { id: "@cf/moonshotai/kimi-k2.6", name: "Kimi K2.6 (Workers AI)" },
+    ]);
   });
 
   it("GET /api/models returns an empty list for machine runtimes when AMA dispatch is not configured", async () => {

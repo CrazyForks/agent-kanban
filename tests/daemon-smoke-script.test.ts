@@ -43,7 +43,7 @@ describe("daemon smoke script", () => {
     // codex now queries the server for declared models and picks the first one
     expect(script).toContain('codex) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id"');
     expect(script).toContain("opus");
-    expect(script).toContain('"@cf/moonshotai/kimi-k2.6"');
+    expect(script).toContain('"@cf/moonshotai/kimi-k2.7-code"');
 
     // create_agent() passes --model
     expect(script).toContain("--model");

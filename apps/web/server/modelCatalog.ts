@@ -14,7 +14,14 @@ export interface RuntimeModel {
 // Cloud runtimes run on the AMA sandbox plane with a fixed model catalog —
 // there are no machine runners to report model capabilities.
 const CLOUD_RUNTIME_MODELS: Partial<Record<AgentRuntime, RuntimeModel[]>> = {
-  ama: [{ id: "@cf/moonshotai/kimi-k2.6", name: "Kimi K2.6 (Workers AI)" }],
+  // First entry is the default. kimi-k2.7-code is the primary cloud model;
+  // gpt-oss-120b is a different-vendor backend that survives a moonshot-side
+  // outage; kimi-k2.6 is kept for when its upstream is healthy.
+  ama: [
+    { id: "@cf/moonshotai/kimi-k2.7-code", name: "Kimi K2.7 Code (Workers AI)" },
+    { id: "@cf/openai/gpt-oss-120b", name: "GPT-OSS 120B (Workers AI)" },
+    { id: "@cf/moonshotai/kimi-k2.6", name: "Kimi K2.6 (Workers AI)" },
+  ],
 };
 
 // Models a runtime can run for this owner: the static catalog for cloud

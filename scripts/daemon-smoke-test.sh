@@ -163,7 +163,7 @@ runtime_default_model() {
   case "$runtime" in
     codex) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id" ;;
     claude) ak get model --runtime "$runtime" -o json | json_query "data.find((m) => m.id.includes('opus'))?.id || data[0]?.id" ;;
-    ama) echo "@cf/moonshotai/kimi-k2.6" ;;
+    ama) echo "@cf/moonshotai/kimi-k2.7-code" ;;
     *) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id" ;;
   esac
 }
