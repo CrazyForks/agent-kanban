@@ -1143,14 +1143,51 @@ describe("routes", () => {
     expect(invalid.status).toBe(400);
   });
 
-  it("GET /api/models returns the cloud catalog for the ama runtime", async () => {
-    const res = await apiRequest("GET", "/api/models?runtime=ama", undefined, apiKey);
-    expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual([
-      { id: "@cf/moonshotai/kimi-k2.7-code", name: "Kimi K2.7 Code (Workers AI)" },
-      { id: "@cf/openai/gpt-oss-120b", name: "GPT-OSS 120B (Workers AI)" },
-      { id: "@cf/moonshotai/kimi-k2.6", name: "Kimi K2.6 (Workers AI)" },
-    ]);
+  it("GET /api/models returns the cloud catalog for the ama runtime fetched from AMA", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "oauth-token", expires_in: 3600 }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/v1/runtimes/ama/models") {
+        return new Response(
+          JSON.stringify({
+            data: [
+              { provider: "workers-ai", model: "@cf/moonshotai/kimi-k2.7-code", displayName: "Kimi K2.7 Code (Workers AI)" },
+              { provider: "workers-ai", model: "@cf/openai/gpt-oss-120b", displayName: "GPT-OSS 120B (Workers AI)" },
+              { provider: "workers-ai", model: "@cf/moonshotai/kimi-k2.6", displayName: "Kimi K2.6 (Workers AI)" },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const res = await apiRequest("GET", "/api/models?runtime=ama", undefined, apiKey);
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual([
+        { id: "@cf/moonshotai/kimi-k2.7-code", name: "Kimi K2.7 Code (Workers AI)" },
+        { id: "@cf/openai/gpt-oss-120b", name: "GPT-OSS 120B (Workers AI)" },
+        { id: "@cf/moonshotai/kimi-k2.6", name: "Kimi K2.6 (Workers AI)" },
+      ]);
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
   });
 
   it("GET /api/models returns an empty list for machine runtimes when AMA dispatch is not configured", async () => {
@@ -1177,6 +1214,10 @@ describe("routes", () => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+      }
+      // gemini is a self-hosted runtime: AMA returns no cloud models, falling through to runner discovery
+      if (url === "https://ama.test/api/v1/runtimes/gemini/models") {
+        return new Response(JSON.stringify({ data: [] }), { status: 200 });
       }
       if (url === "https://ama.test/api/v1/runners?environmentId=env_models&limit=100") {
         return new Response(
@@ -1255,6 +1296,10 @@ describe("routes", () => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+      }
+      // hermes is a self-hosted runtime: AMA returns no cloud models, falling through to runner discovery
+      if (url === "https://ama.test/api/v1/runtimes/hermes/models") {
+        return new Response(JSON.stringify({ data: [] }), { status: 200 });
       }
       if (url === "https://ama.test/api/v1/runners?environmentId=env_models_empty&limit=100") {
         return new Response(JSON.stringify({ data: [] }), { status: 200 });

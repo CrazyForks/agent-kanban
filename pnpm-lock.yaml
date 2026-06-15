@@ -113,8 +113,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/shared
       '@any-managed-agents/sdk':
-        specifier: github:saltbo/any-managed-agents#9a918c8&path:sdk/typescript
-        version: https://codeload.github.com/saltbo/any-managed-agents/tar.gz/9a918c82d4b9e71d103b9403986de44e831a16f1#path:sdk/typescript
+        specifier: github:saltbo/any-managed-agents#5d2d602&path:sdk/typescript
+        version: https://codeload.github.com/saltbo/any-managed-agents/tar.gz/5d2d602d95303425357d023814e0a442746e5c43#path:sdk/typescript
       '@assistant-ui/react':
         specifier: ^0.12.24
         version: 0.12.24(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(use-sync-external-store@1.6.0(react@19.2.5))
@@ -343,8 +343,8 @@ packages:
       zod:
         optional: true
 
-  '@any-managed-agents/sdk@https://codeload.github.com/saltbo/any-managed-agents/tar.gz/9a918c82d4b9e71d103b9403986de44e831a16f1#path:sdk/typescript':
-    resolution: {path: sdk/typescript, tarball: https://codeload.github.com/saltbo/any-managed-agents/tar.gz/9a918c82d4b9e71d103b9403986de44e831a16f1}
+  '@any-managed-agents/sdk@https://codeload.github.com/saltbo/any-managed-agents/tar.gz/5d2d602d95303425357d023814e0a442746e5c43#path:sdk/typescript':
+    resolution: {path: sdk/typescript, tarball: https://codeload.github.com/saltbo/any-managed-agents/tar.gz/5d2d602d95303425357d023814e0a442746e5c43}
     version: 0.1.0
 
   '@asamuzakjp/css-color@5.1.8':
@@ -6487,7 +6487,7 @@ snapshots:
     optionalDependencies:
       zod: 4.3.6
 
-  '@any-managed-agents/sdk@https://codeload.github.com/saltbo/any-managed-agents/tar.gz/9a918c82d4b9e71d103b9403986de44e831a16f1#path:sdk/typescript': {}
+  '@any-managed-agents/sdk@https://codeload.github.com/saltbo/any-managed-agents/tar.gz/5d2d602d95303425357d023814e0a442746e5c43#path:sdk/typescript': {}
 
   '@asamuzakjp/css-color@5.1.8':
     dependencies:

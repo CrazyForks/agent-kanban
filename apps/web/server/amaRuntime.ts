@@ -727,6 +727,23 @@ export async function listAmaEnvironments(env: Env): Promise<AmaListResponse<Rec
   });
 }
 
+export interface AmaRuntimeModel {
+  provider: string;
+  model: string;
+  displayName?: string;
+}
+
+// The cloud model catalog for a runtime, served by AMA (the authority). A
+// cloud-capable runtime (ama) returns its platform models; self-hosted-only
+// runtimes return [] (their models come from the runner's live capabilities).
+export async function listAmaRuntimeModels(env: Env, runtime: string): Promise<AmaRuntimeModel[]> {
+  const client = await createAmaClient(env);
+  const response = await client.request<AmaListResponse<AmaRuntimeModel>>("listRuntimeModels", {
+    path: { runtime },
+  });
+  return response.data;
+}
+
 interface AmaRunnerResponse {
   id: string;
   environmentId: string | null;

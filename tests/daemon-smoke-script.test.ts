@@ -40,10 +40,11 @@ describe("daemon smoke script", () => {
 
     // runtime_default_model() maps each runtime to a model
     expect(script).toContain("runtime_default_model()");
-    // codex now queries the server for declared models and picks the first one
+    // codex queries the server for declared models and picks the first one
     expect(script).toContain('codex) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id"');
+    // ama queries the server dynamically (no hardcoded model id)
+    expect(script).toContain('ama) ak get model --runtime "$runtime" -o json | json_query "data[0]?.id"');
     expect(script).toContain("opus");
-    expect(script).toContain('"@cf/moonshotai/kimi-k2.7-code"');
 
     // create_agent() passes --model
     expect(script).toContain("--model");
