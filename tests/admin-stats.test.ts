@@ -317,14 +317,14 @@ describe("GET /api/admin/stats", () => {
         if (url === "https://auth.test/oauth/token") {
           return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
         }
-        if (url === "https://ama.test/api/runners?environmentId=env_admin_stats&limit=100") {
+        if (url === "https://ama.test/api/v1/runners?environmentId=env_admin_stats&limit=100") {
           return new Response(
             JSON.stringify({
               data: [
                 {
                   id: "runner_admin_stats",
                   environmentId: "env_admin_stats",
-                  status: "active",
+                  state: "active",
                   capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
                   currentLoad: 0,
                   maxConcurrent: 5,

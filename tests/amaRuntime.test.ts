@@ -2,8 +2,8 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  createAmaExternalProjectBinding,
   createAmaFederatedRunnerToken,
+  createAmaFederatedTenant,
   createAmaSessionSecret,
   createAmaTaskSession,
   isAmaRuntimeConfigured,
@@ -55,7 +55,7 @@ describe("AMA runtime adapter", () => {
         expect(String(init?.body)).toContain("client_id=ak-app");
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/sessions") {
+      if (url === "https://ama.test/api/v1/sessions") {
         expect(init?.method).toBe("POST");
         expect((init?.headers as Record<string, string>).authorization).toBe("Bearer oauth-token");
         expect((init?.headers as Record<string, string>)["x-ama-project-id"]).toBe("project_123");
@@ -66,8 +66,8 @@ describe("AMA runtime adapter", () => {
           runtime: "codex",
           title: "Implement metadata",
           resourceRefs: [{ type: "github_repository", owner: "saltbo", repo: "agent-kanban" }],
-          runtimeEnv: { AK_API_URL: "https://ak.example.com", AK_AGENT_ID: "agent_123" },
-          runtimeSecretEnv: [{ name: "AK_AGENT_KEY", ref: "vaultver_123" }],
+          env: { AK_API_URL: "https://ak.example.com", AK_AGENT_ID: "agent_123" },
+          secretEnv: [{ name: "AK_AGENT_KEY", credentialRef: { credentialId: "vaultver_123" } }],
           initialPrompt: "Use AK CLI to claim and review the task.",
         });
         expect(JSON.stringify(body)).not.toContain("task_123");
@@ -77,8 +77,8 @@ describe("AMA runtime adapter", () => {
             id: "session_123",
             agentId: "agent_123",
             environmentId: "env_123",
-            status: "pending",
-            statusReason: null,
+            state: "pending",
+            stateReason: null,
           }),
           { status: 201 },
         );
@@ -96,7 +96,7 @@ describe("AMA runtime adapter", () => {
       initialPrompt: "Use AK CLI to claim and review the task.",
       resourceRefs: [{ type: "github_repository", owner: "saltbo", repo: "agent-kanban" }],
       runtimeEnv: { AK_API_URL: "https://ak.example.com", AK_AGENT_ID: "agent_123" },
-      runtimeSecretEnv: [{ name: "AK_AGENT_KEY", ref: "vaultver_123" }],
+      runtimeSecretEnv: [{ name: "AK_AGENT_KEY", credentialId: "vaultver_123" }],
     });
 
     expect(dispatch).toEqual({
@@ -116,7 +116,7 @@ describe("AMA runtime adapter", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/vaults/vault_123/credentials") {
+      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
         expect(init?.method).toBe("POST");
         expect((init?.headers as Record<string, string>).authorization).toBe("Bearer oauth-token");
         expect((init?.headers as Record<string, string>)["x-ama-project-id"]).toBe("project_123");
@@ -147,13 +147,13 @@ describe("AMA runtime adapter", () => {
     ).resolves.toEqual({ credentialId: "vaultcred_123", activeVersionId: "vaultver_123" });
   });
 
-  it("creates external project bindings and exchanges AK subject tokens for runner tokens", async () => {
+  it("creates federated tenants and exchanges AK subject tokens for runner tokens", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token" && String(init?.body).includes("client_credentials")) {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/projects/project_123/external-bindings") {
+      if (url === "https://ama.test/api/v1/auth/federated-tenants") {
         expect(init?.method).toBe("POST");
         expect((init?.headers as Record<string, string>)["x-ama-project-id"]).toBe("project_123");
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -161,9 +161,9 @@ describe("AMA runtime adapter", () => {
           issuer: "https://ak.example.com",
           externalTenantId: "owner_123",
           environmentId: "env_123",
+          capabilities: ["session:poll", "session:claim"],
         });
-        expect(body).not.toHaveProperty("capabilities");
-        return new Response(JSON.stringify({ id: "epb_123" }), { status: 201 });
+        return new Response(JSON.stringify({ id: "ft_123" }), { status: 201 });
       }
       if (url === "https://auth.test/oauth/token" && String(init?.body).includes("token-exchange")) {
         expect((init?.headers as Record<string, string>).authorization).toBe(`Basic ${btoa("ak-app:ak-secret")}`);
@@ -196,7 +196,7 @@ describe("AMA runtime adapter", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await createAmaExternalProjectBinding(env(), {
+    await createAmaFederatedTenant(env(), {
       projectId: "project_123",
       issuer: "https://ak.example.com",
       externalTenantId: "owner_123",

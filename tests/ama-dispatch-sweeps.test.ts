@@ -112,7 +112,7 @@ function activeRunnerResponse(environmentId: string, runtime: string, load = 0, 
         {
           id: `runner-${runtime}`,
           environmentId,
-          status: "active",
+          state: "active",
           capabilities: [`runtime-provider-model:${runtime}:*:*`],
           currentLoad: load,
           maxConcurrent,
@@ -127,10 +127,6 @@ function activeRunnerResponse(environmentId: string, runtime: string, load = 0, 
 function busyRunnerResponse(environmentId: string, runtime: string) {
   // load == maxConcurrent means the runner is full
   return activeRunnerResponse(environmentId, runtime, 1, 1);
-}
-
-function emptyRunnersResponse() {
-  return new Response(JSON.stringify({ data: [] }), { status: 200 });
 }
 
 // ─── 1. dispatchTaskToAma policy guards ──────────────────────────────────────
@@ -222,7 +218,7 @@ describe("dispatchTaskToAma policy", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/runners?environmentId=env_busy&limit=100") return busyRunnerResponse("env_busy", "claude-code");
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_busy&limit=100") return busyRunnerResponse("env_busy", "claude-code");
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -348,7 +344,7 @@ describe("dispatchTaskToAma model-precise candidate selection", () => {
           {
             id: `runner-${environmentId}`,
             environmentId,
-            status: "active",
+            state: "active",
             capabilities,
             currentLoad: 0,
             maxConcurrent: 1,
@@ -391,25 +387,32 @@ describe("dispatchTaskToAma model-precise candidate selection", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/runners?environmentId=env_prefer_bare&limit=100") return runnersResponse("env_prefer_bare", ["claude-code"]);
-      if (url === "https://ama.test/api/runners?environmentId=env_prefer_model&limit=100")
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_prefer_bare&limit=100")
+        return runnersResponse("env_prefer_bare", ["claude-code"]);
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_prefer_model&limit=100")
         return runnersResponse("env_prefer_model", ["runtime-provider-model:claude-code:anthropic:claude-opus-4-6"]);
-      if (url === "https://ama.test/api/providers?limit=100")
-        return new Response(JSON.stringify({ data: [{ id: "provider_claude", type: "anthropic", status: "active" }] }), { status: 200 });
-      if (url === "https://ama.test/api/providers/provider_claude/models")
+      if (url === "https://ama.test/api/v1/providers?limit=100")
+        return new Response(JSON.stringify({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }), { status: 200 });
+      if (url === "https://ama.test/api/v1/providers/provider_claude/models/claude-opus-4-6")
         return new Response(JSON.stringify({ id: "claude-opus-4-6" }), { status: 200 });
-      if (url === "https://ama.test/api/vaults/vault_123/credentials")
+      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials")
         return new Response(JSON.stringify({ id: "vaultcred_prefer", activeVersionId: "vaultver_prefer" }), { status: 201 });
-      if (url === "https://ama.test/api/agents")
+      if (url === "https://ama.test/api/v1/agents")
         return new Response(
-          JSON.stringify({ id: "ama_agent_prefer", projectId: "project_123", name: "prefer", provider: "provider_claude", model: "claude-opus-4-6" }),
+          JSON.stringify({
+            id: "ama_agent_prefer",
+            projectId: "project_123",
+            name: "prefer",
+            providerId: "provider_claude",
+            model: "claude-opus-4-6",
+          }),
           { status: 201 },
         );
-      if (url === "https://ama.test/api/sessions") {
+      if (url === "https://ama.test/api/v1/sessions") {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         sessionEnvironmentId = body.environmentId;
         return new Response(
-          JSON.stringify({ id: "session_prefer_1", agentId: body.agentId, environmentId: body.environmentId, status: "pending", statusReason: null }),
+          JSON.stringify({ id: "session_prefer_1", agentId: body.agentId, environmentId: body.environmentId, state: "pending", stateReason: null }),
           { status: 201 },
         );
       }
@@ -450,7 +453,7 @@ describe("dispatchTaskToAma model-precise candidate selection", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/runners?environmentId=env_model_mismatch&limit=100")
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_model_mismatch&limit=100")
         return runnersResponse("env_model_mismatch", ["runtime-provider-model:claude-code:anthropic:claude-sonnet-4-6"]);
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -462,7 +465,7 @@ describe("dispatchTaskToAma model-precise candidate selection", () => {
     const row = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(task.id).first<{ metadata: string }>();
     const meta = JSON.parse(row!.metadata ?? "{}");
     expect(meta?.annotations?.["ama.dispatch.result"]).toBeFalsy();
-    expect(fetchMock.mock.calls.some(([url]) => String(url) === "https://ama.test/api/sessions")).toBe(false);
+    expect(fetchMock.mock.calls.some(([url]) => String(url) === "https://ama.test/api/v1/sessions")).toBe(false);
   });
 });
 
@@ -495,23 +498,21 @@ describe("dispatchPendingAmaTasks", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/runners?environmentId=env_sweep&limit=100") return activeRunnerResponse("env_sweep", "claude-code");
-      if (url === "https://ama.test/api/providers?limit=100")
-        return new Response(JSON.stringify({ data: [{ id: "provider_claude", type: "anthropic", status: "active" }] }), { status: 200 });
-      if (url === "https://ama.test/api/providers/provider_claude/models?limit=100")
-        return new Response(JSON.stringify({ data: [] }), { status: 200 });
-      if (url === "https://ama.test/api/vaults/vault_123/credentials")
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_sweep&limit=100") return activeRunnerResponse("env_sweep", "claude-code");
+      if (url === "https://ama.test/api/v1/providers?limit=100")
+        return new Response(JSON.stringify({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }), { status: 200 });
+      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials")
         return new Response(JSON.stringify({ id: "vaultcred_sweep", activeVersionId: "vaultver_sweep" }), { status: 201 });
-      if (url === "https://ama.test/api/agents")
+      if (url === "https://ama.test/api/v1/agents")
         return new Response(
-          JSON.stringify({ id: "ama_agent_sweep", projectId: "project_123", name: "sweep", provider: "provider_claude", model: null }),
+          JSON.stringify({ id: "ama_agent_sweep", projectId: "project_123", name: "sweep", providerId: "provider_claude", model: null }),
           { status: 201 },
         );
-      if (url === "https://ama.test/api/sessions") {
+      if (url === "https://ama.test/api/v1/sessions") {
         sessionCreated = true;
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         return new Response(
-          JSON.stringify({ id: "session_sweep_1", agentId: body.agentId, environmentId: "env_sweep", status: "pending", statusReason: null }),
+          JSON.stringify({ id: "session_sweep_1", agentId: body.agentId, environmentId: "env_sweep", state: "pending", stateReason: null }),
           { status: 201 },
         );
       }
@@ -554,9 +555,9 @@ describe("dispatchPendingAmaTasks", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/runners?environmentId=env_blocked_sweep&limit=100")
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_blocked_sweep&limit=100")
         return activeRunnerResponse("env_blocked_sweep", "claude-code");
-      if (url === "https://ama.test/api/sessions") {
+      if (url === "https://ama.test/api/v1/sessions") {
         sessionPostCalls.push(url);
         throw new Error("Should not create session for blocked task");
       }
@@ -600,19 +601,18 @@ describe("dispatchPendingAmaTasks", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/runners?environmentId=env_dep_sweep&limit=100") return activeRunnerResponse("env_dep_sweep", "claude-code");
-      if (url === "https://ama.test/api/providers?limit=100")
-        return new Response(JSON.stringify({ data: [{ id: "provider_claude", type: "anthropic", status: "active" }] }), { status: 200 });
-      if (url === "https://ama.test/api/providers/provider_claude/models?limit=100")
-        return new Response(JSON.stringify({ data: [] }), { status: 200 });
-      if (url === "https://ama.test/api/vaults/vault_123/credentials")
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_dep_sweep&limit=100")
+        return activeRunnerResponse("env_dep_sweep", "claude-code");
+      if (url === "https://ama.test/api/v1/providers?limit=100")
+        return new Response(JSON.stringify({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }), { status: 200 });
+      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials")
         return new Response(JSON.stringify({ id: "vaultcred_dep", activeVersionId: "vaultver_dep" }), { status: 201 });
-      if (url === "https://ama.test/api/agents")
+      if (url === "https://ama.test/api/v1/agents")
         return new Response(
-          JSON.stringify({ id: "ama_agent_dep", projectId: "project_123", name: "dep", provider: "provider_claude", model: null }),
+          JSON.stringify({ id: "ama_agent_dep", projectId: "project_123", name: "dep", providerId: "provider_claude", model: null }),
           { status: 201 },
         );
-      if (url === "https://ama.test/api/sessions") {
+      if (url === "https://ama.test/api/v1/sessions") {
         sessionCount += 1;
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         return new Response(
@@ -620,8 +620,8 @@ describe("dispatchPendingAmaTasks", () => {
             id: `session_dep_${sessionCount}`,
             agentId: body.agentId,
             environmentId: "env_dep_sweep",
-            status: "pending",
-            statusReason: null,
+            state: "pending",
+            stateReason: null,
           }),
           { status: 201 },
         );
@@ -698,15 +698,16 @@ describe("reconcileAmaBoundTasks", () => {
     const sessionId = `session_error_${randomUUID()}`;
     const { task } = await seedTaskWithBinding(reconcileOwner, "in_progress", sessionId);
 
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === `https://ama.test/api/sessions/${sessionId}`)
-        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", status: "error", statusReason: "crashed" }), {
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method !== "PATCH")
+        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", state: "error", stateReason: "crashed" }), {
           status: 200,
         });
-      // Stop call after release
-      if (url.includes(`/sessions/${sessionId}/stop`)) return new Response(JSON.stringify({ id: sessionId, status: "stopped" }), { status: 200 });
+      // Stop call after release (PATCH /api/v1/sessions/{id})
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method === "PATCH")
+        return new Response(JSON.stringify({ id: sessionId, state: "stopped" }), { status: 200 });
       throw new Error(`Unexpected reconcile fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -734,8 +735,8 @@ describe("reconcileAmaBoundTasks", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === `https://ama.test/api/sessions/${sessionId}`)
-        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", status: "running", statusReason: null }), {
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}`)
+        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", state: "running", stateReason: null }), {
           status: 200,
         });
       throw new Error(`Unexpected fetch: ${url}`);
@@ -760,12 +761,12 @@ describe("reconcileAmaBoundTasks", () => {
     const { task } = await seedTaskWithBinding(doneOwner, "done", sessionId);
 
     const stops: string[] = [];
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url.includes(`/sessions/${sessionId}/stop`)) {
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method === "PATCH") {
         stops.push(url);
-        return new Response(JSON.stringify({ id: sessionId, status: "stopped" }), { status: 200 });
+        return new Response(JSON.stringify({ id: sessionId, state: "stopped" }), { status: 200 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -795,7 +796,7 @@ describe("reconcileAmaBoundTasks", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === `https://ama.test/api/sessions/${sessionId}`) return new Response(null, { status: 404 });
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}`) return new Response(null, { status: 404 });
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -821,13 +822,13 @@ describe("reconcileAmaBoundTasks", () => {
     const { task } = await seedTaskWithBinding(oldOwner, "in_progress", sessionId, oldTime);
 
     const stops: string[] = [];
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === `https://ama.test/api/sessions/${sessionId}`) return new Response(null, { status: 404 });
-      if (url.includes(`/sessions/${sessionId}/stop`)) {
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method !== "PATCH") return new Response(null, { status: 404 });
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method === "PATCH") {
         stops.push(url);
-        return new Response(JSON.stringify({ id: sessionId, status: "stopped" }), { status: 200 });
+        return new Response(JSON.stringify({ id: sessionId, state: "stopped" }), { status: 200 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -854,14 +855,15 @@ describe("reconcileAmaBoundTasks", () => {
     const staleTime = new Date(Date.now() - 11 * 60 * 1000).toISOString();
     const { task } = await seedTaskWithBinding(stalePendingOwner, "todo", sessionId, staleTime);
 
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === `https://ama.test/api/sessions/${sessionId}`)
-        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", status: "pending", statusReason: null }), {
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method !== "PATCH")
+        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", state: "pending", stateReason: null }), {
           status: 200,
         });
-      if (url.includes(`/sessions/${sessionId}/stop`)) return new Response(JSON.stringify({ id: sessionId, status: "stopped" }), { status: 200 });
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method === "PATCH")
+        return new Response(JSON.stringify({ id: sessionId, state: "stopped" }), { status: 200 });
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -891,8 +893,8 @@ describe("reconcileAmaBoundTasks", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === `https://ama.test/api/sessions/${sessionId}`)
-        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", status: "pending", statusReason: null }), {
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}`)
+        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", state: "pending", stateReason: null }), {
           status: 200,
         });
       throw new Error(`Unexpected fetch: ${url}`);
@@ -919,14 +921,14 @@ describe("reconcileAmaBoundTasks", () => {
     const { task } = await seedTaskWithBinding(idleOwner, "todo", sessionId);
 
     const stops: string[] = [];
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === `https://ama.test/api/sessions/${sessionId}`)
-        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", status: "idle", statusReason: null }), { status: 200 });
-      if (url.includes(`/sessions/${sessionId}/stop`)) {
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method !== "PATCH")
+        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", state: "idle", stateReason: null }), { status: 200 });
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method === "PATCH") {
         stops.push(url);
-        return new Response(JSON.stringify({ id: sessionId, status: "stopped" }), { status: 200 });
+        return new Response(JSON.stringify({ id: sessionId, state: "stopped" }), { status: 200 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -984,12 +986,12 @@ describe("detectAndReleaseStaleAll with AMA binding", () => {
     await db.prepare("UPDATE task_actions SET created_at = ? WHERE task_id = ?").bind(pastTime, task.id).run();
 
     const stops: string[] = [];
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url.includes(`/sessions/${sessionId}/stop`)) {
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method === "PATCH") {
         stops.push(url);
-        return new Response(JSON.stringify({ id: sessionId, status: "stopped" }), { status: 200 });
+        return new Response(JSON.stringify({ id: sessionId, state: "stopped" }), { status: 200 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -1072,14 +1074,15 @@ describe("POST /api/tasks/:id/reject AMA 409 handling", () => {
     });
     await db.prepare("UPDATE tasks SET status = 'in_review' WHERE id = ?").bind(task.id).run();
 
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === `https://ama.test/api/sessions/${amaSessionId}/commands`)
-        // AMA returns 409 — session already archived
+      // POST /messages — AMA returns 409: session already archived
+      if (url === `https://ama.test/api/v1/sessions/${amaSessionId}/messages` && init?.method === "POST")
         return new Response(JSON.stringify({ error: "session archived" }), { status: 409 });
-      if (url.includes(`/sessions/${amaSessionId}/stop`))
-        return new Response(JSON.stringify({ id: amaSessionId, status: "stopped" }), { status: 200 });
+      // PATCH /sessions/{id} — stop call from releaseTaskRuntimeBinding
+      if (url === `https://ama.test/api/v1/sessions/${amaSessionId}` && init?.method === "PATCH")
+        return new Response(JSON.stringify({ id: amaSessionId, state: "stopped" }), { status: 200 });
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1147,12 +1150,12 @@ describe("amaRuntime createAmaClient 401 retry", () => {
         tokenFetchCount += 1;
         return new Response(JSON.stringify({ access_token: `token-${tokenFetchCount}`, expires_in: 3600 }), { status: 200 });
       }
-      if (url === "https://ama.test/api/sessions/session_retry") {
+      if (url === "https://ama.test/api/v1/sessions/session_retry") {
         sessionAttemptCount += 1;
         // First attempt → 401 (simulates a server-side token revocation)
         // Second attempt (after cache eviction + re-auth) → 200
         if (sessionAttemptCount === 1) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
-        return new Response(JSON.stringify({ id: "session_retry", status: "running", agentId: "a", environmentId: "e", statusReason: null }), {
+        return new Response(JSON.stringify({ id: "session_retry", state: "running", agentId: "a", environmentId: "e", stateReason: null }), {
           status: 200,
         });
       }
@@ -1169,7 +1172,7 @@ describe("amaRuntime createAmaClient 401 retry", () => {
 
     const result = await readAmaSession(env, "session_retry");
 
-    expect(result).toMatchObject({ id: "session_retry", status: "running" });
+    expect(result).toMatchObject({ id: "session_retry", state: "running" });
     // Session was attempted twice: once with first token (→ 401), once with new token (→ 200)
     expect(sessionAttemptCount).toBe(2);
     // OAuth token was fetched at least twice: once initially, once after cache eviction
@@ -1193,13 +1196,13 @@ describe("amaRuntime createAmaClient 401 retry", () => {
         tokenFetchCount += 1;
         return new Response(JSON.stringify({ access_token: `token-${tokenFetchCount}`, expires_in: 3600 }), { status: 200 });
       }
-      if (url === "https://ama.test/api/sessions/session_recache") {
+      if (url === "https://ama.test/api/v1/sessions/session_recache") {
         sessionCallCount += 1;
         if (forceError && sessionCallCount === 1) {
           return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
         }
         forceError = false;
-        return new Response(JSON.stringify({ id: "session_recache", status: "running", agentId: "a", environmentId: "e", statusReason: null }), {
+        return new Response(JSON.stringify({ id: "session_recache", state: "running", agentId: "a", environmentId: "e", stateReason: null }), {
           status: 200,
         });
       }
@@ -1303,9 +1306,9 @@ describe("amaRuntime vault credential helpers", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/vaults/vault_test/credentials/cred_test") {
+      if (url === "https://ama.test/api/v1/vaults/vault_test/credentials/cred_test") {
         revokeCalls.push({ url, body: JSON.parse(String(init?.body)) });
-        return new Response(JSON.stringify({ id: "cred_test", status: "revoked" }), { status: 200 });
+        return new Response(JSON.stringify({ id: "cred_test", state: "revoked" }), { status: 200 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -1321,7 +1324,7 @@ describe("amaRuntime vault credential helpers", () => {
     await revokeAmaVaultCredential(env, "project_test", "vault_test", "cred_test");
 
     expect(revokeCalls).toHaveLength(1);
-    expect(revokeCalls[0].body).toMatchObject({ status: "revoked", revokeReason: "AK agent session closed" });
+    expect(revokeCalls[0].body).toMatchObject({ state: "revoked", revokeReason: "AK agent session closed" });
   });
 
   it("createAmaSessionSecret throws when vault credential response is missing activeVersionId", async () => {
@@ -1330,7 +1333,7 @@ describe("amaRuntime vault credential helpers", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/vaults/vault_noversion/credentials")
+      if (url === "https://ama.test/api/v1/vaults/vault_noversion/credentials")
         // Credential response missing activeVersionId
         return new Response(JSON.stringify({ id: "cred_noversion" }), { status: 201 });
       throw new Error(`Unexpected fetch: ${url}`);
@@ -1355,21 +1358,20 @@ describe("amaRuntime vault credential helpers", () => {
   });
 });
 
-// ─── 6c2. createAmaExternalProjectBinding error path ─────────────────────────
+// ─── 6c2. createAmaFederatedTenant error path ────────────────────────────────
 
-describe("amaRuntime createAmaExternalProjectBinding error path", () => {
+describe("amaRuntime createAmaFederatedTenant error path", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("wraps AMA binding failure into a descriptive error", async () => {
-    const { createAmaExternalProjectBinding } = await import("../apps/web/server/amaRuntime");
+  it("treats a 409 from AMA as idempotent success (no error thrown)", async () => {
+    const { createAmaFederatedTenant } = await import("../apps/web/server/amaRuntime");
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/projects/project_bind/external-bindings")
-        return new Response(JSON.stringify({ message: "conflict" }), { status: 409 });
+      if (url === "https://ama.test/api/v1/auth/federated-tenants") return new Response(JSON.stringify({ message: "conflict" }), { status: 409 });
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1381,13 +1383,42 @@ describe("amaRuntime createAmaExternalProjectBinding error path", () => {
       AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     };
 
+    // 409 is idempotent — no throw
     await expect(
-      createAmaExternalProjectBinding(env, {
+      createAmaFederatedTenant(env, {
         projectId: "project_bind",
         issuer: "https://runner.test",
         externalTenantId: "tenant_123",
       }),
-    ).rejects.toThrow("AMA external project binding failed HTTP 409");
+    ).resolves.toBeUndefined();
+  });
+
+  it("wraps a non-409 AMA failure into a descriptive error", async () => {
+    const { createAmaFederatedTenant } = await import("../apps/web/server/amaRuntime");
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://ama.test/api/v1/auth/federated-tenants")
+        return new Response(JSON.stringify({ message: "internal error" }), { status: 500 });
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const env: any = {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OAUTH_CLIENT_ID: `ak-bind-err-${randomUUID()}`,
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    };
+
+    await expect(
+      createAmaFederatedTenant(env, {
+        projectId: "project_bind",
+        issuer: "https://runner.test",
+        externalTenantId: "tenant_123",
+      }),
+    ).rejects.toThrow("AMA federated tenant binding failed HTTP 500");
   });
 });
 
@@ -1468,7 +1499,7 @@ describe("amaRuntime list helpers", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/agents?limit=100")
+      if (url === "https://ama.test/api/v1/agents?limit=100")
         return new Response(JSON.stringify({ data: [{ id: "ama_agent_1" }], pagination: {} }), { status: 200 });
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -1492,7 +1523,7 @@ describe("amaRuntime list helpers", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/environments?limit=100")
+      if (url === "https://ama.test/api/v1/environments?limit=100")
         return new Response(JSON.stringify({ data: [{ id: "env_1", name: "Production" }], pagination: {} }), { status: 200 });
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -1540,12 +1571,12 @@ describe("amaRuntime resolveAmaProviderModelProfile", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/providers?limit=100")
+      if (url === "https://ama.test/api/v1/providers?limit=100")
         // Return empty list — no existing provider
         return new Response(JSON.stringify({ data: [], pagination: {} }), { status: 200 });
-      if (url === "https://ama.test/api/providers") {
+      if (url === "https://ama.test/api/v1/providers") {
         providerCreated = true;
-        return new Response(JSON.stringify({ id: "new_provider_id", type: "anthropic", status: "active" }), { status: 201 });
+        return new Response(JSON.stringify({ id: "new_provider_id", type: "anthropic", enabled: true }), { status: 201 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -1572,11 +1603,11 @@ describe("amaRuntime resolveAmaProviderModelProfile", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/providers?limit=100")
-        return new Response(JSON.stringify({ data: [{ id: "provider_existing", type: "anthropic", status: "active" }], pagination: {} }), {
+      if (url === "https://ama.test/api/v1/providers?limit=100")
+        return new Response(JSON.stringify({ data: [{ id: "provider_existing", type: "anthropic", enabled: true }], pagination: {} }), {
           status: 200,
         });
-      if (url === "https://ama.test/api/providers/provider_existing/models") {
+      if (url === "https://ama.test/api/v1/providers/provider_existing/models/claude-opus-4") {
         upsertCalled = true;
         return new Response(JSON.stringify({ id: "model_123" }), { status: 201 });
       }

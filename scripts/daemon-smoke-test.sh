@@ -12,7 +12,7 @@ set -euo pipefail
 # Runtimes:
 #   codex | claude | copilot — self-hosted: tasks run on this machine's runner
 #   ama                      — cloud: tasks run on AMA Cloudflare Sandbox sessions
-#   mixed                    — one local (codex) and one cloud (ama) task in parallel
+#   mixed                    — one local (claude) and one cloud (ama) task in parallel
 #
 # Usage: ./scripts/daemon-smoke-test.sh <runtime> [board_id] [repo_id]
 # Missing arguments are discovered or created. Defaults target the Demo board
@@ -427,7 +427,7 @@ case "$SMOKE_RUNTIME" in
   codex | claude | copilot) LOCAL_RUNTIME="$SMOKE_RUNTIME" ;;
   ama) CLOUD_RUNTIME="ama" ;;
   mixed)
-    LOCAL_RUNTIME="codex"
+    LOCAL_RUNTIME="claude"
     CLOUD_RUNTIME="ama"
     ;;
   *) echo "FATAL: smoke runtime must be codex, claude, copilot, ama, or mixed; got: $SMOKE_RUNTIME"; exit 1 ;;

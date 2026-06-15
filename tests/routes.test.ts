@@ -261,17 +261,17 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/environments/env_123") {
+      if (url === "https://ama.test/api/v1/environments/env_123") {
         return new Response(JSON.stringify({ id: "env_123", runtime: "codex" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/runners?environmentId=env_123&limit=100") {
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_123&limit=100") {
         return new Response(
           JSON.stringify({
             data: [
               {
                 id: "runner_123",
                 environmentId: "env_123",
-                status: "active",
+                state: "active",
                 capabilities: ["runtime-provider-model:codex:*:gpt-5.3-codex"],
                 currentLoad: 0,
                 maxConcurrent: 1,
@@ -282,42 +282,48 @@ describe("routes", () => {
           { status: 200 },
         );
       }
-      if (url === "https://ama.test/api/providers?limit=100") {
+      if (url === "https://ama.test/api/v1/providers?limit=100") {
         return new Response(JSON.stringify({ data: [{ id: "provider_codex", type: "openai", status: "active" }] }), { status: 200 });
       }
-      if (url === "https://ama.test/api/providers/provider_codex/models?limit=100") {
+      if (url === "https://ama.test/api/v1/providers/provider_codex/models?limit=100") {
         return new Response(JSON.stringify({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] }), {
           status: 200,
         });
       }
-      if (url === "https://ama.test/api/providers/provider_codex/models" && init?.method === "POST") {
+      if (url === "https://ama.test/api/v1/providers/provider_codex/models" && init?.method === "POST") {
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
-      if (url === "https://ama.test/api/agents") {
+      if (url === "https://ama.test/api/v1/agents") {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         expect(body.skills).toEqual(["saltbo/agent-kanban@agent-kanban"]);
         expect(body.handoffPolicy).toEqual({ enabled: true, targets: [{ role: "worker" }] });
         expect(body.memoryPolicy).toEqual({ enabled: true, mode: "notebook", scope: "project_agent" });
         return new Response(
-          JSON.stringify({ id: "ama_agent_maintainer", projectId: "project_123", name: "agent", provider: "provider_codex", model: "gpt-5.3-codex" }),
+          JSON.stringify({
+            id: "ama_agent_maintainer",
+            projectId: "project_123",
+            name: "agent",
+            providerId: "provider_codex",
+            model: "gpt-5.3-codex",
+          }),
           { status: 201 },
         );
       }
-      if (url === "https://ama.test/api/scheduled-agent-triggers") {
+      if (url === "https://ama.test/api/v1/triggers") {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         scheduleRequests.push(body);
         expect(body.metadata).toBeUndefined();
         expect(body.agentId).toBe("ama_agent_maintainer");
         expect(body.environmentId).toBe("env_123");
         expect(body.resourceRefs).toEqual([]);
-        expect(body.runtimeEnv).toMatchObject({
+        expect(body.env).toMatchObject({
           AK_WORKER: "1",
           AK_BOARD_ID: maintainerBoard.id,
           AK_API_URL: "https://ak.test",
         });
-        expect(body.runtimeEnv.AK_AGENT_ID).toBe(maintainerAgent.id);
-        expect(body.runtimeEnv).not.toHaveProperty("AK_SESSION_ID");
-        expect(body.runtimeSecretEnv).toEqual([]);
+        expect(body.env.AK_AGENT_ID).toBe(maintainerAgent.id);
+        expect(body.env).not.toHaveProperty("AK_SESSION_ID");
+        expect(body.secretEnv).toEqual([]);
         expect(body.promptTemplate).toContain(`AK board ${maintainerBoard.id}`);
         return new Response(
           JSON.stringify({
@@ -327,14 +333,23 @@ describe("routes", () => {
             name: body.name,
             promptTemplate: body.promptTemplate,
             schedule: { intervalSeconds: 3600, windowSeconds: 0 },
-            status: "active",
+            enabled: true,
+            archivedAt: null,
             lastDispatchedAt: null,
             lastRunId: null,
           }),
           { status: 201 },
         );
       }
-      if (url === "https://ama.test/api/scheduled-agent-triggers/sched_maintainer" && init?.method === "PATCH") {
+      if (
+        url === "https://ama.test/api/v1/triggers/sched_maintainer" &&
+        init?.method === "PATCH" &&
+        JSON.parse(String(init?.body)).archived === true
+      ) {
+        archiveRequests.push(url);
+        return new Response(JSON.stringify({ id: "sched_maintainer", enabled: true, archivedAt: "2026-06-15T00:00:00.000Z" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/v1/triggers/sched_maintainer" && init?.method === "PATCH") {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         updateRequests.push(body);
         expect(body.metadata).toBeUndefined();
@@ -346,18 +361,15 @@ describe("routes", () => {
             name: body.name ?? "Daily maintainer",
             promptTemplate: body.promptTemplate ?? "unchanged",
             schedule: { intervalSeconds: body.schedule?.intervalSeconds ?? 3600, windowSeconds: 0 },
-            status: body.status ?? "active",
+            enabled: body.enabled ?? true,
+            archivedAt: null,
             lastDispatchedAt: null,
             lastRunId: null,
           }),
           { status: 200 },
         );
       }
-      if (url === "https://ama.test/api/scheduled-agent-triggers/sched_maintainer" && init?.method === "DELETE") {
-        archiveRequests.push(url);
-        return new Response(null, { status: 204 });
-      }
-      if (url.startsWith("https://ama.test/api/scheduled-agent-triggers/sched_maintainer/runs?")) {
+      if (url.startsWith("https://ama.test/api/v1/triggers/sched_maintainer/runs?")) {
         const limit = Number(new URL(url).searchParams.get("limit") ?? 20);
         return new Response(
           JSON.stringify({
@@ -368,7 +380,7 @@ describe("routes", () => {
                 triggerId: "sched_maintainer",
                 scheduledFor: "2026-06-08T12:00:00.000Z",
                 heartbeatAt: "2026-06-08T12:00:03.000Z",
-                status: "completed",
+                state: "completed",
                 sessionId: "session_maintainer_1",
                 errorMessage: null,
                 metadata: { attempt: 1 },
@@ -434,8 +446,8 @@ describe("routes", () => {
       expect(maintainer.latest_run).not.toHaveProperty("sessionId");
       expect(maintainer.latest_run).not.toHaveProperty("scheduledFor");
       expect(scheduleRequests).toHaveLength(1);
-      expect(scheduleRequests[0].runtimeEnv).toMatchObject({ AK_AGENT_ID: maintainerAgent.id, AK_BOARD_ID: maintainerBoard.id });
-      expect(scheduleRequests[0].runtimeEnv).not.toHaveProperty("AK_SESSION_ID");
+      expect(scheduleRequests[0].env).toMatchObject({ AK_AGENT_ID: maintainerAgent.id, AK_BOARD_ID: maintainerBoard.id });
+      expect(scheduleRequests[0].env).not.toHaveProperty("AK_SESSION_ID");
 
       const listRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers`, undefined, userToken);
       expect(listRes.status).toBe(200);
@@ -446,7 +458,7 @@ describe("routes", () => {
       const pauseRes = await apiRequest("PATCH", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`, { status: "paused" }, userToken);
       expect(pauseRes.status).toBe(200);
       await expect(pauseRes.json()).resolves.toEqual(expect.objectContaining({ id: maintainer.id, status: "paused" }));
-      expect(updateRequests.at(-1)).toEqual({ status: "paused" });
+      expect(updateRequests.at(-1)).toEqual({ enabled: false });
 
       const updateRes = await apiRequest(
         "PATCH",
@@ -489,7 +501,7 @@ describe("routes", () => {
       const archiveRes = await apiRequest("DELETE", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`, undefined, userToken);
       expect(archiveRes.status).toBe(200);
       await expect(archiveRes.json()).resolves.toEqual(expect.objectContaining({ id: maintainer.id, status: "archived" }));
-      expect(archiveRequests).toEqual(["https://ama.test/api/scheduled-agent-triggers/sched_maintainer"]);
+      expect(archiveRequests).toEqual(["https://ama.test/api/v1/triggers/sched_maintainer"]);
     } finally {
       Object.assign(env, previousAma);
       vi.unstubAllGlobals();
@@ -542,17 +554,17 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/environments/env_patch_test") {
+      if (url === "https://ama.test/api/v1/environments/env_patch_test") {
         return new Response(JSON.stringify({ id: "env_patch_test", runtime: "codex" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/runners?environmentId=env_patch_test&limit=100") {
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_patch_test&limit=100") {
         return new Response(
           JSON.stringify({
             data: [
               {
                 id: "runner_patch",
                 environmentId: "env_patch_test",
-                status: "active",
+                state: "active",
                 capabilities: ["runtime-provider-model:codex:*:gpt-5.3-codex"],
                 currentLoad: 0,
                 maxConcurrent: 1,
@@ -563,24 +575,30 @@ describe("routes", () => {
           { status: 200 },
         );
       }
-      if (url === "https://ama.test/api/providers?limit=100") {
+      if (url === "https://ama.test/api/v1/providers?limit=100") {
         return new Response(JSON.stringify({ data: [{ id: "provider_codex_patch", type: "openai", status: "active" }] }), { status: 200 });
       }
-      if (url === "https://ama.test/api/providers/provider_codex_patch/models?limit=100") {
+      if (url === "https://ama.test/api/v1/providers/provider_codex_patch/models?limit=100") {
         return new Response(JSON.stringify({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] }), {
           status: 200,
         });
       }
-      if (url === "https://ama.test/api/providers/provider_codex_patch/models" && init?.method === "POST") {
+      if (url === "https://ama.test/api/v1/providers/provider_codex_patch/models" && init?.method === "POST") {
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
-      if (url === "https://ama.test/api/agents") {
+      if (url === "https://ama.test/api/v1/agents") {
         return new Response(
-          JSON.stringify({ id: "ama_agent_patch", projectId: amaProjectId, name: "agent", provider: "provider_codex_patch", model: "gpt-5.3-codex" }),
+          JSON.stringify({
+            id: "ama_agent_patch",
+            projectId: amaProjectId,
+            name: "agent",
+            providerId: "provider_codex_patch",
+            model: "gpt-5.3-codex",
+          }),
           { status: 201 },
         );
       }
-      if (url === "https://ama.test/api/scheduled-agent-triggers" && init?.method === "POST") {
+      if (url === "https://ama.test/api/v1/triggers" && init?.method === "POST") {
         return new Response(
           JSON.stringify({
             id: "sched_patch",
@@ -589,14 +607,15 @@ describe("routes", () => {
             name: "Patch header agent",
             promptTemplate: "template",
             schedule: { intervalSeconds: 3600, windowSeconds: 0 },
-            status: "active",
+            enabled: true,
+            archivedAt: null,
             lastDispatchedAt: null,
             lastRunId: null,
           }),
           { status: 201 },
         );
       }
-      if (url === "https://ama.test/api/scheduled-agent-triggers/sched_patch" && init?.method === "PATCH") {
+      if (url === "https://ama.test/api/v1/triggers/sched_patch" && init?.method === "PATCH") {
         capturedPatchHeaders.push({ ...(init?.headers as Record<string, string>) });
         return new Response(
           JSON.stringify({
@@ -606,14 +625,15 @@ describe("routes", () => {
             name: "Patch header agent",
             promptTemplate: "template",
             schedule: { intervalSeconds: 3600, windowSeconds: 0 },
-            status: "paused",
+            enabled: false,
+            archivedAt: null,
             lastDispatchedAt: null,
             lastRunId: null,
           }),
           { status: 200 },
         );
       }
-      if (url.startsWith("https://ama.test/api/scheduled-agent-triggers/sched_patch/runs?")) {
+      if (url.startsWith("https://ama.test/api/v1/triggers/sched_patch/runs?")) {
         return new Response(JSON.stringify({ data: [], pagination: { limit: 20, hasMore: false } }), { status: 200 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
@@ -692,17 +712,17 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/environments/env_delete_test") {
+      if (url === "https://ama.test/api/v1/environments/env_delete_test") {
         return new Response(JSON.stringify({ id: "env_delete_test", runtime: "codex" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/runners?environmentId=env_delete_test&limit=100") {
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_delete_test&limit=100") {
         return new Response(
           JSON.stringify({
             data: [
               {
                 id: "runner_delete",
                 environmentId: "env_delete_test",
-                status: "active",
+                state: "active",
                 capabilities: ["runtime-provider-model:codex:*:gpt-5.3-codex"],
                 currentLoad: 0,
                 maxConcurrent: 1,
@@ -713,30 +733,30 @@ describe("routes", () => {
           { status: 200 },
         );
       }
-      if (url === "https://ama.test/api/providers?limit=100") {
+      if (url === "https://ama.test/api/v1/providers?limit=100") {
         return new Response(JSON.stringify({ data: [{ id: "provider_codex_delete", type: "openai", status: "active" }] }), { status: 200 });
       }
-      if (url === "https://ama.test/api/providers/provider_codex_delete/models?limit=100") {
+      if (url === "https://ama.test/api/v1/providers/provider_codex_delete/models?limit=100") {
         return new Response(JSON.stringify({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] }), {
           status: 200,
         });
       }
-      if (url === "https://ama.test/api/providers/provider_codex_delete/models" && init?.method === "POST") {
+      if (url === "https://ama.test/api/v1/providers/provider_codex_delete/models" && init?.method === "POST") {
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
-      if (url === "https://ama.test/api/agents") {
+      if (url === "https://ama.test/api/v1/agents") {
         return new Response(
           JSON.stringify({
             id: "ama_agent_delete",
             projectId: amaProjectId,
             name: "agent",
-            provider: "provider_codex_delete",
+            providerId: "provider_codex_delete",
             model: "gpt-5.3-codex",
           }),
           { status: 201 },
         );
       }
-      if (url === "https://ama.test/api/scheduled-agent-triggers" && init?.method === "POST") {
+      if (url === "https://ama.test/api/v1/triggers" && init?.method === "POST") {
         return new Response(
           JSON.stringify({
             id: "sched_delete",
@@ -745,18 +765,19 @@ describe("routes", () => {
             name: "Delete header agent",
             promptTemplate: "template",
             schedule: { intervalSeconds: 3600, windowSeconds: 0 },
-            status: "active",
+            enabled: true,
+            archivedAt: null,
             lastDispatchedAt: null,
             lastRunId: null,
           }),
           { status: 201 },
         );
       }
-      if (url === "https://ama.test/api/scheduled-agent-triggers/sched_delete" && init?.method === "DELETE") {
+      if (url === "https://ama.test/api/v1/triggers/sched_delete" && init?.method === "PATCH" && JSON.parse(String(init?.body)).archived === true) {
         capturedDeleteHeaders.push({ ...(init?.headers as Record<string, string>) });
-        return new Response(null, { status: 204 });
+        return new Response(JSON.stringify({ id: "sched_delete", enabled: true, archivedAt: "2026-06-15T00:00:00.000Z" }), { status: 200 });
       }
-      if (url.startsWith("https://ama.test/api/scheduled-agent-triggers/sched_delete/runs?")) {
+      if (url.startsWith("https://ama.test/api/v1/triggers/sched_delete/runs?")) {
         return new Response(JSON.stringify({ data: [], pagination: { limit: 20, hasMore: false } }), { status: 200 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
@@ -960,14 +981,14 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/runners?environmentId=env_available&limit=100") {
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_available&limit=100") {
         return new Response(
           JSON.stringify({
             data: [
               {
                 id: "runner_available",
                 environmentId: "env_available",
-                status: "active",
+                state: "active",
                 capabilities: ["runtime-provider-model:claude-code:*:claude-sonnet-4-6"],
                 currentLoad: 0,
                 maxConcurrent: 5,
@@ -978,14 +999,14 @@ describe("routes", () => {
           { status: 200 },
         );
       }
-      if (url === "https://ama.test/api/runners?environmentId=env_full&limit=100") {
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_full&limit=100") {
         return new Response(
           JSON.stringify({
             data: [
               {
                 id: "runner_full",
                 environmentId: "env_full",
-                status: "active",
+                state: "active",
                 capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
                 currentLoad: 2,
                 maxConcurrent: 2,
@@ -1044,14 +1065,14 @@ describe("routes", () => {
         if (url === "https://auth.test/oauth/token") {
           return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
         }
-        if (url === "https://ama.test/api/runners?environmentId=env_available&limit=100") {
+        if (url === "https://ama.test/api/v1/runners?environmentId=env_available&limit=100") {
           return new Response(
             JSON.stringify({
               data: [
                 {
                   id: "runner_available",
                   environmentId: "env_available",
-                  status: "active",
+                  state: "active",
                   capabilities: ["runtime-provider-model:claude-code:*:claude-sonnet-4-6"],
                   currentLoad: 0,
                   maxConcurrent: 5,
@@ -1062,14 +1083,14 @@ describe("routes", () => {
             { status: 200 },
           );
         }
-        if (url === "https://ama.test/api/runners?environmentId=env_full&limit=100") {
+        if (url === "https://ama.test/api/v1/runners?environmentId=env_full&limit=100") {
           return new Response(
             JSON.stringify({
               data: [
                 {
                   id: "runner_full",
                   environmentId: "env_full",
-                  status: "active",
+                  state: "active",
                   capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
                   currentLoad: 2,
                   maxConcurrent: 2,
@@ -1080,7 +1101,7 @@ describe("routes", () => {
             { status: 200 },
           );
         }
-        if (url === "https://ama.test/api/runners?environmentId=env_unavailable&limit=100") {
+        if (url === "https://ama.test/api/v1/runners?environmentId=env_unavailable&limit=100") {
           return new Response(JSON.stringify({ data: [] }), { status: 200 });
         }
         throw new Error(`Unexpected fetch: ${url}`);
@@ -1144,14 +1165,14 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/runners?environmentId=env_models&limit=100") {
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_models&limit=100") {
         return new Response(
           JSON.stringify({
             data: [
               {
                 id: "runner_models_1",
                 environmentId: "env_models",
-                status: "active",
+                state: "active",
                 capabilities: [
                   "gemini",
                   "runtime-provider-model:gemini:google:gemini-3-pro",
@@ -1169,7 +1190,7 @@ describe("routes", () => {
               {
                 id: "runner_models_2",
                 environmentId: "env_models",
-                status: "active",
+                state: "active",
                 // duplicate model declared by a second runner is deduped
                 capabilities: ["runtime-provider-model:gemini:openai:gemini-3-pro"],
                 currentLoad: 2,
@@ -1179,7 +1200,7 @@ describe("routes", () => {
               {
                 id: "runner_models_offline",
                 environmentId: "env_models",
-                status: "draining",
+                state: "draining",
                 capabilities: ["runtime-provider-model:gemini:google:offline-model"],
                 currentLoad: 0,
                 maxConcurrent: 2,
@@ -1222,7 +1243,7 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/runners?environmentId=env_models_empty&limit=100") {
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_models_empty&limit=100") {
         return new Response(JSON.stringify({ data: [] }), { status: 200 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
@@ -1804,7 +1825,7 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/providers?limit=100") {
+      if (url === "https://ama.test/api/v1/providers?limit=100") {
         return new Response(
           JSON.stringify({
             data: [{ id: "provider_claude", type: "anthropic", status: "active" }],
@@ -1813,7 +1834,7 @@ describe("routes", () => {
           { status: 200 },
         );
       }
-      if (url === "https://ama.test/api/providers/provider_claude/models?limit=100") {
+      if (url === "https://ama.test/api/v1/providers/provider_claude/models?limit=100") {
         return new Response(
           JSON.stringify({
             data: [{ modelId: "claude-sonnet-4-6", availability: "available", metadata: { runtime: "claude-code" } }],
@@ -1822,17 +1843,17 @@ describe("routes", () => {
           { status: 200 },
         );
       }
-      if (url === "https://ama.test/api/providers/provider_claude/models" && init?.method === "POST") {
+      if (url === "https://ama.test/api/v1/providers/provider_claude/models" && init?.method === "POST") {
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
-      if (url === "https://ama.test/api/runners?environmentId=env_123&limit=100") {
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_123&limit=100") {
         return new Response(
           JSON.stringify({
             data: [
               {
                 id: "runner_123",
                 environmentId: "env_123",
-                status: "active",
+                state: "active",
                 capabilities: ["runtime-provider-model:claude-code:anthropic:claude-sonnet-4-6"],
                 currentLoad: 0,
                 maxConcurrent: 1,
@@ -1843,16 +1864,16 @@ describe("routes", () => {
           { status: 200 },
         );
       }
-      if (url === "https://ama.test/api/vaults/vault_123/credentials") {
+      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         expect(body.secret.secretValue).toContain('"kty":"OKP"');
         runtimePrivateKeyJwk = JSON.parse(body.secret.secretValue) as JsonWebKey;
         return new Response(JSON.stringify({ id: "vaultcred_123", activeVersionId: "vaultver_123" }), { status: 201 });
       }
-      if (url === "https://ama.test/api/agents") {
+      if (url === "https://ama.test/api/v1/agents") {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         expect(body.metadata).toMatchObject({ runtime: "claude-code" });
-        expect(body.provider).toBe("provider_claude");
+        expect(body.providerId).toBe("provider_claude");
         expect(body.skills).toEqual(["saltbo/agent-kanban@agent-kanban"]);
         expect(body.subagents).toEqual([
           {
@@ -1873,24 +1894,24 @@ describe("routes", () => {
             id: "ama_agent_123",
             projectId: "project_123",
             name: body.name,
-            provider: body.provider,
+            providerId: body.providerId,
             model: null,
           }),
           { status: 201 },
         );
       }
-      if (url === "https://ama.test/api/sessions") {
+      if (url === "https://ama.test/api/v1/sessions") {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         expect(body.agentId).toBe("ama_agent_123");
         expect(body.environmentId).toBe("env_123");
         expect(body.runtime).toBe("claude-code");
-        expect(body.runtimeEnv).toMatchObject({
+        expect(body.env).toMatchObject({
           AK_WORKER: "1",
           AK_AGENT_ID: agentId,
           AK_API_URL: "https://ak.test",
         });
-        expect(body.runtimeEnv.AK_SESSION_ID).toEqual(expect.any(String));
-        expect(body.runtimeSecretEnv).toEqual([{ name: "AK_AGENT_KEY", ref: "vaultver_123" }]);
+        expect(body.env.AK_SESSION_ID).toEqual(expect.any(String));
+        expect(body.secretEnv).toEqual([{ name: "AK_AGENT_KEY", credentialRef: { credentialId: "vaultcred_123", versionId: "vaultver_123" } }]);
         expect(body.initialPrompt).toContain(`Task detail:\n${taskDetail}`);
         expect(JSON.stringify(body)).not.toContain("board_");
         return new Response(
@@ -1898,8 +1919,8 @@ describe("routes", () => {
             id: "session_ama_123",
             agentId: body.agentId,
             environmentId: "env_123",
-            status: "pending",
-            statusReason: null,
+            state: "pending",
+            stateReason: null,
           }),
           { status: 201 },
         );
@@ -1945,7 +1966,7 @@ describe("routes", () => {
       const bridgeMachine = await env.DB.prepare("SELECT id FROM machines WHERE device_id = 'ama-runtime-bridge'").first<{ id: string }>();
       expect(bridgeMachine).toBeNull();
       const calledUrls = fetchMock.mock.calls.map(([url]) => String(url));
-      expect(calledUrls).toContain("https://ama.test/api/providers?limit=100");
+      expect(calledUrls).toContain("https://ama.test/api/v1/providers?limit=100");
 
       expect(runtimePrivateKeyJwk).toBeTruthy();
       const runtimePrivateKey = await crypto.subtle.importKey("jwk", runtimePrivateKeyJwk!, { name: "Ed25519" } as any, true, ["sign"]);
@@ -1993,27 +2014,27 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/environments/env_123") {
+      if (url === "https://ama.test/api/v1/environments/env_123") {
         return new Response(JSON.stringify({ id: "env_123", runtime: "codex" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/providers?limit=100") {
+      if (url === "https://ama.test/api/v1/providers?limit=100") {
         return new Response(JSON.stringify({ data: [{ id: "provider_codex", status: "active" }] }), { status: 200 });
       }
-      if (url === "https://ama.test/api/providers/provider_codex/models?limit=100") {
+      if (url === "https://ama.test/api/v1/providers/provider_codex/models?limit=100") {
         return new Response(JSON.stringify({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] }), {
           status: 200,
         });
       }
-      if (url === "https://ama.test/api/agents") {
+      if (url === "https://ama.test/api/v1/agents") {
         return new Response(
-          JSON.stringify({ id: "ama_agent_123", projectId: "project_123", name: "agent", provider: "provider_codex", model: "gpt-5.3-codex" }),
+          JSON.stringify({ id: "ama_agent_123", projectId: "project_123", name: "agent", providerId: "provider_codex", model: "gpt-5.3-codex" }),
           { status: 201 },
         );
       }
-      if (url === "https://ama.test/api/vaults/vault_123/credentials") {
+      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
         return new Response(JSON.stringify({ id: "vaultcred_123", activeVersionId: "vaultver_123" }), { status: 201 });
       }
-      if (url === "https://ama.test/api/sessions") {
+      if (url === "https://ama.test/api/v1/sessions") {
         return new Response(JSON.stringify({ error: "runtime unavailable" }), { status: 503 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
@@ -2070,27 +2091,27 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/environments/env_123") {
+      if (url === "https://ama.test/api/v1/environments/env_123") {
         return new Response(JSON.stringify({ id: "env_123", runtime: "codex" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/providers?limit=100") {
+      if (url === "https://ama.test/api/v1/providers?limit=100") {
         return new Response(JSON.stringify({ data: [{ id: "provider_codex", status: "active" }] }), { status: 200 });
       }
-      if (url === "https://ama.test/api/providers/provider_codex/models?limit=100") {
+      if (url === "https://ama.test/api/v1/providers/provider_codex/models?limit=100") {
         return new Response(JSON.stringify({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] }), {
           status: 200,
         });
       }
-      if (url === "https://ama.test/api/agents") {
+      if (url === "https://ama.test/api/v1/agents") {
         return new Response(
-          JSON.stringify({ id: "ama_agent_123", projectId: "project_123", name: "agent", provider: "provider_codex", model: "gpt-5.3-codex" }),
+          JSON.stringify({ id: "ama_agent_123", projectId: "project_123", name: "agent", providerId: "provider_codex", model: "gpt-5.3-codex" }),
           { status: 201 },
         );
       }
-      if (url === "https://ama.test/api/vaults/vault_123/credentials") {
+      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
         return new Response(JSON.stringify({ id: "vaultcred_123", activeVersionId: "vaultver_123" }), { status: 201 });
       }
-      if (url === "https://ama.test/api/sessions") {
+      if (url === "https://ama.test/api/v1/sessions") {
         return new Response(JSON.stringify({ error: "runtime unavailable" }), { status: 503 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
@@ -2141,14 +2162,14 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/runners?environmentId=env_release&limit=100") {
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_release&limit=100") {
         return new Response(
           JSON.stringify({
             data: [
               {
                 id: "runner_release",
                 environmentId: "env_release",
-                status: "active",
+                state: "active",
                 capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
                 currentLoad: 0,
                 maxConcurrent: 1,
@@ -2159,7 +2180,7 @@ describe("routes", () => {
           { status: 200 },
         );
       }
-      if (url === "https://ama.test/api/providers?limit=100") {
+      if (url === "https://ama.test/api/v1/providers?limit=100") {
         return new Response(
           JSON.stringify({
             data: [{ id: "provider_codex", type: "openai", status: "active" }],
@@ -2168,7 +2189,7 @@ describe("routes", () => {
           { status: 200 },
         );
       }
-      if (url === "https://ama.test/api/providers/provider_codex/models?limit=100") {
+      if (url === "https://ama.test/api/v1/providers/provider_codex/models?limit=100") {
         return new Response(
           JSON.stringify({
             data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }],
@@ -2177,28 +2198,28 @@ describe("routes", () => {
           { status: 200 },
         );
       }
-      if (url === "https://ama.test/api/agents/ama_agent_release") {
+      if (url === "https://ama.test/api/v1/agents/ama_agent_release") {
         return new Response(
-          JSON.stringify({ id: "ama_agent_release", projectId: "project_123", name: "agent", provider: "provider_codex", model: "gpt-5.3-codex" }),
+          JSON.stringify({ id: "ama_agent_release", projectId: "project_123", name: "agent", providerId: "provider_codex", model: "gpt-5.3-codex" }),
           { status: 200 },
         );
       }
-      if (url === "https://ama.test/api/agents") {
+      if (url === "https://ama.test/api/v1/agents") {
         return new Response(
-          JSON.stringify({ id: "ama_agent_release", projectId: "project_123", name: "agent", provider: "provider_codex", model: "gpt-5.3-codex" }),
+          JSON.stringify({ id: "ama_agent_release", projectId: "project_123", name: "agent", providerId: "provider_codex", model: "gpt-5.3-codex" }),
           { status: 201 },
         );
       }
-      if (url === "https://ama.test/api/vaults/vault_123/credentials") {
+      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
         return new Response(JSON.stringify({ id: "vaultcred_release", activeVersionId: "vaultver_release" }), { status: 201 });
       }
-      if (url === "https://ama.test/api/sessions/session_release_old/stop?reason=user_requested") {
-        return new Response(JSON.stringify({ id: "session_release_old", status: "stopped" }), { status: 200 });
+      if (url === "https://ama.test/api/v1/sessions/session_release_old" && (init as any)?.method === "PATCH") {
+        return new Response(JSON.stringify({ id: "session_release_old", state: "stopped" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/sessions/session_release_1/stop?reason=user_requested") {
-        return new Response(JSON.stringify({ id: "session_release_1", status: "stopped" }), { status: 200 });
+      if (url === "https://ama.test/api/v1/sessions/session_release_1" && (init as any)?.method === "PATCH") {
+        return new Response(JSON.stringify({ id: "session_release_1", state: "stopped" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/sessions") {
+      if (url === "https://ama.test/api/v1/sessions") {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         expect(body.agentId).toBe("ama_agent_release");
         expect(body.environmentId).toBe("env_release");
@@ -2210,8 +2231,8 @@ describe("routes", () => {
             id: `session_release_${sessionCreateCount}`,
             agentId: body.agentId,
             environmentId: "env_release",
-            status: "pending",
-            statusReason: null,
+            state: "pending",
+            stateReason: null,
           }),
           { status: 201 },
         );
@@ -2242,7 +2263,7 @@ describe("routes", () => {
         "ama.dispatch.result": "accepted",
       });
       expect(body.metadata.annotations.agentSessionId).toEqual(expect.any(String));
-      expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain("https://ama.test/api/sessions");
+      expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain("https://ama.test/api/v1/sessions");
 
       const assignRes = await apiRequest("POST", `/api/tasks/${task.id}/assign`, { agent_id: tempAgent.id }, leaderJwt);
       expect(assignRes.status).toBe(200);
@@ -2528,16 +2549,16 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/sessions/session_123/commands") {
-        const body = JSON.parse(String(init?.body)) as { message: string };
+      if (url === "https://ama.test/api/v1/sessions/session_123/messages") {
+        const body = JSON.parse(String(init?.body)) as { content: string };
         expect(init?.method).toBe("POST");
         expect(body).toMatchObject({ type: "prompt" });
-        runtimeMessages.push(body.message);
-        return new Response(JSON.stringify({ accepted: true, runtime: "ama-cloud", sessionId: "session_123", path: "/rpc" }), { status: 202 });
+        runtimeMessages.push(body.content);
+        return new Response(JSON.stringify({ id: "msg_1" }), { status: 201 });
       }
-      if (url.startsWith("https://ama.test/api/sessions/session_123/stop")) {
+      if (url === "https://ama.test/api/v1/sessions/session_123" && (init as any)?.method === "PATCH") {
         stops.push(url);
-        return new Response(JSON.stringify({ id: "session_123", status: "stopped" }), { status: 200 });
+        return new Response(JSON.stringify({ id: "session_123", state: "stopped" }), { status: 200 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2585,7 +2606,7 @@ describe("routes", () => {
       expect(runtimeMessages[2]).toContain("Fix the reviewer rejection");
       expect(runtimeMessages[2]).toContain(`ak task review ${rejectTask.id}`);
       expect(runtimeMessages[2]).not.toContain("Do not inspect files");
-      expect(stops).toEqual(["https://ama.test/api/sessions/session_123/stop?reason=user_requested"]);
+      expect(stops).toHaveLength(1);
     } finally {
       Object.assign(env, previousAma);
       vi.unstubAllGlobals();
@@ -2605,15 +2626,15 @@ describe("routes", () => {
       AMA_OAUTH_CLIENT_ID: "ak-app",
       AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     });
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/sessions/session_failed/commands") {
+      if (url === "https://ama.test/api/v1/sessions/session_failed/messages") {
         return new Response(JSON.stringify({ error: "command failed" }), { status: 502 });
       }
-      if (url.startsWith("https://ama.test/api/sessions/session_failed/stop")) {
+      if (url === "https://ama.test/api/v1/sessions/session_failed" && (init as any)?.method === "PATCH") {
         return new Response(JSON.stringify({ error: "stop failed" }), { status: 502 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
@@ -2730,11 +2751,11 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/sessions/session_runtime_123") {
+      if (url === "https://ama.test/api/v1/sessions/session_runtime_123") {
         expect(init?.method).toBe("GET");
-        return new Response(JSON.stringify({ id: "session_runtime_123", status: "idle", statusReason: null }), { status: 200 });
+        return new Response(JSON.stringify({ id: "session_runtime_123", state: "idle", stateReason: null }), { status: 200 });
       }
-      if (url === "https://ama.test/api/sessions/session_runtime_123/events?limit=100&order=asc") {
+      if (url === "https://ama.test/api/v1/sessions/session_runtime_123/events?limit=100&order=asc") {
         expect(init?.method).toBe("GET");
         return new Response(
           JSON.stringify({
@@ -2761,7 +2782,7 @@ describe("routes", () => {
         task_id: task.id,
         session_id: "session_runtime_123",
         taskSessionId: "session_runtime_123",
-        session: { id: "session_runtime_123", status: "idle" },
+        session: { id: "session_runtime_123", state: "idle" },
         events: [{ id: "event_1", type: "message_end" }],
         pagination: { hasMore: false },
       });
@@ -2801,10 +2822,10 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token", expires_in: 3600 }), { status: 200 });
       }
-      if (url === "https://ama.test/api/sessions/session_default_params") {
-        return new Response(JSON.stringify({ id: "session_default_params", status: "idle", statusReason: null }), { status: 200 });
+      if (url === "https://ama.test/api/v1/sessions/session_default_params") {
+        return new Response(JSON.stringify({ id: "session_default_params", state: "idle", stateReason: null }), { status: 200 });
       }
-      if (url.startsWith("https://ama.test/api/sessions/session_default_params/events")) {
+      if (url.startsWith("https://ama.test/api/v1/sessions/session_default_params/events")) {
         capturedEventsUrl = url;
         return new Response(JSON.stringify({ data: [], pagination: { limit: 100, hasMore: false, nextCursor: null } }), { status: 200 });
       }
@@ -2852,10 +2873,10 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token", expires_in: 3600 }), { status: 200 });
       }
-      if (url === "https://ama.test/api/sessions/session_order_limit") {
-        return new Response(JSON.stringify({ id: "session_order_limit", status: "active", statusReason: null }), { status: 200 });
+      if (url === "https://ama.test/api/v1/sessions/session_order_limit") {
+        return new Response(JSON.stringify({ id: "session_order_limit", state: "active", stateReason: null }), { status: 200 });
       }
-      if (url.startsWith("https://ama.test/api/sessions/session_order_limit/events")) {
+      if (url.startsWith("https://ama.test/api/v1/sessions/session_order_limit/events")) {
         capturedEventsUrl = url;
         return new Response(JSON.stringify({ data: [], pagination: { limit: 10, hasMore: true, nextCursor: 11 } }), { status: 200 });
       }
@@ -2902,10 +2923,10 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token", expires_in: 3600 }), { status: 200 });
       }
-      if (url === "https://ama.test/api/sessions/session_cursor_test") {
-        return new Response(JSON.stringify({ id: "session_cursor_test", status: "active", statusReason: null }), { status: 200 });
+      if (url === "https://ama.test/api/v1/sessions/session_cursor_test") {
+        return new Response(JSON.stringify({ id: "session_cursor_test", state: "active", stateReason: null }), { status: 200 });
       }
-      if (url.startsWith("https://ama.test/api/sessions/session_cursor_test/events")) {
+      if (url.startsWith("https://ama.test/api/v1/sessions/session_cursor_test/events")) {
         capturedEventsUrl = url;
         return new Response(JSON.stringify({ data: [], pagination: { limit: 10, hasMore: false, nextCursor: null } }), { status: 200 });
       }
@@ -2952,10 +2973,10 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token", expires_in: 3600 }), { status: 200 });
       }
-      if (url === "https://ama.test/api/sessions/session_pagination_pass") {
-        return new Response(JSON.stringify({ id: "session_pagination_pass", status: "idle", statusReason: null }), { status: 200 });
+      if (url === "https://ama.test/api/v1/sessions/session_pagination_pass") {
+        return new Response(JSON.stringify({ id: "session_pagination_pass", state: "idle", stateReason: null }), { status: 200 });
       }
-      if (url.startsWith("https://ama.test/api/sessions/session_pagination_pass/events")) {
+      if (url.startsWith("https://ama.test/api/v1/sessions/session_pagination_pass/events")) {
         return new Response(
           JSON.stringify({
             data: [{ id: "ev_99", type: "tool_use", sequence: 99 }],
@@ -3100,7 +3121,7 @@ describe("routes", () => {
           if (url === "https://auth.test/oauth/token") {
             return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
           }
-          if (url.startsWith("http://ama.test/api/runners?environmentId=")) {
+          if (url.startsWith("http://ama.test/api/v1/runners?environmentId=")) {
             return new Response(JSON.stringify({ data: [] }), { status: 200 });
           }
           throw new Error(`Unexpected fetch: ${url}`);
@@ -3198,14 +3219,14 @@ describe("routes", () => {
         if (url === "https://auth.test/oauth/token") {
           return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
         }
-        if (url === "https://ama.test/api/runners?environmentId=env_usage&limit=100") {
+        if (url === "https://ama.test/api/v1/runners?environmentId=env_usage&limit=100") {
           return new Response(
             JSON.stringify({
               data: [
                 {
                   id: "runner_usage",
                   environmentId: "env_usage",
-                  status: "active",
+                  state: "active",
                   capabilities: ["codex"],
                   currentLoad: 2,
                   maxConcurrent: 5,

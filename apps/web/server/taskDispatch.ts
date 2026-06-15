@@ -143,8 +143,10 @@ export async function dispatchTaskToAma(
         ...agentGitIdentityEnv(akAgent),
       },
       runtimeSecretEnv: [
-        { name: "AK_AGENT_KEY", ref: secret.activeVersionId },
-        ...(githubTokenSecret ? [{ name: githubTokenSecret.name, ref: githubTokenSecret.ref }] : []),
+        { name: "AK_AGENT_KEY", credentialId: secret.credentialId, versionId: secret.activeVersionId },
+        ...(githubTokenSecret
+          ? [{ name: githubTokenSecret.name, credentialId: githubTokenSecret.credentialId, versionId: githubTokenSecret.versionId }]
+          : []),
       ],
     });
     await bindAmaAgentSession(db, sessionIdentity.sessionId, dispatch.sessionId);
@@ -553,7 +555,7 @@ export async function dispatchPendingAmaTasks(db: D1, env: Env): Promise<void> {
   }
 }
 
-const DEAD_AMA_SESSION_STATUSES = new Set(["error", "stopped", "archived"]);
+const DEAD_AMA_SESSION_STATUSES = new Set(["error", "stopped"]);
 // A freshly dispatched task may briefly reference a session AMA has not fully
 // materialized; don't treat a 404 as terminal inside this window.
 const RECONCILE_MIN_TASK_AGE_MS = 2 * 60_000;
@@ -589,7 +591,7 @@ export async function reconcileAmaBoundTasks(db: D1, env: Env): Promise<void> {
       if (!sessionId || !projectId) continue;
       const session = await readAmaSession(env, sessionId, projectId);
       if (!session && Date.parse(task.updated_at) > Date.now() - RECONCILE_MIN_TASK_AGE_MS) continue;
-      const status = session ? String(session.status) : null;
+      const status = session ? String(session.state) : null;
       if (status && !DEAD_AMA_SESSION_STATUSES.has(status)) {
         // An idle session on a todo task means the agent's turn ended without
         // claiming (or a release teardown failed mid-way); nothing will resume
@@ -710,7 +712,7 @@ async function githubTokenSecretRef(
   vaultId: string,
   akSessionId: string,
   resourceRefs: { owner: string; repo: string }[],
-): Promise<{ name: string; ref: string; credentialId?: string } | null> {
+): Promise<{ name: string; credentialId: string; versionId?: string | null } | null> {
   const repo = resourceRefs[0];
   if (repo && isGithubAppConfigured(env)) {
     try {
@@ -722,7 +724,7 @@ async function githubTokenSecretRef(
         secretValue: minted.token,
         metadata: { purpose: "github-installation-token", repository: `${repo.owner}/${repo.repo}`, expiresAt: minted.expiresAt },
       });
-      return { name: "GH_TOKEN", ref: secret.activeVersionId, credentialId: secret.credentialId };
+      return { name: "GH_TOKEN", credentialId: secret.credentialId, versionId: secret.activeVersionId };
     } catch (error) {
       logger.warn(`GitHub App token minting failed for ${repo.owner}/${repo.repo}, falling back: ${error}`);
     }
@@ -736,12 +738,17 @@ async function ownerGithubTokenSecretRef(
   ownerId: string,
   projectId: string,
   vaultId: string,
-): Promise<{ name: string; ref: string } | null> {
+): Promise<{ name: string; credentialId: string; versionId?: string | null } | null> {
   if (!env.GITHUB_AGENT_TOKEN) return null;
   const integration = await ensureAmaOwnerIntegration(db, env, ownerId);
-  const existing = integration.metadata.githubTokenSecretVersionId;
-  if (typeof existing === "string" && existing) {
-    return { name: "GH_TOKEN", ref: existing };
+  const existingCredentialId = integration.metadata.githubTokenSecretCredentialId;
+  const existingVersionId = integration.metadata.githubTokenSecretVersionId;
+  if (typeof existingCredentialId === "string" && existingCredentialId) {
+    return {
+      name: "GH_TOKEN",
+      credentialId: existingCredentialId,
+      versionId: typeof existingVersionId === "string" ? existingVersionId : null,
+    };
   }
   const secret = await createAmaSessionSecret(env, {
     projectId,
@@ -755,9 +762,9 @@ async function ownerGithubTokenSecretRef(
     amaProjectId: integration.amaProjectId,
     externalTenantId: integration.externalTenantId,
     sessionSecretVaultId: integration.sessionSecretVaultId,
-    metadata: { ...integration.metadata, githubTokenSecretVersionId: secret.activeVersionId },
+    metadata: { ...integration.metadata, githubTokenSecretCredentialId: secret.credentialId, githubTokenSecretVersionId: secret.activeVersionId },
   });
-  return { name: "GH_TOKEN", ref: secret.activeVersionId };
+  return { name: "GH_TOKEN", credentialId: secret.credentialId, versionId: secret.activeVersionId };
 }
 
 async function taskResourceRefs(db: D1, task: Task) {

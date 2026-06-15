@@ -35,7 +35,7 @@ describe("daemon smoke script", () => {
     expect(script).toContain("codex | claude | copilot) LOCAL_RUNTIME");
     expect(script).toContain('ama) CLOUD_RUNTIME="ama"');
     expect(script).toContain("mixed)");
-    expect(script).toContain('LOCAL_RUNTIME="codex"');
+    expect(script).toContain('LOCAL_RUNTIME="claude"');
     expect(script).toContain('CLOUD_RUNTIME="ama"');
 
     // runtime_default_model() maps each runtime to a model

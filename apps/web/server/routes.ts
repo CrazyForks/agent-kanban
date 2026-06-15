@@ -33,8 +33,8 @@ import {
   type AmaRunner,
   archiveAmaScheduledAgentTrigger,
   createAmaEnvironment,
-  createAmaExternalProjectBinding,
   createAmaFederatedRunnerToken,
+  createAmaFederatedTenant,
   createAmaScheduledAgentTrigger,
   getAmaSessionRuntimeSnapshot,
   isAmaTaskDispatchConfigured,
@@ -494,7 +494,7 @@ async function createMachineRunnerOnboarding(env: Env, machine: MachineRecord, o
   // call back on (AK_API_URL may be an ephemeral dev tunnel).
   const issuer = env.AK_FEDERATED_ISSUER ?? apiUrl(env, requestOrigin);
 
-  await createAmaExternalProjectBinding(env, {
+  await createAmaFederatedTenant(env, {
     projectId,
     issuer,
     externalTenantId,

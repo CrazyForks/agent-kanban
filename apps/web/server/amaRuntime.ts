@@ -4,7 +4,8 @@ import type { Env } from "./types";
 export type AmaResourceRef = Record<string, unknown>;
 export interface AmaRuntimeSecretEnvRef {
   name: string;
-  ref: string;
+  credentialId: string;
+  versionId?: string | null;
 }
 
 export interface AmaTaskSessionInput {
@@ -145,8 +146,8 @@ interface AmaSessionResponse {
   id: string;
   agentId: string;
   environmentId: string | null;
-  status: string;
-  statusReason: string | null;
+  state: string;
+  stateReason: string | null;
 }
 
 interface AmaCredentialResponse {
@@ -158,7 +159,7 @@ interface AmaAgentResponse {
   id: string;
   projectId: string;
   name: string;
-  provider: string;
+  providerId: string | null;
   model: string | null;
 }
 
@@ -189,13 +190,13 @@ export interface AmaRunner {
 interface AmaProviderResponse {
   id: string;
   type?: string | null;
-  status?: string | null;
+  enabled?: boolean | null;
 }
 
 interface AmaProviderConfigResponse {
   id: string;
   type: string;
-  status?: string | null;
+  enabled?: boolean | null;
 }
 
 interface OAuthTokenResponse {
@@ -205,13 +206,18 @@ interface OAuthTokenResponse {
   expires_in?: number;
 }
 
-export interface AmaExternalBindingInput {
+export interface AmaFederatedTenantInput {
   projectId: string;
   issuer: string;
   externalTenantId: string;
   environmentId?: string | null;
+  capabilities?: string[];
   metadata?: Record<string, unknown>;
 }
+
+// A runner federated tenant must be allowed to poll for and claim work; these
+// are the capabilities AMA's self-hosted runner protocol checks.
+const RUNNER_FEDERATION_CAPABILITIES = ["session:poll", "session:claim"];
 
 export interface AmaRunnerTokenInput {
   projectId: string;
@@ -297,8 +303,8 @@ export async function createAmaTaskSession(env: Env, input: AmaTaskSessionInput)
         runtime: input.runtime,
         title: input.title,
         resourceRefs: input.resourceRefs ?? [],
-        ...(input.runtimeEnv ? { runtimeEnv: input.runtimeEnv } : {}),
-        ...(input.runtimeSecretEnv ? { runtimeSecretEnv: input.runtimeSecretEnv } : {}),
+        ...(input.runtimeEnv ? { env: input.runtimeEnv } : {}),
+        ...(input.runtimeSecretEnv ? { secretEnv: toAmaSecretEnv(input.runtimeSecretEnv) } : {}),
         ...(input.initialPrompt ? { initialPrompt: input.initialPrompt } : {}),
       },
     }),
@@ -309,9 +315,18 @@ export async function createAmaTaskSession(env: Env, input: AmaTaskSessionInput)
     agentId: session.agentId,
     environmentId: session.environmentId ?? input.environmentId,
     sessionId: session.id,
-    status: session.status,
-    statusReason: session.statusReason,
+    status: session.state,
+    statusReason: session.stateReason,
   };
+}
+
+// The /api/v1 secret-env contract takes a CredentialRef ({ credentialId,
+// versionId? }) per entry rather than a bare version id.
+function toAmaSecretEnv(entries: AmaRuntimeSecretEnvRef[]): { name: string; credentialRef: { credentialId: string; versionId?: string } }[] {
+  return entries.map((entry) => ({
+    name: entry.name,
+    credentialRef: { credentialId: entry.credentialId, ...(entry.versionId ? { versionId: entry.versionId } : {}) },
+  }));
 }
 
 export async function createAmaAgent(env: Env, input: AmaAgentInput): Promise<AmaAgent> {
@@ -322,8 +337,7 @@ export async function createAmaAgent(env: Env, input: AmaAgentInput): Promise<Am
         name: input.name,
         description: input.description ?? null,
         instructions: input.instructions ?? null,
-        systemPrompt: input.instructions ?? null,
-        provider: input.provider,
+        ...(input.provider ? { providerId: input.provider } : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(input.role ? { role: input.role } : {}),
         skills: input.skills ?? [],
@@ -339,7 +353,7 @@ export async function createAmaAgent(env: Env, input: AmaAgentInput): Promise<Am
     id: agent.id,
     projectId: agent.projectId,
     name: agent.name,
-    provider: agent.provider,
+    provider: agent.providerId ?? input.provider,
     model: agent.model,
   };
 }
@@ -401,7 +415,7 @@ export async function readAmaAgent(env: Env, projectId: string, agentId: string)
       id: agent.id,
       projectId: agent.projectId,
       name: agent.name,
-      provider: agent.provider,
+      provider: agent.providerId ?? "",
       model: agent.model,
     };
   } catch (error) {
@@ -419,8 +433,7 @@ export async function updateAmaAgentConfig(env: Env, projectId: string, agentId:
         name: input.name,
         description: input.description ?? null,
         instructions: input.instructions ?? null,
-        systemPrompt: input.instructions ?? null,
-        provider: input.provider,
+        ...(input.provider ? { providerId: input.provider } : {}),
         model: input.model ?? null,
         role: input.role ?? null,
         skills: input.skills ?? [],
@@ -462,7 +475,7 @@ async function ensureAmaProviderModelProfile(
   const providers = await client.request<AmaListResponse<AmaProviderResponse>>("listProviders", {
     query: { limit: 100 },
   });
-  let provider = providers.data.find((item) => item.type === configured.providerType && item.status !== "disabled" && item.status !== "deleted");
+  let provider = providers.data.find((item) => item.type === configured.providerType && item.enabled !== false);
   if (!provider) {
     provider = await withAmaErrorDetails("create provider", () =>
       client.request<AmaProviderConfigResponse>("createProvider", {
@@ -479,9 +492,8 @@ async function ensureAmaProviderModelProfile(
   if (model) {
     await withAmaErrorDetails("upsert provider model", () =>
       client.request("upsertProviderModel", {
-        path: { providerId: provider.id },
+        path: { providerId: provider.id, modelId: model },
         body: {
-          modelId: model,
           displayName: model,
           capabilities: ["text"],
           availability: "available",
@@ -494,23 +506,26 @@ async function ensureAmaProviderModelProfile(
   return { runtime, provider: provider.id, model };
 }
 
-export async function createAmaExternalProjectBinding(env: Env, input: AmaExternalBindingInput): Promise<void> {
+export async function createAmaFederatedTenant(env: Env, input: AmaFederatedTenantInput): Promise<void> {
   const client = await createAmaClient(env, input.projectId);
   try {
-    await client.request("createExternalProjectBinding", {
-      path: { projectId: input.projectId },
+    await client.request("createFederatedTenant", {
       body: {
         issuer: input.issuer,
         externalTenantId: input.externalTenantId,
+        capabilities: input.capabilities ?? RUNNER_FEDERATION_CAPABILITIES,
         ...(input.environmentId ? { environmentId: input.environmentId } : {}),
         ...(input.metadata ? { metadata: input.metadata } : {}),
       },
     });
   } catch (error) {
+    // 409: (issuer, externalTenantId) is already bound to this project — the
+    // federation binding is idempotent, so a re-onboard is a no-op success.
+    if ((error as { status?: unknown }).status === 409) return;
     const status = typeof (error as { status?: unknown }).status === "number" ? ` HTTP ${(error as { status: number }).status}` : "";
     const responseText =
       typeof (error as { responseText?: unknown }).responseText === "string" ? `: ${(error as { responseText: string }).responseText}` : "";
-    throw new Error(`AMA external project binding failed${status}${responseText}`);
+    throw new Error(`AMA federated tenant binding failed${status}${responseText}`);
   }
 }
 
@@ -593,33 +608,43 @@ export interface AmaSessionUsageTotals {
 
 export async function readAmaSessionUsageTotals(env: Env, projectId: string, sessionId: string): Promise<AmaSessionUsageTotals | null> {
   const client = await createAmaClient(env, projectId);
-  const summary = await client.request<{ totals?: { records?: number; promptTokens?: number; completionTokens?: number; costMicros?: number } }>(
-    "readUsageSummary",
-    { query: { sessionId } },
-  );
-  if (!summary.totals?.records) return null;
-  return {
-    promptTokens: summary.totals.promptTokens ?? 0,
-    completionTokens: summary.totals.completionTokens ?? 0,
-    costMicros: summary.totals.costMicros ?? 0,
-  };
+  // /api/v1 usage-summary groups only by provider/model/agent; per-session
+  // totals come from summing the session's usage records. The endpoint caps
+  // limit at 100, so page through all records via the cursor.
+  const totals: AmaSessionUsageTotals = { promptTokens: 0, completionTokens: 0, costMicros: 0 };
+  let records = 0;
+  let cursor: string | undefined;
+  do {
+    const page = await client.request<
+      AmaListResponse<{ promptTokens?: number; completionTokens?: number; costMicros?: number }> & { pagination?: { nextCursor?: string | null } }
+    >("listUsageRecords", { query: { sessionId, limit: 100, ...(cursor ? { cursor } : {}) } });
+    for (const record of page.data) {
+      totals.promptTokens += record.promptTokens ?? 0;
+      totals.completionTokens += record.completionTokens ?? 0;
+      totals.costMicros += record.costMicros ?? 0;
+    }
+    records += page.data.length;
+    cursor = page.pagination?.nextCursor ?? undefined;
+  } while (cursor);
+  return records === 0 ? null : totals;
 }
 
 export async function revokeAmaVaultCredential(env: Env, projectId: string, vaultId: string, credentialId: string): Promise<void> {
   const client = await createAmaClient(env, projectId);
   await client.request("updateVaultCredential", {
     path: { vaultId, credentialId },
-    body: { status: "revoked", revokeReason: "AK agent session closed" },
+    body: { state: "revoked", revokeReason: "AK agent session closed" },
   });
 }
 
 export async function sendAmaSessionMessage(env: Env, projectId: string, sessionId: string, message: string): Promise<AmaRuntimeCommandResult> {
   const client = await createAmaClient(env, projectId);
-  const result = await client.request<{ accepted?: boolean }>("createSessionCommand", {
+  // A 201 means the prompt message was accepted and queued for the session.
+  await client.request<{ id: string }>("createSessionMessage", {
     path: { sessionId },
-    body: { type: "prompt", message },
+    body: { type: "prompt", content: message },
   });
-  return { accepted: result.accepted !== false };
+  return { accepted: true };
 }
 
 export interface AmaSessionEventsQuery {
@@ -676,11 +701,101 @@ export async function listAmaEnvironments(env: Env): Promise<AmaListResponse<Rec
   });
 }
 
+interface AmaRunnerResponse {
+  id: string;
+  environmentId: string | null;
+  state: string;
+  capabilities: string[];
+  currentLoad: number;
+  maxConcurrent: number;
+  lastHeartbeatAt: string | null;
+  runtimeUsage?: AmaRuntimeUsage[];
+}
+
 export async function listAmaRunners(env: Env, projectId: string, environmentId: string): Promise<AmaListResponse<AmaRunner>> {
   const client = await createAmaClient(env, projectId);
-  return await client.request<AmaListResponse<AmaRunner>>("listRunners", {
+  const page = await client.request<AmaListResponse<AmaRunnerResponse>>("listRunners", {
     query: { environmentId, limit: 100 },
   });
+  // /api/v1 runners report lifecycle as `state`; AK's dispatch gate reads
+  // `status` (active | draining | disabled | offline).
+  return {
+    data: page.data.map((runner) => ({
+      id: runner.id,
+      environmentId: runner.environmentId,
+      status: runner.state,
+      capabilities: runner.capabilities,
+      currentLoad: runner.currentLoad,
+      maxConcurrent: runner.maxConcurrent,
+      lastHeartbeatAt: runner.lastHeartbeatAt,
+      runtimeUsage: runner.runtimeUsage,
+    })),
+    pagination: page.pagination,
+  };
+}
+
+interface AmaTriggerResponse {
+  id: string;
+  agentId: string;
+  environmentId: string;
+  name: string;
+  promptTemplate: string;
+  schedule: { intervalSeconds: number; windowSeconds?: number };
+  enabled: boolean;
+  archivedAt: string | null;
+  lastDispatchedAt: string | null;
+  lastRunId: string | null;
+}
+
+interface AmaTriggerRunResponse {
+  id: string;
+  projectId: string;
+  triggerId: string;
+  scheduledFor: string;
+  heartbeatAt: string;
+  state: string;
+  sessionId: string | null;
+  errorMessage: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// /api/v1 triggers expose enablement as a boolean + an archive timestamp; AK's
+// maintainer status is the tri-state derived from them.
+function amaTriggerStatus(trigger: AmaTriggerResponse): AmaScheduledTrigger["status"] {
+  if (trigger.archivedAt) return "archived";
+  return trigger.enabled ? "active" : "paused";
+}
+
+function toAmaScheduledTrigger(trigger: AmaTriggerResponse): AmaScheduledTrigger {
+  return {
+    id: trigger.id,
+    agentId: trigger.agentId,
+    environmentId: trigger.environmentId,
+    name: trigger.name,
+    promptTemplate: trigger.promptTemplate,
+    schedule: { intervalSeconds: trigger.schedule.intervalSeconds, windowSeconds: trigger.schedule.windowSeconds },
+    status: amaTriggerStatus(trigger),
+    lastDispatchedAt: trigger.lastDispatchedAt,
+    lastRunId: trigger.lastRunId,
+  };
+}
+
+function toAmaScheduledTriggerRun(run: AmaTriggerRunResponse): AmaScheduledTriggerRun {
+  return {
+    id: run.id,
+    projectId: run.projectId,
+    triggerId: run.triggerId,
+    scheduledFor: run.scheduledFor,
+    heartbeatAt: run.heartbeatAt,
+    status: run.state,
+    sessionId: run.sessionId,
+    errorMessage: run.errorMessage,
+    metadata: run.metadata,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+  };
 }
 
 export async function listAmaScheduledTriggerRuns(
@@ -690,10 +805,11 @@ export async function listAmaScheduledTriggerRuns(
   options: { limit?: number } = {},
 ): Promise<AmaListResponse<AmaScheduledTriggerRun>> {
   const client = await createAmaClient(env, projectId);
-  return await client.request<AmaListResponse<AmaScheduledTriggerRun>>("listScheduledTriggerRuns", {
+  const page = await client.request<AmaListResponse<AmaTriggerRunResponse>>("listTriggerRuns", {
     path: { triggerId },
     query: { limit: options.limit ?? 20 },
   });
+  return { data: page.data.map(toAmaScheduledTriggerRun), pagination: page.pagination };
 }
 
 export async function stopAmaSession(
@@ -703,12 +819,13 @@ export async function stopAmaSession(
   reason: "user_requested" | "timeout" | "policy" | "runtime_error",
 ) {
   const client = await createAmaClient(env, projectId);
-  await client.request("stopSession", { path: { sessionId }, query: { reason } });
+  // /api/v1 has no dedicated stop verb: transition the session to `stopped`.
+  await client.request("updateSession", { path: { sessionId }, body: { state: "stopped", metadata: { stopReason: reason } } });
 }
 
 export async function createAmaScheduledAgentTrigger(env: Env, input: AmaScheduledTriggerInput): Promise<AmaScheduledTrigger> {
   const client = await createAmaClient(env, input.projectId);
-  return await client.request<AmaScheduledTrigger>("createScheduledAgentTrigger", {
+  const trigger = await client.request<AmaTriggerResponse>("createTrigger", {
     body: {
       agentId: input.agentId,
       environmentId: input.environmentId,
@@ -716,12 +833,13 @@ export async function createAmaScheduledAgentTrigger(env: Env, input: AmaSchedul
       name: input.name,
       promptTemplate: input.promptTemplate,
       resourceRefs: input.resourceRefs ?? [],
-      runtimeEnv: input.runtimeEnv ?? {},
-      runtimeSecretEnv: input.runtimeSecretEnv ?? [],
+      env: input.runtimeEnv ?? {},
+      secretEnv: toAmaSecretEnv(input.runtimeSecretEnv ?? []),
       schedule: { type: "interval", intervalSeconds: input.intervalSeconds },
-      status: input.status ?? "active",
+      enabled: (input.status ?? "active") !== "paused",
     },
   });
+  return toAmaScheduledTrigger(trigger);
 }
 
 export async function updateAmaScheduledAgentTrigger(
@@ -737,17 +855,18 @@ export async function updateAmaScheduledAgentTrigger(
   if (input.name !== undefined) body.name = input.name;
   if (input.promptTemplate !== undefined) body.promptTemplate = input.promptTemplate;
   if (input.intervalSeconds !== undefined) body.schedule = { type: "interval", intervalSeconds: input.intervalSeconds };
-  if (input.status !== undefined) body.status = input.status;
+  if (input.status !== undefined) body.enabled = input.status !== "paused";
   const client = await createAmaClient(env, projectId);
-  return await client.request<AmaScheduledTrigger>("updateScheduledAgentTrigger", {
+  const trigger = await client.request<AmaTriggerResponse>("updateTrigger", {
     path: { triggerId: scheduleId },
     body,
   });
+  return toAmaScheduledTrigger(trigger);
 }
 
 export async function archiveAmaScheduledAgentTrigger(env: Env, projectId: string, scheduleId: string): Promise<void> {
   const client = await createAmaClient(env, projectId);
-  await client.request("archiveScheduledAgentTrigger", { path: { triggerId: scheduleId } });
+  await client.request("updateTrigger", { path: { triggerId: scheduleId }, body: { archived: true } });
 }
 
 async function createAmaClient(env: Env, projectId?: string) {

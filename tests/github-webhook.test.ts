@@ -53,16 +53,6 @@ async function apiRequest(method: string, path: string, body?: string, headers: 
   return api.request(path, init, makeEnv());
 }
 
-async function apiRequestEnv(method: string, path: string, body: string | undefined, headers: Record<string, string>, env: any) {
-  const { api } = await import("../apps/web/server/routes");
-  const init: RequestInit = {
-    method,
-    headers: { "Content-Type": "application/json", Host: "localhost:8788", "x-forwarded-proto": "http", ...headers },
-    ...(body !== undefined ? { body } : {}),
-  };
-  return api.request(path, init, env);
-}
-
 beforeAll(async () => {
   ({ mf, db } = await setupMiniflare());
 });
@@ -335,13 +325,13 @@ describe("handleGithubPullRequestEvent", () => {
     const stops: string[] = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url === "https://auth.test/oauth/token")
           return new Response(JSON.stringify({ access_token: "test-token", expires_in: 3600 }), { status: 200 });
-        if (url.includes(`/sessions/${amaSessionId}/stop`)) {
+        if (url === `https://ama.test/api/v1/sessions/${amaSessionId}` && (init as any)?.method === "PATCH") {
           stops.push(url);
-          return new Response(JSON.stringify({ id: amaSessionId, status: "stopped" }), { status: 200 });
+          return new Response(JSON.stringify({ id: amaSessionId, state: "stopped" }), { status: 200 });
         }
         // Usage summary (no akSessionId on task so collectUsage is skipped)
         throw new Error(`Unexpected fetch: ${url}`);
