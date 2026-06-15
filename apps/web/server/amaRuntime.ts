@@ -453,6 +453,32 @@ export async function readAmaEnvironment(env: Env, projectId: string, environmen
   return { id: environment.id };
 }
 
+// Self-heal probes: AMA resources we hold an id for can be deleted out of band
+// (e.g. an AMA data migration that resets the control plane). These let the
+// "ensure" paths detect a dangling id and re-provision instead of dispatching
+// against a resource that no longer exists.
+export async function readAmaProject(env: Env, projectId: string): Promise<AmaProject | null> {
+  const client = await createAmaClient(env, projectId);
+  try {
+    const project = await client.request<{ id: string; name: string }>("readProject", { path: { projectId } });
+    return { id: project.id, name: project.name };
+  } catch (error) {
+    if ((error as { status?: unknown }).status === 404) return null;
+    throw error;
+  }
+}
+
+export async function amaEnvironmentExists(env: Env, projectId: string, environmentId: string): Promise<boolean> {
+  const client = await createAmaClient(env, projectId);
+  try {
+    await client.request("readEnvironment", { path: { environmentId } });
+    return true;
+  } catch (error) {
+    if ((error as { status?: unknown }).status === 404) return false;
+    throw error;
+  }
+}
+
 export async function resolveAmaProviderModelProfile(
   env: Env,
   projectId: string,

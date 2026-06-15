@@ -62,6 +62,9 @@ export async function dispatchTaskToAma(
   // the dispatch sweep picks them up once they become runnable.
   if (task.scheduled_at && Date.parse(task.scheduled_at) > Date.now()) return task;
   if ((await computeBlocked(db, [task.id])).has(task.id)) return task;
+  // A task whose recent dispatches kept failing is in backoff; skip until it
+  // elapses. A deliberate re-assign (takeover) bypasses the backoff.
+  if (options.takeover !== true && dispatchBackoffActive(task)) return task;
 
   const assignedTo = task.assigned_to;
   const amaProjectId = await resolveAmaProjectId(db, env, ownerId);
@@ -155,7 +158,7 @@ export async function dispatchTaskToAma(
       logger.warn(`failed to revoke session secret for ${sessionIdentity.sessionId}: ${revokeError}`);
     });
     await closeSession(db, sessionIdentity.sessionId);
-    await annotateTask(db, task, { "ama.dispatch.result": null }).catch(() => {
+    await recordDispatchFailure(db, task).catch(() => {
       // claim cleanup is best-effort; the stale-claim sweep recovers it
     });
     throw error;
@@ -541,8 +544,10 @@ export async function dispatchPendingAmaTasks(db: D1, env: Env): Promise<void> {
       WHERE t.status = 'todo' AND t.assigned_to IS NOT NULL
         AND json_extract(t.metadata, '$.annotations."ama.dispatch.result"') IS NULL
         AND (t.scheduled_at IS NULL OR t.scheduled_at <= ?)
+        AND (json_extract(t.metadata, '$.annotations."ama.dispatch.nextRetryAt"') IS NULL
+             OR json_extract(t.metadata, '$.annotations."ama.dispatch.nextRetryAt"') <= ?)
     `)
-    .bind(now)
+    .bind(now, now)
     .all<{ id: string; owner_id: string }>();
   for (const row of rows.results) {
     try {
@@ -601,12 +606,20 @@ export async function reconcileAmaBoundTasks(db: D1, env: Env): Promise<void> {
         // dispatch, capability mismatch) never progresses on its own; release
         // it so the dispatch sweep retries when capacity actually exists.
         const stalePending = status === "pending" && Date.parse(task.updated_at) < Date.now() - STALE_PENDING_SESSION_MS;
-        if (!idleUnclaimed && !stalePending) continue;
+        if (!idleUnclaimed && !stalePending) {
+          // A live, progressing session means the last dispatch worked; clear
+          // any armed re-dispatch backoff so a future failure starts fresh.
+          await clearDispatchBackoff(db, task);
+          continue;
+        }
       }
-      await releaseTaskRuntimeBinding(db, env, task, "runtime_error");
+      const released = await releaseTaskRuntimeBinding(db, env, task, "runtime_error");
       if (row.status === "in_progress") {
         await releaseTask(db, task.id, "machine", "system", "machine", "released");
       }
+      // The session died before the task progressed; arm the backoff so the
+      // dispatch sweep does not immediately re-dispatch into the same failure.
+      await recordDispatchFailure(db, released);
     } catch (error) {
       logger.warn(`reconcile sweep failed for task ${row.id}: ${error}`);
     }
@@ -652,6 +665,42 @@ function metadataObject(value: unknown): Record<string, unknown> {
 function stringAnnotation(annotations: Annotations, key: string) {
   const value = annotations[key];
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+// Re-dispatch backoff: a task whose session keeps dying before it can make
+// progress (e.g. a runtime-provider outage) would otherwise be re-dispatched
+// every sweep, hammering the provider into a rate-limit cascade. Each failure
+// pushes an exponentially-growing nextRetryAt that the dispatch sweep and
+// dispatchTaskToAma honor; a healthy run (reconcile sees a live session)
+// clears it.
+const DISPATCH_BACKOFF_BASE_MS = 30_000;
+const DISPATCH_BACKOFF_CAP_MS = 10 * 60_000;
+
+function dispatchBackoffMs(attempts: number): number {
+  return Math.min(DISPATCH_BACKOFF_BASE_MS * 2 ** Math.max(0, attempts - 1), DISPATCH_BACKOFF_CAP_MS);
+}
+
+function dispatchBackoffActive(task: Task): boolean {
+  const nextRetryAt = stringAnnotation(taskAnnotations(task), "ama.dispatch.nextRetryAt");
+  return nextRetryAt !== null && Date.parse(nextRetryAt) > Date.now();
+}
+
+// Records a failed dispatch attempt: clears the binding result and arms the
+// backoff. Returns the updated task.
+async function recordDispatchFailure(db: D1, task: Task): Promise<Task> {
+  const current = taskAnnotations(task)["ama.dispatch.attempts"];
+  const attempts = (typeof current === "number" ? current : 0) + 1;
+  return await annotateTask(db, task, {
+    "ama.dispatch.result": null,
+    "ama.dispatch.attempts": attempts,
+    "ama.dispatch.nextRetryAt": new Date(Date.now() + dispatchBackoffMs(attempts)).toISOString(),
+  });
+}
+
+async function clearDispatchBackoff(db: D1, task: Task): Promise<void> {
+  const attempts = taskAnnotations(task)["ama.dispatch.attempts"];
+  if (attempts === undefined || attempts === null) return;
+  await annotateTask(db, task, { "ama.dispatch.attempts": null, "ama.dispatch.nextRetryAt": null });
 }
 
 function taskInitialPrompt(task: Task) {

@@ -261,6 +261,9 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
+      if (url === "https://ama.test/api/v1/projects/project_123") {
+        return new Response(JSON.stringify({ id: "project_123", name: "Workspace" }), { status: 200 });
+      }
       if (url === "https://ama.test/api/v1/environments/env_123") {
         return new Response(JSON.stringify({ id: "env_123", runtime: "codex" }), { status: 200 });
       }
@@ -554,6 +557,9 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
+      if (url === "https://ama.test/api/v1/projects/project_patch_test") {
+        return new Response(JSON.stringify({ id: "project_patch_test", name: "Workspace" }), { status: 200 });
+      }
       if (url === "https://ama.test/api/v1/environments/env_patch_test") {
         return new Response(JSON.stringify({ id: "env_patch_test", runtime: "codex" }), { status: 200 });
       }
@@ -711,6 +717,9 @@ describe("routes", () => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/v1/projects/project_delete_test") {
+        return new Response(JSON.stringify({ id: "project_delete_test", name: "Workspace" }), { status: 200 });
       }
       if (url === "https://ama.test/api/v1/environments/env_delete_test") {
         return new Response(JSON.stringify({ id: "env_delete_test", runtime: "codex" }), { status: 200 });
@@ -1825,6 +1834,9 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
+      if (url === "https://ama.test/api/v1/projects/project_123") {
+        return new Response(JSON.stringify({ id: "project_123", name: "Workspace" }), { status: 200 });
+      }
       if (url === "https://ama.test/api/v1/providers?limit=100") {
         return new Response(
           JSON.stringify({
@@ -2161,6 +2173,9 @@ describe("routes", () => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/v1/projects/project_123") {
+        return new Response(JSON.stringify({ id: "project_123", name: "Workspace" }), { status: 200 });
       }
       if (url === "https://ama.test/api/v1/runners?environmentId=env_release&limit=100") {
         return new Response(

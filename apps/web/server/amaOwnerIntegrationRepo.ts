@@ -1,4 +1,4 @@
-import { createAmaEnvironment, createAmaProject, createAmaVault } from "./amaRuntime";
+import { amaEnvironmentExists, createAmaEnvironment, createAmaProject, createAmaVault, readAmaProject } from "./amaRuntime";
 import type { D1 } from "./db";
 import type { Env } from "./types";
 
@@ -63,10 +63,16 @@ export async function upsertAmaOwnerIntegration(
 
 export async function ensureAmaOwnerIntegration(db: D1, env: Env, ownerId: string): Promise<AmaOwnerIntegration> {
   const existing = await getAmaOwnerIntegration(db, ownerId);
-  if (existing?.sessionSecretVaultId) return existing;
+  // Validate the stored project still exists: AMA resources can be deleted out
+  // of band (e.g. a control-plane data reset), leaving our ids dangling. A
+  // missing project means its vault and cloud environment are gone too, so
+  // re-provision the whole integration rather than dispatch against ghosts.
+  const projectAlive = existing?.amaProjectId ? (await readAmaProject(env, existing.amaProjectId)) !== null : false;
+  if (existing?.sessionSecretVaultId && projectAlive) return existing;
 
-  const projectId = existing?.amaProjectId ?? (await createAmaProject(env, { name: `Workspace ${ownerId}` })).id;
-  const vault = existing?.sessionSecretVaultId
+  const projectId = projectAlive ? existing!.amaProjectId : (await createAmaProject(env, { name: `Workspace ${ownerId}` })).id;
+  const reuseVault = Boolean(projectAlive && existing?.sessionSecretVaultId);
+  const vault = reuseVault
     ? null
     : await createAmaVault(env, {
         projectId,
@@ -80,8 +86,10 @@ export async function ensureAmaOwnerIntegration(db: D1, env: Env, ownerId: strin
     ownerId,
     amaProjectId: projectId,
     externalTenantId: existing?.externalTenantId ?? ownerId,
-    sessionSecretVaultId: existing?.sessionSecretVaultId ?? vault?.id ?? null,
-    metadata: existing?.metadata ?? {},
+    sessionSecretVaultId: reuseVault ? existing!.sessionSecretVaultId : (vault?.id ?? null),
+    // A re-provisioned project starts with no cloud environment; drop the stale
+    // cloudEnvironmentId so resolveAmaCloudEnvironmentId recreates it.
+    metadata: projectAlive ? (existing?.metadata ?? {}) : {},
   });
 }
 
@@ -103,7 +111,9 @@ export async function resolveAmaExternalTenantId(db: D1, env: Env, ownerId: stri
 export async function resolveAmaCloudEnvironmentId(db: D1, env: Env, ownerId: string): Promise<string> {
   const integration = await ensureAmaOwnerIntegration(db, env, ownerId);
   const existing = integration.metadata.cloudEnvironmentId;
-  if (typeof existing === "string" && existing) return existing;
+  if (typeof existing === "string" && existing && (await amaEnvironmentExists(env, integration.amaProjectId, existing))) {
+    return existing;
+  }
 
   const environment = await createAmaEnvironment(env, {
     projectId: integration.amaProjectId,

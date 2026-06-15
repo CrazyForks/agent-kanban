@@ -310,6 +310,8 @@ describe("amaRunnerCanRunRuntime", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://ama.test/api/v1/projects/project_123")
+        return new Response(JSON.stringify({ id: "project_123", name: "Workspace" }), { status: 200 });
       if (url === "https://ama.test/api/v1/runners?environmentId=env_quota&limit=100") {
         return new Response(
           JSON.stringify({
@@ -638,6 +640,9 @@ describe("POST /api/machines runner.version from env", () => {
             status: 200,
           });
         }
+        // readAmaProject health probe (ensureAmaOwnerIntegration self-heal)
+        if (url === "https://ama.test/api/v1/projects/project_verpinned")
+          return new Response(JSON.stringify({ id: "project_verpinned", name: "Workspace" }), { status: 200 });
         // createEnvironment
         if (url === "https://ama.test/api/v1/environments") return new Response(JSON.stringify({ id: "env_verpinned" }), { status: 201 });
         // createFederatedTenant
@@ -781,6 +786,8 @@ describe("dispatchTaskToAma includes git identity env in runtimeEnv", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://ama.test/api/v1/projects/project_git")
+        return new Response(JSON.stringify({ id: "project_git", name: "Workspace" }), { status: 200 });
       if (url === "https://ama.test/api/v1/runners?environmentId=env_git&limit=100") {
         return new Response(
           JSON.stringify({

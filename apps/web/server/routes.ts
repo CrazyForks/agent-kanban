@@ -31,6 +31,7 @@ import { closeSession, createSession, listSessions, reopenSession, updateSession
 import { ensureAmaOwnerIntegration, getAmaProjectId, resolveAmaExternalTenantId, resolveAmaProjectId } from "./amaOwnerIntegrationRepo";
 import {
   type AmaRunner,
+  amaEnvironmentExists,
   archiveAmaScheduledAgentTrigger,
   createAmaEnvironment,
   createAmaFederatedRunnerToken,
@@ -470,8 +471,13 @@ async function machinesWithRuntimeStatusByOwner<T extends MachineRecord | Machin
 }
 
 async function ensureMachineAmaEnvironment(db: D1, env: Env, ownerId: string, machine: MachineRecord): Promise<string> {
-  if (machine.ama_environment_id) return machine.ama_environment_id;
   const binding = await ensureAmaOwnerIntegration(db, env, ownerId);
+  // Validate the stored environment still exists. An AMA data reset (or a
+  // re-provisioned project) leaves the id dangling, which makes the runner's
+  // registration fail with "Runner environment is unavailable"; recreate it.
+  if (machine.ama_environment_id && (await amaEnvironmentExists(env, binding.amaProjectId, machine.ama_environment_id))) {
+    return machine.ama_environment_id;
+  }
   const environment = await createAmaEnvironment(env, {
     projectId: binding.amaProjectId,
     name: machine.name,
