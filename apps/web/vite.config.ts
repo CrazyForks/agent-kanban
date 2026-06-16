@@ -10,6 +10,7 @@ const gitSha = execSync("git rev-parse --short HEAD").toString().trim();
 export default defineConfig({
   plugins: [react(), tailwindcss(), cloudflare()],
   server: {
+    port: 6265,
     // Cloud smoke runs expose the dev server through a cloudflared quick
     // tunnel so sandbox-hosted agents can call the AK API.
     allowedHosts: [".trycloudflare.com"],

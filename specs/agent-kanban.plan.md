@@ -15,7 +15,7 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/auth/auth-page-default-state.spec.ts`
 
 **Steps:**
-  1. Navigate to http://localhost:5173/auth
+  1. Navigate to http://localhost:6265/auth
     - expect: The page title 'Agent Kanban' is visible with 'Kanban' in accent color
     - expect: The subtitle 'Sign in to your account' is visible
     - expect: An email input field is present
@@ -30,7 +30,7 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/auth/auth-mode-toggle.spec.ts`
 
 **Steps:**
-  1. Navigate to http://localhost:5173/auth
+  1. Navigate to http://localhost:6265/auth
     - expect: Page is in sign-in mode, subtitle reads 'Sign in to your account'
   2. Click the 'Sign up' toggle link at the bottom of the form
     - expect: The form switches to sign-up mode
@@ -49,7 +49,7 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/auth/auth-signin-empty-validation.spec.ts`
 
 **Steps:**
-  1. Navigate to http://localhost:5173/auth
+  1. Navigate to http://localhost:6265/auth
     - expect: Sign-in form is displayed
   2. Click the 'Sign In' button without entering any credentials
     - expect: The form does not submit
@@ -60,7 +60,7 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/auth/auth-signin-invalid-email.spec.ts`
 
 **Steps:**
-  1. Navigate to http://localhost:5173/auth
+  1. Navigate to http://localhost:6265/auth
     - expect: Sign-in form is displayed
   2. Type 'notanemail' into the email field and 'password123' into the password field, then click 'Sign In'
     - expect: The form does not submit
@@ -71,7 +71,7 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/auth/auth-signin-wrong-credentials.spec.ts`
 
 **Steps:**
-  1. Navigate to http://localhost:5173/auth
+  1. Navigate to http://localhost:6265/auth
     - expect: Sign-in form is displayed
   2. Enter 'wrong@example.com' in the email field and 'wrongpassword' in the password field
   3. Click the 'Sign In' button
@@ -84,7 +84,7 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/auth/auth-signup-password-minlength.spec.ts`
 
 **Steps:**
-  1. Navigate to http://localhost:5173/auth and click the 'Sign up' link to switch to sign-up mode
+  1. Navigate to http://localhost:6265/auth and click the 'Sign up' link to switch to sign-up mode
     - expect: Sign-up form is displayed with Name, Email, and Password fields
   2. Enter 'Test User' in Name, 'test@example.com' in Email, and 'short' (5 characters) in Password, then click 'Sign Up'
     - expect: The form does not submit
@@ -95,7 +95,7 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/auth/auth-signup-empty-name.spec.ts`
 
 **Steps:**
-  1. Navigate to http://localhost:5173/auth and switch to sign-up mode
+  1. Navigate to http://localhost:6265/auth and switch to sign-up mode
     - expect: Sign-up form is displayed
   2. Leave Name blank, enter 'test@example.com' in Email and 'validpassword' in Password, then click 'Sign Up'
     - expect: The form does not submit because the Name field is required
@@ -106,7 +106,7 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/auth/auth-signup-duplicate-email.spec.ts`
 
 **Steps:**
-  1. Navigate to http://localhost:5173/auth and switch to sign-up mode
+  1. Navigate to http://localhost:6265/auth and switch to sign-up mode
     - expect: Sign-up form is displayed
   2. Enter 'Existing User' in Name, an already-registered email in Email, and a valid password with at least 8 characters in Password, then click 'Sign Up'
     - expect: An error message is displayed indicating the email is already in use or sign-up failed
@@ -117,7 +117,7 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/auth/auth-signin-loading-state.spec.ts`
 
 **Steps:**
-  1. Navigate to http://localhost:5173/auth
+  1. Navigate to http://localhost:6265/auth
     - expect: Sign-in form is displayed with the 'Sign In' button
   2. Enter any email and password, then click 'Sign In'
     - expect: The submit button immediately changes its text to '...' and becomes disabled while the request is in flight
@@ -128,7 +128,7 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/auth/auth-github-oauth-button.spec.ts`
 
 **Steps:**
-  1. Navigate to http://localhost:5173/auth
+  1. Navigate to http://localhost:6265/auth
     - expect: The 'Continue with GitHub' button is visible with the GitHub SVG icon
   2. Observe the button; note it is clickable (not disabled)
     - expect: The button is not disabled and triggers a navigation to GitHub OAuth when clicked (or initiates the OAuth flow — the exact redirect to GitHub is acceptable as a test result)
@@ -138,7 +138,7 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/auth/auth-error-clears-on-mode-switch.spec.ts`
 
 **Steps:**
-  1. Navigate to http://localhost:5173/auth
+  1. Navigate to http://localhost:6265/auth
     - expect: Sign-in form is displayed
   2. Attempt to sign in with 'bad@example.com' and 'badpassword' to produce an error message
     - expect: An error message is displayed in the form
@@ -150,7 +150,7 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/auth/auth-callback-loading.spec.ts`
 
 **Steps:**
-  1. Navigate directly to http://localhost:5173/auth/callback
+  1. Navigate directly to http://localhost:6265/auth/callback
     - expect: The page shows the text 'Signing in...' centered on screen while the session is being resolved
   2. Wait for the session resolution to complete
     - expect: The user is redirected either to '/' (if a valid session was found) or back to '/auth' (if no session)
@@ -164,8 +164,8 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/routing/unauthenticated-root-redirect.spec.ts`
 
 **Steps:**
-  1. Clear all cookies and local storage to ensure no session exists, then navigate to http://localhost:5173/
-    - expect: The browser is redirected to http://localhost:5173/auth
+  1. Clear all cookies and local storage to ensure no session exists, then navigate to http://localhost:6265/
+    - expect: The browser is redirected to http://localhost:6265/auth
     - expect: The sign-in form is displayed
 
 #### 2.2. Protected board URL redirects unauthenticated user to /auth
@@ -173,7 +173,7 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/routing/unauthenticated-board-redirect.spec.ts`
 
 **Steps:**
-  1. With no active session, navigate to http://localhost:5173/boards/some-board-id
+  1. With no active session, navigate to http://localhost:6265/boards/some-board-id
     - expect: The browser is redirected to /auth
     - expect: The sign-in form is displayed
 
@@ -182,7 +182,7 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/routing/unauthenticated-machines-redirect.spec.ts`
 
 **Steps:**
-  1. With no active session, navigate to http://localhost:5173/machines
+  1. With no active session, navigate to http://localhost:6265/machines
     - expect: The browser is redirected to /auth
     - expect: The sign-in form is displayed
 
@@ -191,7 +191,7 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/routing/unauthenticated-agents-redirect.spec.ts`
 
 **Steps:**
-  1. With no active session, navigate to http://localhost:5173/agents
+  1. With no active session, navigate to http://localhost:6265/agents
     - expect: The browser is redirected to /auth
 
 #### 2.5. Protected settings URL redirects unauthenticated user to /auth
@@ -199,7 +199,7 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/routing/unauthenticated-settings-redirect.spec.ts`
 
 **Steps:**
-  1. With no active session, navigate to http://localhost:5173/settings
+  1. With no active session, navigate to http://localhost:6265/settings
     - expect: The browser is redirected to /auth
 
 #### 2.6. Protected repositories URL redirects unauthenticated user to /auth
@@ -207,7 +207,7 @@ Agent Kanban is a React SPA backed by a Hono API on Cloudflare Pages + D1. It pr
 **File:** `tests/routing/unauthenticated-repos-redirect.spec.ts`
 
 **Steps:**
-  1. With no active session, navigate to http://localhost:5173/repositories
+  1. With no active session, navigate to http://localhost:6265/repositories
     - expect: The browser is redirected to /auth
 
 ### 3. Board Page
