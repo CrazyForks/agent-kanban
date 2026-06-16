@@ -188,7 +188,7 @@ export async function ensureAmaAgentForAkAgent(
 ) {
   const akAgent = await getAgent(db, akAgentId, ownerId);
   if (!akAgent) throw new HTTPException(404, { message: "Assigned agent not found" });
-  const runtimeProfile = await resolveAmaProviderModelProfile(env, projectId, {
+  const runtimeProfile = resolveAmaProviderModelProfile({
     runtime,
     preferredModel: akAgent.model,
   });

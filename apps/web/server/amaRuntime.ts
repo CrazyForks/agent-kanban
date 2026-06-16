@@ -187,18 +187,6 @@ export interface AmaRunner {
   runtimeUsage?: AmaRuntimeUsage[];
 }
 
-interface AmaProviderResponse {
-  id: string;
-  type?: string | null;
-  enabled?: boolean | null;
-}
-
-interface AmaProviderConfigResponse {
-  id: string;
-  type: string;
-  enabled?: boolean | null;
-}
-
 interface OAuthTokenResponse {
   access_token?: string;
   refresh_token?: string;
@@ -259,31 +247,33 @@ export interface AmaEnvironmentInput {
   metadata?: Record<string, unknown>;
 }
 
-const RUNTIME_PROVIDER_PROFILES: Record<
-  string,
-  {
-    providerType: string;
-    providerDisplayName: string;
-  }
-> = {
-  "claude-code": {
-    providerType: "anthropic",
-    providerDisplayName: "Anthropic",
-  },
-  codex: {
-    providerType: "openai",
-    providerDisplayName: "OpenAI",
-  },
-  copilot: {
-    providerType: "other",
-    providerDisplayName: "GitHub Copilot",
-  },
-  // AMA cloud sandbox runtime: Workers AI is platform-hosted, no credential.
-  ama: {
-    providerType: "workers-ai",
-    providerDisplayName: "Workers AI",
-  },
+// AMA's model catalog is a single global vendor catalog (auto-discovered from
+// models.dev); a provider row's id IS its vendor slug, and an agent must pin a
+// real catalog vendor as its providerId. For cloud (ama) the vendor is encoded
+// in the model id, so it is derived per dispatch. For self-hosted CLIs the host
+// owns the model universe (the runner's declared capabilities gate it), so the
+// runtime's natural vendor is used as the pinned provider.
+const RUNTIME_PROVIDER_PROFILES: Record<string, { providerSlug: string; cloud?: boolean }> = {
+  "claude-code": { providerSlug: "anthropic" },
+  codex: { providerSlug: "openai" },
+  // Copilot's host runner declares its own models via runner capabilities; the
+  // pinned slug is AMA agent metadata for a runner-gated runtime, not a catalog
+  // lookup key, so any real vendor satisfies it.
+  copilot: { providerSlug: "openai" },
+  ama: { providerSlug: "", cloud: true },
 };
+
+const WORKERS_AI_NATIVE_PREFIX = "@cf/";
+
+// Provider identity in AMA's global catalog is the vendor slug, encoded in the
+// model id: `@cf/{vendor}/{model}` (Workers AI native) or `{vendor}/{model}`
+// (AI-gateway). Mirrors AMA's server/domain/model-catalog vendorFromModelId.
+export function vendorFromModelId(modelId: string): string {
+  const path = modelId.startsWith(WORKERS_AI_NATIVE_PREFIX) ? modelId.slice(WORKERS_AI_NATIVE_PREFIX.length) : modelId;
+  const segments = path.split("/");
+  const [first] = segments;
+  return segments.length >= 2 && first ? first : "unknown";
+}
 
 export function isAmaRuntimeConfigured(env: Env): boolean {
   return Boolean(env.AMA_ORIGIN && hasTokenSource(env));
@@ -479,57 +469,22 @@ export async function amaEnvironmentExists(env: Env, projectId: string, environm
   }
 }
 
-export async function resolveAmaProviderModelProfile(
-  env: Env,
-  projectId: string,
-  input: { runtime: string; preferredModel?: string | null },
-): Promise<AmaProviderModelProfile> {
-  return await ensureAmaProviderModelProfile(env, projectId, input.runtime, input.preferredModel);
-}
-
-async function ensureAmaProviderModelProfile(
-  env: Env,
-  projectId: string,
-  runtime: string,
-  preferredModel?: string | null,
-): Promise<AmaProviderModelProfile> {
+export function resolveAmaProviderModelProfile(input: { runtime: string; preferredModel?: string | null }): AmaProviderModelProfile {
+  const { runtime, preferredModel } = input;
   const configured = RUNTIME_PROVIDER_PROFILES[runtime];
   if (!configured) {
     throw new Error(`No AK runtime provider mapping is configured for runtime ${runtime}`);
   }
-  const client = await createAmaClient(env, projectId);
-  const providers = await client.request<AmaListResponse<AmaProviderResponse>>("listProviders", {
-    query: { limit: 100 },
-  });
-  let provider = providers.data.find((item) => item.type === configured.providerType && item.enabled !== false);
-  if (!provider) {
-    provider = await withAmaErrorDetails("create provider", () =>
-      client.request<AmaProviderConfigResponse>("createProvider", {
-        body: {
-          type: configured.providerType,
-          displayName: configured.providerDisplayName,
-          metadata: { runtime },
-        },
-      }),
-    );
-  }
-
   const model = preferredModel ?? null;
-  if (model) {
-    await withAmaErrorDetails("upsert provider model", () =>
-      client.request("upsertProviderModel", {
-        path: { providerId: provider.id, modelId: model },
-        body: {
-          displayName: model,
-          capabilities: ["text"],
-          availability: "available",
-          metadata: { runtime },
-        },
-      }),
-    );
+  if (configured.cloud) {
+    // Cloud agents must pin a catalog model; AMA validates the (vendor, model)
+    // pair against the global catalog at session creation.
+    if (!model) {
+      throw new Error(`A cloud (${runtime}) agent must pin a model from the AMA catalog before dispatch`);
+    }
+    return { runtime, provider: vendorFromModelId(model), model };
   }
-
-  return { runtime, provider: provider.id, model };
+  return { runtime, provider: configured.providerSlug, model };
 }
 
 export async function createAmaFederatedTenant(env: Env, input: AmaFederatedTenantInput): Promise<void> {
@@ -727,20 +682,24 @@ export async function listAmaEnvironments(env: Env): Promise<AmaListResponse<Rec
   });
 }
 
-export interface AmaRuntimeModel {
-  provider: string;
-  model: string;
+export interface AmaCatalogModel {
+  providerId: string;
+  modelId: string;
   displayName?: string;
+  availability: string;
 }
 
-// The cloud model catalog for a runtime, served by AMA (the authority). A
-// cloud-capable runtime (ama) returns its platform models; self-hosted-only
-// runtimes return [] (their models come from the runner's live capabilities).
-export async function listAmaRuntimeModels(env: Env, runtime: string): Promise<AmaRuntimeModel[]> {
+// AMA's global model catalog (auto-discovered from models.dev, the authority —
+// never hardcoded here). It is runtime-agnostic: every cloud model dispatches
+// the same way through the Workers AI binding. The caller filters/orders it for
+// the cloud (ama) runtime; self-hosted runtimes ignore it (their models come
+// from the runner's live capabilities).
+export async function listAmaCatalogModels(env: Env): Promise<AmaCatalogModel[]> {
   const client = await createAmaClient(env);
-  const response = await client.request<AmaListResponse<AmaRuntimeModel>>("listRuntimeModels", {
-    path: { runtime },
-  });
+  // GET /api/v1/providers/models returns the entire catalog in one envelope
+  // (the AMA route lists all rows; pagination is always {hasMore:false}), so no
+  // cursor loop is needed.
+  const response = await client.request<AmaListResponse<AmaCatalogModel>>("listModels");
   return response.data;
 }
 

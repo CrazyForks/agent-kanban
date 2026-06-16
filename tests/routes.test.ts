@@ -1161,14 +1161,35 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token", expires_in: 3600 }), { status: 200 });
       }
-      if (url === "https://ama.test/api/v1/runtimes/ama/models") {
+      // AMA's global model catalog endpoint (replaced the old per-runtime endpoint)
+      if (url === "https://ama.test/api/v1/providers/models") {
         return new Response(
           JSON.stringify({
             data: [
-              { provider: "workers-ai", model: "@cf/moonshotai/kimi-k2.7-code", displayName: "Kimi K2.7 Code (Workers AI)" },
-              { provider: "workers-ai", model: "@cf/openai/gpt-oss-120b", displayName: "GPT-OSS 120B (Workers AI)" },
-              { provider: "workers-ai", model: "@cf/moonshotai/kimi-k2.6", displayName: "Kimi K2.6 (Workers AI)" },
+              // Non-preferred model first — must be sorted after preferred ones
+              {
+                providerId: "meta",
+                modelId: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+                displayName: "Llama 3.3 70B (Workers AI)",
+                availability: "available",
+              },
+              // Preferred models in reverse order to prove sorting works
+              { providerId: "openai", modelId: "@cf/openai/gpt-oss-120b", displayName: "GPT-OSS 120B (Workers AI)", availability: "available" },
+              {
+                providerId: "moonshotai",
+                modelId: "@cf/moonshotai/kimi-k2.7-code",
+                displayName: "Kimi K2.7 Code (Workers AI)",
+                availability: "available",
+              },
+              // Unavailable model must be excluded
+              {
+                providerId: "meta",
+                modelId: "@cf/meta/llama-4-scout-17b-16e-instruct",
+                displayName: "Llama 4 Scout (Workers AI)",
+                availability: "disabled",
+              },
             ],
+            pagination: { nextCursor: null },
           }),
           { status: 200 },
         );
@@ -1179,11 +1200,15 @@ describe("routes", () => {
     try {
       const res = await apiRequest("GET", "/api/models?runtime=ama", undefined, apiKey);
       expect(res.status).toBe(200);
-      await expect(res.json()).resolves.toEqual([
-        { id: "@cf/moonshotai/kimi-k2.7-code", name: "Kimi K2.7 Code (Workers AI)" },
-        { id: "@cf/openai/gpt-oss-120b", name: "GPT-OSS 120B (Workers AI)" },
-        { id: "@cf/moonshotai/kimi-k2.6", name: "Kimi K2.6 (Workers AI)" },
-      ]);
+      const body = await res.json();
+      // Preferred models come first in the declared order
+      expect(body[0]).toEqual({ id: "@cf/moonshotai/kimi-k2.7-code", name: "Kimi K2.7 Code (Workers AI)" });
+      expect(body[1]).toEqual({ id: "@cf/openai/gpt-oss-120b", name: "GPT-OSS 120B (Workers AI)" });
+      // Non-preferred available model follows
+      expect(body[2]).toEqual({ id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", name: "Llama 3.3 70B (Workers AI)" });
+      // Unavailable model excluded
+      expect(body).not.toContainEqual(expect.objectContaining({ id: "@cf/meta/llama-4-scout-17b-16e-instruct" }));
+      expect(body).toHaveLength(3);
     } finally {
       Object.assign(env, previousAma);
       vi.unstubAllGlobals();
@@ -1215,10 +1240,7 @@ describe("routes", () => {
       if (url === "https://auth.test/oauth/token") {
         return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
       }
-      // gemini is a self-hosted runtime: AMA returns no cloud models, falling through to runner discovery
-      if (url === "https://ama.test/api/v1/runtimes/gemini/models") {
-        return new Response(JSON.stringify({ data: [] }), { status: 200 });
-      }
+      // gemini is a self-hosted runtime: model discovery goes directly to runner capabilities
       if (url === "https://ama.test/api/v1/runners?environmentId=env_models&limit=100") {
         return new Response(
           JSON.stringify({
@@ -1886,27 +1908,6 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/projects/project_123") {
         return new Response(JSON.stringify({ id: "project_123", name: "Workspace" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/v1/providers?limit=100") {
-        return new Response(
-          JSON.stringify({
-            data: [{ id: "provider_claude", type: "anthropic", status: "active" }],
-            pagination: { limit: 100, hasMore: false, nextCursor: null },
-          }),
-          { status: 200 },
-        );
-      }
-      if (url === "https://ama.test/api/v1/providers/provider_claude/models?limit=100") {
-        return new Response(
-          JSON.stringify({
-            data: [{ modelId: "claude-sonnet-4-6", availability: "available", metadata: { runtime: "claude-code" } }],
-            pagination: { limit: 100, hasMore: false, nextCursor: null },
-          }),
-          { status: 200 },
-        );
-      }
-      if (url === "https://ama.test/api/v1/providers/provider_claude/models" && init?.method === "POST") {
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      }
       if (url === "https://ama.test/api/v1/runners?environmentId=env_123&limit=100") {
         return new Response(
           JSON.stringify({
@@ -1934,7 +1935,8 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/agents") {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         expect(body.metadata).toMatchObject({ runtime: "claude-code" });
-        expect(body.providerId).toBe("provider_claude");
+        // Provider is now the static vendor slug from the global catalog, not a provider id
+        expect(body.providerId).toBe("anthropic");
         expect(body.skills).toEqual(["saltbo/agent-kanban@agent-kanban"]);
         expect(body.subagents).toEqual([
           {
@@ -2027,7 +2029,8 @@ describe("routes", () => {
       const bridgeMachine = await env.DB.prepare("SELECT id FROM machines WHERE device_id = 'ama-runtime-bridge'").first<{ id: string }>();
       expect(bridgeMachine).toBeNull();
       const calledUrls = fetchMock.mock.calls.map(([url]) => String(url));
-      expect(calledUrls).toContain("https://ama.test/api/v1/providers?limit=100");
+      // Provider resolution is now pure/local (no AMA provider CRUD calls)
+      expect(calledUrls).toContain("https://ama.test/api/v1/agents");
 
       expect(runtimePrivateKeyJwk).toBeTruthy();
       const runtimePrivateKey = await crypto.subtle.importKey("jwk", runtimePrivateKeyJwk!, { name: "Ed25519" } as any, true, ["sign"]);

@@ -1557,71 +1557,138 @@ describe("amaRuntime list helpers", () => {
 // ─── 6f. resolveAmaProviderModelProfile ──────────────────────────────────────
 
 describe("amaRuntime resolveAmaProviderModelProfile", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
   it("throws when the runtime has no configured provider profile", async () => {
     const { resolveAmaProviderModelProfile } = await import("../apps/web/server/amaRuntime");
-
-    const env: any = {
-      AMA_ORIGIN: "https://ama.test",
-      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
-      AMA_OAUTH_CLIENT_ID: `ak-profile-err-${randomUUID()}`,
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-    };
-
-    await expect(resolveAmaProviderModelProfile(env, "project_123", { runtime: "unknown-runtime-xyz" })).rejects.toThrow(
+    expect(() => resolveAmaProviderModelProfile({ runtime: "unknown-runtime-xyz" })).toThrow(
       "No AK runtime provider mapping is configured for runtime unknown-runtime-xyz",
     );
   });
 
-  it("creates a new provider when none exists for the runtime", async () => {
+  it("throws for gemini runtime which has no provider profile", async () => {
     const { resolveAmaProviderModelProfile } = await import("../apps/web/server/amaRuntime");
+    expect(() => resolveAmaProviderModelProfile({ runtime: "gemini" })).toThrow("No AK runtime provider mapping is configured for runtime gemini");
+  });
 
-    let providerCreated = false;
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/v1/providers?limit=100")
-        // Return empty list — no existing provider
-        return new Response(JSON.stringify({ data: [], pagination: {} }), { status: 200 });
-      if (url === "https://ama.test/api/v1/providers") {
-        providerCreated = true;
-        return new Response(JSON.stringify({ id: "new_provider_id", type: "anthropic", enabled: true }), { status: 201 });
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
+  it("throws for hermes runtime which has no provider profile", async () => {
+    const { resolveAmaProviderModelProfile } = await import("../apps/web/server/amaRuntime");
+    expect(() => resolveAmaProviderModelProfile({ runtime: "hermes" })).toThrow("No AK runtime provider mapping is configured for runtime hermes");
+  });
 
-    const env: any = {
-      AMA_ORIGIN: "https://ama.test",
-      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
-      AMA_OAUTH_CLIENT_ID: `ak-new-provider-${randomUUID()}`,
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-    };
+  it("returns anthropic provider for claude-code runtime without preferredModel", async () => {
+    const { resolveAmaProviderModelProfile } = await import("../apps/web/server/amaRuntime");
+    const result = resolveAmaProviderModelProfile({ runtime: "claude-code" });
+    expect(result.provider).toBe("anthropic");
+    expect(result.model).toBeNull();
+    expect(result.runtime).toBe("claude-code");
+  });
 
-    // resolveAmaProviderModelProfile expects the AMA runtime name (claude-code, not claude)
-    const result = await resolveAmaProviderModelProfile(env, "project_123", { runtime: "claude-code" });
-    expect(providerCreated).toBe(true);
-    expect(result.provider).toBe("new_provider_id");
+  it("returns anthropic provider and pins the model for claude-code with preferredModel", async () => {
+    const { resolveAmaProviderModelProfile } = await import("../apps/web/server/amaRuntime");
+    const result = resolveAmaProviderModelProfile({ runtime: "claude-code", preferredModel: "claude-opus-4" });
+    expect(result.provider).toBe("anthropic");
+    expect(result.model).toBe("claude-opus-4");
+  });
+
+  it("returns openai provider for codex runtime", async () => {
+    const { resolveAmaProviderModelProfile } = await import("../apps/web/server/amaRuntime");
+    const result = resolveAmaProviderModelProfile({ runtime: "codex" });
+    expect(result.provider).toBe("openai");
     expect(result.model).toBeNull();
   });
 
-  it("calls upsertProviderModel when preferredModel is specified", async () => {
+  it("returns openai provider for copilot runtime", async () => {
     const { resolveAmaProviderModelProfile } = await import("../apps/web/server/amaRuntime");
+    const result = resolveAmaProviderModelProfile({ runtime: "copilot" });
+    expect(result.provider).toBe("openai");
+    expect(result.model).toBeNull();
+  });
 
-    let upsertCalled = false;
+  it("derives moonshotai vendor from @cf/moonshotai/kimi-k2.7-code for ama cloud runtime", async () => {
+    const { resolveAmaProviderModelProfile } = await import("../apps/web/server/amaRuntime");
+    const result = resolveAmaProviderModelProfile({ runtime: "ama", preferredModel: "@cf/moonshotai/kimi-k2.7-code" });
+    expect(result.provider).toBe("moonshotai");
+    expect(result.model).toBe("@cf/moonshotai/kimi-k2.7-code");
+  });
+
+  it("derives openai vendor from @cf/openai/gpt-oss-120b for ama cloud runtime", async () => {
+    const { resolveAmaProviderModelProfile } = await import("../apps/web/server/amaRuntime");
+    const result = resolveAmaProviderModelProfile({ runtime: "ama", preferredModel: "@cf/openai/gpt-oss-120b" });
+    expect(result.provider).toBe("openai");
+    expect(result.model).toBe("@cf/openai/gpt-oss-120b");
+  });
+
+  it("derives anthropic vendor from AI-gateway form anthropic/claude-opus-4 for ama cloud runtime", async () => {
+    const { resolveAmaProviderModelProfile } = await import("../apps/web/server/amaRuntime");
+    const result = resolveAmaProviderModelProfile({ runtime: "ama", preferredModel: "anthropic/claude-opus-4" });
+    expect(result.provider).toBe("anthropic");
+    expect(result.model).toBe("anthropic/claude-opus-4");
+  });
+
+  it("throws for ama cloud runtime when no preferredModel is pinned", async () => {
+    const { resolveAmaProviderModelProfile } = await import("../apps/web/server/amaRuntime");
+    expect(() => resolveAmaProviderModelProfile({ runtime: "ama" })).toThrow(
+      "A cloud (ama) agent must pin a model from the AMA catalog before dispatch",
+    );
+  });
+
+  it("throws for ama cloud runtime when preferredModel is explicitly null", async () => {
+    const { resolveAmaProviderModelProfile } = await import("../apps/web/server/amaRuntime");
+    expect(() => resolveAmaProviderModelProfile({ runtime: "ama", preferredModel: null })).toThrow(
+      "A cloud (ama) agent must pin a model from the AMA catalog before dispatch",
+    );
+  });
+});
+
+// ─── 6g. vendorFromModelId ────────────────────────────────────────────────────
+
+describe("amaRuntime vendorFromModelId", () => {
+  it("extracts moonshotai from @cf/moonshotai/kimi-k2.7-code", async () => {
+    const { vendorFromModelId } = await import("../apps/web/server/amaRuntime");
+    expect(vendorFromModelId("@cf/moonshotai/kimi-k2.7-code")).toBe("moonshotai");
+  });
+
+  it("extracts openai from @cf/openai/gpt-oss-120b", async () => {
+    const { vendorFromModelId } = await import("../apps/web/server/amaRuntime");
+    expect(vendorFromModelId("@cf/openai/gpt-oss-120b")).toBe("openai");
+  });
+
+  it("extracts anthropic from AI-gateway form anthropic/claude-opus-4", async () => {
+    const { vendorFromModelId } = await import("../apps/web/server/amaRuntime");
+    expect(vendorFromModelId("anthropic/claude-opus-4")).toBe("anthropic");
+  });
+
+  it("returns unknown for a bare model id with no vendor segment", async () => {
+    const { vendorFromModelId } = await import("../apps/web/server/amaRuntime");
+    expect(vendorFromModelId("kimi-k2.7-code")).toBe("unknown");
+  });
+
+  it("returns unknown for a bare model id without slash", async () => {
+    const { vendorFromModelId } = await import("../apps/web/server/amaRuntime");
+    expect(vendorFromModelId("gpt-5")).toBe("unknown");
+  });
+});
+
+// ─── 6h. listAmaCatalogModels ─────────────────────────────────────────────────
+
+describe("amaRuntime listAmaCatalogModels", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("fetches the global catalog from GET /api/v1/providers/models and returns the data array", async () => {
+    const { listAmaCatalogModels } = await import("../apps/web/server/amaRuntime");
+
+    const catalogData = [
+      { providerId: "moonshotai", modelId: "@cf/moonshotai/kimi-k2.7-code", displayName: "Kimi K2.7 Code", availability: "available" },
+      { providerId: "openai", modelId: "@cf/openai/gpt-oss-120b", displayName: "GPT-OSS 120B", availability: "available" },
+      { providerId: "meta", modelId: "@cf/meta/llama-3.3-70b", displayName: "Llama 3.3 70B", availability: "disabled" },
+    ];
+
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/v1/providers?limit=100")
-        return new Response(JSON.stringify({ data: [{ id: "provider_existing", type: "anthropic", enabled: true }], pagination: {} }), {
-          status: 200,
-        });
-      if (url === "https://ama.test/api/v1/providers/provider_existing/models/claude-opus-4") {
-        upsertCalled = true;
-        return new Response(JSON.stringify({ id: "model_123" }), { status: 201 });
+      if (url === "https://ama.test/api/v1/providers/models") {
+        return new Response(JSON.stringify({ data: catalogData, pagination: { nextCursor: null } }), { status: 200 });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -1630,14 +1697,14 @@ describe("amaRuntime resolveAmaProviderModelProfile", () => {
     const env: any = {
       AMA_ORIGIN: "https://ama.test",
       AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
-      AMA_OAUTH_CLIENT_ID: `ak-upsert-model-${randomUUID()}`,
+      AMA_OAUTH_CLIENT_ID: `ak-catalog-${randomUUID()}`,
       AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     };
 
-    // resolveAmaProviderModelProfile expects the AMA runtime name (claude-code, not claude)
-    const result = await resolveAmaProviderModelProfile(env, "project_123", { runtime: "claude-code", preferredModel: "claude-opus-4" });
-    expect(upsertCalled).toBe(true);
-    expect(result.model).toBe("claude-opus-4");
+    const result = await listAmaCatalogModels(env);
+    expect(result).toHaveLength(3);
+    expect(result[0]).toMatchObject({ providerId: "moonshotai", modelId: "@cf/moonshotai/kimi-k2.7-code", availability: "available" });
+    expect(result[2]).toMatchObject({ providerId: "meta", modelId: "@cf/meta/llama-3.3-70b", availability: "disabled" });
   });
 });
 
@@ -1986,11 +2053,12 @@ describe("dispatchTaskToAma with cloud runtime (ama)", () => {
       .run();
 
     const board = await createBoard(db, cloudRtOwner, `cloud-rt-board-${randomUUID()}`, "ops");
-    // Agent with "ama" runtime — isCloudAgentRuntime returns true
+    // Agent with "ama" runtime — isCloudAgentRuntime returns true; must pin a catalog model
     const agent = await createTestAgent(db, cloudRtOwner, {
       name: "CloudRtAgent",
       username: `cloud-rt-agent-${randomUUID()}`,
       runtime: "ama",
+      model: "@cf/moonshotai/kimi-k2.7-code",
     });
     const task = await createTask(db, cloudRtOwner, {
       title: "Cloud rt task",
@@ -2009,13 +2077,18 @@ describe("dispatchTaskToAma with cloud runtime (ama)", () => {
       // amaEnvironmentExists for the cached cloud env
       if (url === `https://ama.test/api/v1/environments/${cloudEnvId}`)
         return new Response(JSON.stringify({ id: cloudEnvId, name: "Cloud sandbox" }), { status: 200 });
-      if (url === "https://ama.test/api/v1/providers?limit=100")
-        return new Response(JSON.stringify({ data: [{ id: "provider_ama", type: "workers-ai", enabled: true }] }), { status: 200 });
       if (url === "https://ama.test/api/v1/vaults/vault_cloud_rt/credentials")
         return new Response(JSON.stringify({ id: "vaultcred_cloud_rt", activeVersionId: "vaultver_cloud_rt" }), { status: 201 });
       if (url === "https://ama.test/api/v1/agents")
         return new Response(
-          JSON.stringify({ id: "ama_agent_cloud_rt", projectId: "project_cloud_rt", name: "cloud_rt", providerId: "provider_ama", model: null }),
+          // Provider is now vendorFromModelId(@cf/moonshotai/kimi-k2.7-code) = "moonshotai"
+          JSON.stringify({
+            id: "ama_agent_cloud_rt",
+            projectId: "project_cloud_rt",
+            name: "cloud_rt",
+            providerId: "moonshotai",
+            model: "@cf/moonshotai/kimi-k2.7-code",
+          }),
           { status: 201 },
         );
       if (url === "https://ama.test/api/v1/sessions") {
