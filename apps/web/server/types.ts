@@ -19,10 +19,13 @@ export interface Env {
   AMA_OAUTH_CLIENT_ID?: string;
   AMA_OAUTH_CLIENT_SECRET?: string;
   AMA_OAUTH_SCOPE?: string;
-  AK_FEDERATED_RUNNER_SUBJECT_SECRET?: string;
+  // ES256 private key (JWK JSON, with kid) used to sign runner subject tokens.
+  // The matching public JWK is served at /.well-known/jwks.json and registered
+  // as a federated credential under AK's application in FlareAuth.
+  AK_FEDERATED_SIGNING_KEY?: string;
   // Stable issuer identity for runner federation; defaults to AK_API_URL.
   // Needed when AK_API_URL is an ephemeral tunnel (dev) but the flareauth
-  // trusted-issuer registration is a fixed origin.
+  // federated-credential registration is a fixed identity.
   AK_FEDERATED_ISSUER?: string;
   AMA_RUNNER_VERSION?: string;
   GITHUB_APP_WEBHOOK_SECRET?: string;

@@ -28,15 +28,15 @@ import {
   upsertLatestAgent,
 } from "./agentRepo";
 import { closeSession, createSession, listSessions, reopenSession, updateSessionUsage } from "./agentSessionRepo";
-import { ensureAmaOwnerIntegration, getAmaProjectId, resolveAmaExternalTenantId, resolveAmaProjectId } from "./amaOwnerIntegrationRepo";
+import { ensureAmaOwnerIntegration, getAmaProjectId, resolveAmaProjectId } from "./amaOwnerIntegrationRepo";
 import {
   type AmaRunner,
   amaEnvironmentExists,
   archiveAmaScheduledAgentTrigger,
   createAmaEnvironment,
   createAmaFederatedRunnerToken,
-  createAmaFederatedTenant,
   createAmaScheduledAgentTrigger,
+  federatedSigningPublicJwks,
   getAmaSessionRuntimeSnapshot,
   isAmaTaskDispatchConfigured,
   listAmaRunners,
@@ -494,22 +494,15 @@ async function createMachineRunnerOnboarding(env: Env, machine: MachineRecord, o
   if (readyAmaRuntimeNames(machine.runtimes).length === 0) return null;
 
   const projectId = await resolveAmaProjectId(env.DB, env, ownerId);
-  const externalTenantId = await resolveAmaExternalTenantId(env.DB, env, ownerId);
-  // Federation issuer is the AK instance's stable identity registered with
-  // the OIDC provider's trusted issuers — not necessarily the URL agents
-  // call back on (AK_API_URL may be an ephemeral dev tunnel).
+  // Federation issuer is the AK instance's stable identity, registered once as a
+  // federated credential under AK's application in FlareAuth — not the URL agents
+  // call back on (AK_API_URL may be an ephemeral dev tunnel). The runner token
+  // names the owner's project; AMA scopes the workspace by project, not a tenant.
   const issuer = env.AK_FEDERATED_ISSUER ?? apiUrl(env, requestOrigin);
 
-  await createAmaFederatedTenant(env, {
-    projectId,
-    issuer,
-    externalTenantId,
-    environmentId,
-  });
   const token = await createAmaFederatedRunnerToken(env, {
     projectId,
     issuer,
-    externalTenantId,
     subject: `machine:${machine.id}`,
     environmentId,
   });
@@ -688,6 +681,12 @@ api.get("/.well-known/openpgpkey/hu/:hash", async (c) => {
 // WKD policy file — required by the protocol
 api.get("/.well-known/openpgpkey/policy", (c) => {
   return new Response("", { headers: { "Content-Type": "text/plain" } });
+});
+
+// Public JWK set for runner federation: FlareAuth fetches this to verify the
+// ES256 subject tokens AK signs during the AMA runner token exchange.
+api.get("/.well-known/jwks.json", (c) => {
+  return c.json(federatedSigningPublicJwks(c.env), 200, { "cache-control": "public, max-age=300" });
 });
 
 // ─── Share SSR (meta tag injection for social sharing) ───

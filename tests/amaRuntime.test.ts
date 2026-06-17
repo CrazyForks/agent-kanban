@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { importJWK, jwtVerify } from "jose";
 import {
   createAmaFederatedRunnerToken,
   createAmaFederatedTenant,
@@ -9,6 +10,17 @@ import {
   isAmaRuntimeConfigured,
 } from "../apps/web/server/amaRuntime";
 import type { Env } from "../apps/web/server/types";
+
+// Fixed ES256 test keypair — generated once, stable across runs.
+const TEST_SIGNING_JWK = {
+  kty: "EC",
+  x: "YgsMptfXEIq8ALzmNQclYp40b4d2nxKbsjle3TfEyTE",
+  y: "DP6x9I_82Y1J43QC9mEBiXZjOcL1J_k9S-AzZJbyAGc",
+  crv: "P-256",
+  d: "xa0meReZA9XMRXqAEyC_gEgnaZfrDL1CrHBXO_hCDy0",
+  kid: "test-ak",
+  alg: "ES256",
+};
 
 function env(overrides: Partial<Env> = {}): Env {
   return {
@@ -30,7 +42,7 @@ function env(overrides: Partial<Env> = {}): Env {
     AMA_OAUTH_CLIENT_ID: "ak-app",
     AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     AMA_OAUTH_SCOPE: "ama:project",
-    AK_FEDERATED_RUNNER_SUBJECT_SECRET: "ak-subject-secret",
+    AK_FEDERATED_SIGNING_KEY: JSON.stringify(TEST_SIGNING_JWK),
     ...overrides,
   };
 }
@@ -148,6 +160,10 @@ describe("AMA runtime adapter", () => {
   });
 
   it("creates federated tenants and exchanges AK subject tokens for runner tokens", async () => {
+    // The public JWK (no private component) used to verify subject tokens in the test.
+    const { d: _d, ...publicJwk } = TEST_SIGNING_JWK;
+    const publicKey = await importJWK(publicJwk, "ES256");
+
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token" && String(init?.body).includes("client_credentials")) {
@@ -171,17 +187,14 @@ describe("AMA runtime adapter", () => {
         expect(form.get("grant_type")).toBe("urn:ietf:params:oauth:grant-type:token-exchange");
         expect(form.get("audience")).toBe("https://ama.test");
         expect(form.get("scope")).toBe("runner:connect offline_access");
-        const tokenBody = form.get("subject_token")!.split(".")[1].replaceAll("-", "+").replaceAll("_", "/");
-        const payload = JSON.parse(atob(tokenBody + "=".repeat((4 - (tokenBody.length % 4)) % 4)));
-        expect(payload).toMatchObject({
-          iss: "https://ak.example.com",
-          sub: "owner_123:machine:machine_123",
-          aud: "https://ama.test",
-          external_tenant_id: "owner_123",
-          ama_environment_id: "env_123",
-        });
-        expect(payload).not.toHaveProperty("ama_runner_id");
-        expect(payload).not.toHaveProperty("runner_capabilities");
+        // Verify the subject token is a valid ES256 JWT with the expected claims
+        const subjectToken = form.get("subject_token")!;
+        const { payload } = await jwtVerify(subjectToken, publicKey, { issuer: "https://ak.example.com" });
+        expect(payload.sub).toBe("machine:machine_123");
+        expect(payload.aud).toBe("https://ama.test");
+        expect(payload.ama_project_id).toBe("project_123");
+        expect(payload.ama_environment_id).toBe("env_123");
+        expect(payload).not.toHaveProperty("external_tenant_id");
         return new Response(
           JSON.stringify({
             access_token: "runner-token",
@@ -206,7 +219,6 @@ describe("AMA runtime adapter", () => {
       createAmaFederatedRunnerToken(env(), {
         projectId: "project_123",
         issuer: "https://ak.example.com",
-        externalTenantId: "owner_123",
         subject: "machine:machine_123",
         environmentId: "env_123",
       }),

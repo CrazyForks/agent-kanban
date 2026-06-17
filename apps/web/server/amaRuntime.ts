@@ -1,4 +1,5 @@
 import { AmaClient, type AmaOperationId, type AmaRequestOptions } from "@any-managed-agents/sdk";
+import { type JWK, SignJWT, importJWK } from "jose";
 import type { Env } from "./types";
 
 export type AmaResourceRef = Record<string, unknown>;
@@ -210,7 +211,6 @@ const RUNNER_FEDERATION_CAPABILITIES = ["session:poll", "session:claim"];
 export interface AmaRunnerTokenInput {
   projectId: string;
   issuer: string;
-  externalTenantId: string;
   subject: string;
   environmentId: string;
 }
@@ -516,13 +516,15 @@ export async function createAmaFederatedRunnerToken(env: Env, input: AmaRunnerTo
   const clientSecret = requireEnv(env.AMA_OAUTH_CLIENT_SECRET, "AMA_OAUTH_CLIENT_SECRET");
   const audience = requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN").replace(/\/$/, "");
   const issuer = input.issuer.replace(/\/$/, "");
-  const subjectSecret = requireEnv(env.AK_FEDERATED_RUNNER_SUBJECT_SECRET, "AK_FEDERATED_RUNNER_SUBJECT_SECRET");
-  const subjectToken = await signSubjectToken(subjectSecret, {
+  // Self-signed subject assertion (ES256). It names the target AMA project via
+  // ama_project_id; AMA validates that project belongs to AK's organization. No
+  // self-asserted tenant id — the workspace is the project, the trust is AK's.
+  const subjectToken = await signSubjectToken(env, {
     iss: issuer,
-    sub: `${input.externalTenantId}:${input.subject}`,
+    sub: input.subject,
     aud: audience,
     exp: Math.floor(Date.now() / 1000) + 120,
-    external_tenant_id: input.externalTenantId,
+    ama_project_id: input.projectId,
     ama_environment_id: input.environmentId,
   });
   const body = new URLSearchParams({
@@ -943,20 +945,35 @@ function requireEnv(value: string | undefined, name: string): string {
   return value;
 }
 
-async function signSubjectToken(secret: string, payload: Record<string, unknown>) {
-  const header = base64UrlString(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const body = base64UrlString(JSON.stringify(payload));
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${header}.${body}`));
-  return `${header}.${body}.${base64Url(new Uint8Array(signature))}`;
+function loadSigningJwk(env: Env): JWK & { kid: string } {
+  const raw = requireEnv(env.AK_FEDERATED_SIGNING_KEY, "AK_FEDERATED_SIGNING_KEY");
+  const jwk = JSON.parse(raw) as JWK & { kid?: string };
+  if (!jwk.kid) throw new Error("AK_FEDERATED_SIGNING_KEY must include a kid");
+  return jwk as JWK & { kid: string };
 }
 
-function base64UrlString(value: string) {
-  return base64Url(new TextEncoder().encode(value));
+async function signSubjectToken(env: Env, payload: Record<string, unknown>) {
+  const jwk = loadSigningJwk(env);
+  const key = await importJWK(jwk, "ES256");
+  const { iss, sub, aud, exp, ...claims } = payload as {
+    iss: string;
+    sub: string;
+    aud: string;
+    exp: number;
+  } & Record<string, unknown>;
+  return new SignJWT(claims)
+    .setProtectedHeader({ alg: "ES256", kid: jwk.kid, typ: "JWT" })
+    .setIssuer(iss)
+    .setSubject(sub)
+    .setAudience(aud)
+    .setExpirationTime(exp)
+    .setIssuedAt()
+    .sign(key);
 }
 
-function base64Url(bytes: Uint8Array) {
-  let value = "";
-  for (const byte of bytes) value += String.fromCharCode(byte);
-  return btoa(value).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+// Public JWK set served at /.well-known/jwks.json so FlareAuth can verify the
+// runner subject tokens. The private `d` component is stripped.
+export function federatedSigningPublicJwks(env: Env): { keys: JWK[] } {
+  const { d: _d, ...publicJwk } = loadSigningJwk(env);
+  return { keys: [{ ...publicJwk, use: "sig", alg: "ES256" }] };
 }

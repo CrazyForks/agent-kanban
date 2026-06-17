@@ -611,9 +611,19 @@ describe("POST /api/machines runner.version from env", () => {
 
   it("returns runner.version = env.AMA_RUNNER_VERSION when set during machine registration", async () => {
     const userId = `runner-ver-user-${randomUUID()}`;
+    // Fixed ES256 test keypair for subject token signing
+    const testSigningJwk = {
+      kty: "EC",
+      x: "YgsMptfXEIq8ALzmNQclYp40b4d2nxKbsjle3TfEyTE",
+      y: "DP6x9I_82Y1J43QC9mEBiXZjOcL1J_k9S-AzZJbyAGc",
+      crv: "P-256",
+      d: "xa0meReZA9XMRXqAEyC_gEgnaZfrDL1CrHBXO_hCDy0",
+      kid: "test-ak",
+      alg: "ES256",
+    };
     const envWithVersion = makeEnv({
       AMA_RUNNER_VERSION: "0.2.5",
-      AK_FEDERATED_RUNNER_SUBJECT_SECRET: "test-secret-key-32-chars-minimum!",
+      AK_FEDERATED_SIGNING_KEY: JSON.stringify(testSigningJwk),
     });
     await seedUser(db, userId, `${userId}@test.local`);
     envWithVersion.DB = db;
@@ -645,8 +655,6 @@ describe("POST /api/machines runner.version from env", () => {
           return new Response(JSON.stringify({ id: "project_verpinned", name: "Workspace" }), { status: 200 });
         // createEnvironment
         if (url === "https://ama.test/api/v1/environments") return new Response(JSON.stringify({ id: "env_verpinned" }), { status: 201 });
-        // createFederatedTenant
-        if (url.includes("/federated-tenants")) return new Response(JSON.stringify({}), { status: 201 });
         throw new Error(`Unexpected fetch in version test: ${url}`);
       }),
     );

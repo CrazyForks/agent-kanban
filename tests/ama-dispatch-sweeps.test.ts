@@ -1436,6 +1436,17 @@ describe("amaRuntime createAmaFederatedTenant error path", () => {
 
 // ─── 6d. createAmaFederatedRunnerToken token exchange error paths ─────────────
 
+// Fixed ES256 test keypair — used for signing subject tokens in these tests.
+const TEST_SIGNING_JWK_SWEEPS = {
+  kty: "EC",
+  x: "YgsMptfXEIq8ALzmNQclYp40b4d2nxKbsjle3TfEyTE",
+  y: "DP6x9I_82Y1J43QC9mEBiXZjOcL1J_k9S-AzZJbyAGc",
+  crv: "P-256",
+  d: "xa0meReZA9XMRXqAEyC_gEgnaZfrDL1CrHBXO_hCDy0",
+  kid: "test-ak",
+  alg: "ES256",
+};
+
 describe("amaRuntime createAmaFederatedRunnerToken error paths", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -1446,13 +1457,12 @@ describe("amaRuntime createAmaFederatedRunnerToken error paths", () => {
     AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
     AMA_OAUTH_CLIENT_ID: "ak-app",
     AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-    AK_FEDERATED_RUNNER_SUBJECT_SECRET: "hmac-secret-for-signing",
+    AK_FEDERATED_SIGNING_KEY: JSON.stringify(TEST_SIGNING_JWK_SWEEPS),
   };
 
   const baseInput = {
     projectId: "project_federated",
     issuer: "https://runner.test",
-    externalTenantId: "tenant_123",
     subject: "runner-machine-1",
     environmentId: "env_federated",
   };
@@ -2304,8 +2314,6 @@ describe("ensureMachineAmaEnvironment self-heal (Feature A)", () => {
         createEnvCalled = true;
         return new Response(JSON.stringify({ id: newEnvId }), { status: 201 });
       }
-      // createFederatedTenant + runner token exchange
-      if (url.includes("/federated-tenants")) return new Response(JSON.stringify({}), { status: 201 });
       throw new Error(`Unexpected fetch in env-heal test: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -2332,7 +2340,7 @@ describe("ensureMachineAmaEnvironment self-heal (Feature A)", () => {
 
     const env = makeEnv({
       DB: db,
-      AK_FEDERATED_RUNNER_SUBJECT_SECRET: "test-secret-key-32-chars-minimum!",
+      AK_FEDERATED_SIGNING_KEY: JSON.stringify(TEST_SIGNING_JWK_SWEEPS),
     });
     const res = await api.request(
       "/api/machines",
