@@ -15,11 +15,10 @@ vi.mock("../src/paths.js", async () => {
   return { ...actual, BIN_DIR: binDir, DATA_DIR: testDir };
 });
 
-// Version probe stub — updated whenever AMA_RUNNER_VERSION is bumped.
-// Kept as a plain string (not derived from the import) because vi.mock factories
-// are hoisted and cannot safely call vi.importActual on a module that itself
-// imports the module being mocked (node:child_process), causing a circular dep.
-const PROBE_VERSION = "0.3.4";
+// Mutable probe config so the version stub tracks whatever AMA_RUNNER_VERSION
+// the source exports. The object reference is captured at mock-factory time;
+// values are written after the real module is imported below.
+const probe = { version: "" };
 
 vi.mock("node:child_process", async () => {
   const fs = await import("node:fs");
@@ -32,7 +31,7 @@ vi.mock("node:child_process", async () => {
         return { status: 0, stdout: "", stderr: "" };
       }
       if (args[0] === "version") {
-        return { status: 0, stdout: JSON.stringify({ name: "ama-runner", version: PROBE_VERSION, commit: "test" }), stderr: "" };
+        return { status: 0, stdout: JSON.stringify({ name: "ama-runner", version: probe.version, commit: "test" }), stderr: "" };
       }
       return { status: 1, stdout: "", stderr: "unexpected command" };
     }),
@@ -40,6 +39,10 @@ vi.mock("node:child_process", async () => {
 });
 
 const { resolveAmaRunnerBinary, AMA_RUNNER_VERSION } = await import("../src/amaRunner.js");
+
+// Now that the source is loaded, sync the probe so the spawnSync stub returns
+// the same version the source module declares as its bundled default.
+probe.version = AMA_RUNNER_VERSION;
 
 afterEach(() => {
   vi.restoreAllMocks();

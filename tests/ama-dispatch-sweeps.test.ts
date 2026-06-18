@@ -955,6 +955,170 @@ describe("reconcileAmaBoundTasks", () => {
     expect(meta?.annotations?.["ama.sessionId"]).toBeNull();
     expect(stops.length).toBeGreaterThanOrEqual(1);
   });
+
+  // ─── Bug regression: recordDispatchFailure must receive a meaningful reason ───
+  // Previously reconcileAmaBoundTasks called recordDispatchFailure without a reason,
+  // producing a task_actions row with detail = "undefined". The fix passes
+  // new Error(deadReason) so the detail is always a non-empty string that
+  // matches /runtime session/.
+
+  it("records a dispatch_failed action with a non-empty detail when session is gone (404, past min-age)", async () => {
+    const { reconcileAmaBoundTasks } = await import("../apps/web/server/taskDispatch");
+
+    const owner = `reconcile-df-null-owner-${randomUUID()}`;
+    await seedUser(db, owner, `${owner}@test.local`);
+    await configureAmaIntegration(owner);
+
+    const sessionId = `session_df_null_${randomUUID()}`;
+    // Set updated_at beyond the 2-minute min-age so a 404 triggers release
+    const oldTime = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const { task } = await seedTaskWithBinding(owner, "in_progress", sessionId, oldTime);
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method !== "PATCH")
+        return new Response(null, { status: 404 });
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method === "PATCH")
+        return new Response(JSON.stringify({ id: sessionId, state: "stopped" }), { status: 200 });
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const env = makeEnv();
+    await reconcileAmaBoundTasks(db, env);
+
+    const actionRow = await db
+      .prepare(
+        "SELECT actor_type, actor_id, action, detail FROM task_actions WHERE task_id = ? AND action = 'dispatch_failed' ORDER BY created_at DESC LIMIT 1",
+      )
+      .bind(task.id)
+      .first<{ actor_type: string; actor_id: string; action: string; detail: string }>();
+
+    expect(actionRow).toBeTruthy();
+    expect(actionRow!.action).toBe("dispatch_failed");
+    expect(actionRow!.actor_type).toBe("system");
+    expect(actionRow!.detail).not.toBe("undefined");
+    expect(actionRow!.detail).toMatch(/runtime session/);
+  });
+
+  it("records a dispatch_failed action with a non-empty detail when idle session tears down a todo task", async () => {
+    const { reconcileAmaBoundTasks } = await import("../apps/web/server/taskDispatch");
+
+    const owner = `reconcile-df-idle-owner-${randomUUID()}`;
+    await seedUser(db, owner, `${owner}@test.local`);
+    await configureAmaIntegration(owner);
+
+    const sessionId = `session_df_idle_${randomUUID()}`;
+    const { task } = await seedTaskWithBinding(owner, "todo", sessionId);
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method !== "PATCH")
+        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", state: "idle", stateReason: null }), { status: 200 });
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method === "PATCH")
+        return new Response(JSON.stringify({ id: sessionId, state: "stopped" }), { status: 200 });
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const env = makeEnv();
+    await reconcileAmaBoundTasks(db, env);
+
+    const actionRow = await db
+      .prepare(
+        "SELECT actor_type, actor_id, action, detail FROM task_actions WHERE task_id = ? AND action = 'dispatch_failed' ORDER BY created_at DESC LIMIT 1",
+      )
+      .bind(task.id)
+      .first<{ actor_type: string; actor_id: string; action: string; detail: string }>();
+
+    expect(actionRow).toBeTruthy();
+    expect(actionRow!.action).toBe("dispatch_failed");
+    expect(actionRow!.actor_type).toBe("system");
+    expect(actionRow!.detail).not.toBe("undefined");
+    expect(actionRow!.detail).toMatch(/runtime session/);
+  });
+
+  it("records a dispatch_failed action with a non-empty detail when a stale-pending session is torn down", async () => {
+    const { reconcileAmaBoundTasks } = await import("../apps/web/server/taskDispatch");
+
+    const owner = `reconcile-df-pending-owner-${randomUUID()}`;
+    await seedUser(db, owner, `${owner}@test.local`);
+    await configureAmaIntegration(owner);
+
+    const sessionId = `session_df_pending_${randomUUID()}`;
+    // updated_at must be >10 minutes ago to trigger stale-pending teardown
+    const staleTime = new Date(Date.now() - 11 * 60 * 1000).toISOString();
+    const { task } = await seedTaskWithBinding(owner, "todo", sessionId, staleTime);
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method !== "PATCH")
+        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", state: "pending", stateReason: null }), { status: 200 });
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method === "PATCH")
+        return new Response(JSON.stringify({ id: sessionId, state: "stopped" }), { status: 200 });
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const env = makeEnv();
+    await reconcileAmaBoundTasks(db, env);
+
+    const actionRow = await db
+      .prepare(
+        "SELECT actor_type, actor_id, action, detail FROM task_actions WHERE task_id = ? AND action = 'dispatch_failed' ORDER BY created_at DESC LIMIT 1",
+      )
+      .bind(task.id)
+      .first<{ actor_type: string; actor_id: string; action: string; detail: string }>();
+
+    expect(actionRow).toBeTruthy();
+    expect(actionRow!.action).toBe("dispatch_failed");
+    expect(actionRow!.actor_type).toBe("system");
+    expect(actionRow!.detail).not.toBe("undefined");
+    expect(actionRow!.detail).toMatch(/runtime session/);
+  });
+
+  it("records a dispatch_failed action with a non-empty detail when session is in a dead state (error)", async () => {
+    const { reconcileAmaBoundTasks } = await import("../apps/web/server/taskDispatch");
+
+    const owner = `reconcile-df-error-owner-${randomUUID()}`;
+    await seedUser(db, owner, `${owner}@test.local`);
+    await configureAmaIntegration(owner);
+
+    const sessionId = `session_df_error_${randomUUID()}`;
+    const { task } = await seedTaskWithBinding(owner, "in_progress", sessionId);
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method !== "PATCH")
+        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", state: "error", stateReason: "crashed" }), {
+          status: 200,
+        });
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method === "PATCH")
+        return new Response(JSON.stringify({ id: sessionId, state: "stopped" }), { status: 200 });
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const env = makeEnv();
+    await reconcileAmaBoundTasks(db, env);
+
+    const actionRow = await db
+      .prepare(
+        "SELECT actor_type, actor_id, action, detail FROM task_actions WHERE task_id = ? AND action = 'dispatch_failed' ORDER BY created_at DESC LIMIT 1",
+      )
+      .bind(task.id)
+      .first<{ actor_type: string; actor_id: string; action: string; detail: string }>();
+
+    expect(actionRow).toBeTruthy();
+    expect(actionRow!.action).toBe("dispatch_failed");
+    expect(actionRow!.actor_type).toBe("system");
+    expect(actionRow!.detail).not.toBe("undefined");
+    expect(actionRow!.detail).toMatch(/runtime session/);
+  });
 });
 
 // ─── 4. detectAndReleaseStaleAll — AMA teardown ───────────────────────────────
