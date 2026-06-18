@@ -50,6 +50,18 @@ export function createAuth(env: Env) {
       protocol: "auto",
     },
     secret: env.AUTH_SECRET,
+    // The AK user links their AMA account (a separate FlareAuth identity) whose
+    // email need not match their AK login email, so account linking must allow
+    // different emails — otherwise BetterAuth rejects the link with
+    // "email_doesn't_match". Linking is user-initiated and authenticated, and the
+    // linked token is only used for that user's own AMA calls.
+    account: {
+      accountLinking: {
+        enabled: true,
+        trustedProviders: ["ama"],
+        allowDifferentEmails: true,
+      },
+    },
     emailAndPassword: {
       enabled: true,
       requireEmailVerification: true,
