@@ -1,11 +1,13 @@
 import { useCallback, useState } from "react";
 import { Link } from "react-router-dom";
+import { toast } from "sonner";
 import { AddMachineSteps } from "../components/AddMachineSteps";
 import { Header } from "../components/Header";
 import { MachineRuntimeBadges } from "../components/MachineRuntimes";
 import { formatRelative } from "../components/TaskDetailFields";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { useMachines } from "../hooks/useMachines";
+import { api } from "../lib/api";
 import { authClient } from "../lib/auth-client";
 
 const statusDotColors: Record<string, string> = {
@@ -29,6 +31,7 @@ export function MachinesPage() {
   const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [createdKeyId, setCreatedKeyId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
+  const [creatingCloud, setCreatingCloud] = useState(false);
 
   async function handleChooseLocal() {
     const name = randomName();
@@ -37,6 +40,21 @@ export function MachinesPage() {
     setCreatedKey(data.key);
     setCreatedKeyId(data.id);
     setDialogStep("waiting");
+  }
+
+  async function handleChooseCloud() {
+    setCreatingCloud(true);
+    try {
+      await api.machines.createCloud({ name: randomName() });
+      toast.success("Cloud sandbox added");
+      resetDialog();
+      refresh();
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      toast.error(status === 403 ? "Connect AMA to add a cloud sandbox" : (err as Error).message || "Failed to add cloud sandbox");
+    } finally {
+      setCreatingCloud(false);
+    }
   }
 
   const handleConnected = useCallback(async () => {
@@ -178,8 +196,9 @@ export function MachinesPage() {
                 </div>
               </button>
               <button
-                disabled
-                className="w-full flex items-center gap-3 bg-surface-primary border border-border rounded-lg px-4 py-3 opacity-50 cursor-not-allowed text-left"
+                onClick={handleChooseCloud}
+                disabled={creatingCloud}
+                className="w-full flex items-center gap-3 bg-surface-primary border border-border rounded-lg px-4 py-3 hover:border-accent/50 transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <svg
                   width="20"
@@ -190,13 +209,13 @@ export function MachinesPage() {
                   strokeWidth="1.5"
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  className="text-content-tertiary shrink-0"
+                  className="text-content-secondary shrink-0"
                 >
                   <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" />
                 </svg>
                 <div>
-                  <div className="text-sm font-medium text-content-tertiary">Cloud Sandbox</div>
-                  <div className="text-[11px] text-content-tertiary">Coming soon</div>
+                  <div className="text-sm font-medium text-content-primary">Cloud Sandbox</div>
+                  <div className="text-[11px] text-content-tertiary">{creatingCloud ? "Creating..." : "Run on an AMA-managed sandbox"}</div>
                 </div>
               </button>
             </div>

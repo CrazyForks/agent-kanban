@@ -1,12 +1,13 @@
 import { CheckCircle2, Cloud, Github, Monitor, RefreshCw, Shield } from "lucide-react";
 import type React from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Skeleton } from "../components/ui/skeleton";
+import { api } from "../lib/api";
 import { accountAuthClient, type LinkedAccount, type SessionEntry, useSession } from "../lib/auth-client";
 import { cn } from "../lib/utils";
 
@@ -63,6 +64,20 @@ export function AccountPage() {
   const hasCredentialAccount = accounts?.some((a) => a.providerId === "credential") ?? false;
   const githubAccount = accounts?.find((a) => a.providerId === "github");
   const amaAccount = accounts?.find((a) => a.providerId === "ama");
+
+  // Once the AMA account is linked, provision the owner's AMA project + vault so
+  // resources exist before they create an agent or machine. The endpoint is
+  // idempotent; provision once per linked account id.
+  const provisionedAccountId = useRef<string | null>(null);
+  useEffect(() => {
+    if (!amaAccount || provisionedAccountId.current === amaAccount.id) return;
+    provisionedAccountId.current = amaAccount.id;
+    api.ama.provision().catch(() => {
+      // Best-effort: agent/machine creation will surface a clear error if AMA
+      // resources are still missing.
+      provisionedAccountId.current = null;
+    });
+  }, [amaAccount]);
 
   const [githubConnecting, setGithubConnecting] = useState(false);
   const [githubError, setGithubError] = useState<string | null>(null);

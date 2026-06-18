@@ -67,6 +67,7 @@ export async function prepareAgent(
   input: CreateAgentInput,
   identity: AgentIdentity,
   builtin = false,
+  amaAgentId: string | null = null,
 ): Promise<PreparedAgent> {
   const { id, publicKeyBase64, fingerprint, privateKeyJwk } = identity;
   const now = new Date().toISOString();
@@ -90,6 +91,7 @@ export async function prepareAgent(
     public_key: publicKeyBase64,
     fingerprint,
     builtin: builtin ? 1 : 0,
+    ama_agent_id: amaAgentId,
     metadata: {},
     created_at: now,
     updated_at: now,
@@ -104,8 +106,8 @@ export async function insertAgent(db: D1, agent: PreparedAgent, extras?: { mailb
   const metadataJson = JSON.stringify(agent.metadata ?? {});
   await db
     .prepare(`
-    INSERT INTO agents (id, owner_id, name, username, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, version, public_key, private_key, fingerprint, builtin, mailbox_token, gpg_subkey_id, metadata, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO agents (id, owner_id, name, username, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, version, public_key, private_key, fingerprint, builtin, mailbox_token, gpg_subkey_id, ama_agent_id, metadata, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
     .bind(
       agent.id,
@@ -128,6 +130,7 @@ export async function insertAgent(db: D1, agent: PreparedAgent, extras?: { mailb
       agent.builtin,
       extras?.mailboxToken ?? null,
       extras?.gpgSubkeyId ?? null,
+      agent.ama_agent_id ?? null,
       metadataJson,
       agent.created_at,
       agent.updated_at,
@@ -177,7 +180,7 @@ export async function listAgents(db: D1, ownerId: string, filters: AgentListFilt
   let query = `
     SELECT a.id, a.owner_id, a.name, a.username, a.gpg_subkey_id, a.bio, a.soul, a.role, a.kind, a.handoff_to, a.runtime, a.model, a.skills, a.subagents,
       a.version,
-      a.public_key, a.fingerprint, a.builtin, a.metadata, a.created_at, a.updated_at,
+      a.public_key, a.fingerprint, a.builtin, a.ama_agent_id, a.metadata, a.created_at, a.updated_at,
       CASE WHEN EXISTS (
         SELECT 1 FROM machines m, json_each(m.runtimes) rt
         WHERE m.owner_id = a.owner_id
@@ -231,7 +234,7 @@ export async function getAgent(db: D1, agentId: string, ownerId: string): Promis
     .prepare(`
     SELECT a.id, a.owner_id, a.name, a.username, a.gpg_subkey_id, a.bio, a.soul, a.role, a.kind, a.handoff_to, a.runtime, a.model, a.skills, a.subagents,
       a.version,
-      a.public_key, a.fingerprint, a.builtin, a.metadata, a.created_at, a.updated_at,
+      a.public_key, a.fingerprint, a.builtin, a.ama_agent_id, a.metadata, a.created_at, a.updated_at,
       CASE WHEN EXISTS (
         SELECT 1 FROM machines m, json_each(m.runtimes) rt
         WHERE m.owner_id = a.owner_id
@@ -466,6 +469,19 @@ export async function updateAgentMetadataAnnotations(db: D1, ownerId: string, ag
 
 export async function setAgentGpgSubkeyId(db: D1, agentId: string, gpgSubkeyId: string): Promise<void> {
   await db.prepare("UPDATE agents SET gpg_subkey_id = ? WHERE id = ?").bind(gpgSubkeyId, agentId).run();
+}
+
+// The AMA agent id is shared by every version row of the same username, so set
+// it across the whole lineage (latest + snapshots), keyed by ownership.
+export async function setAgentAmaId(db: D1, ownerId: string, agentId: string, amaAgentId: string): Promise<void> {
+  const row = await db.prepare("SELECT username FROM agents WHERE id = ? AND owner_id = ?").bind(agentId, ownerId).first<{ username: string }>();
+  if (!row) throw new Error("Agent not found");
+  await db.prepare("UPDATE agents SET ama_agent_id = ? WHERE owner_id = ? AND username = ?").bind(amaAgentId, ownerId, row.username).run();
+}
+
+export async function getAgentAmaId(db: D1, agentId: string): Promise<string | null> {
+  const row = await db.prepare("SELECT ama_agent_id FROM agents WHERE id = ?").bind(agentId).first<{ ama_agent_id: string | null }>();
+  return row?.ama_agent_id ?? null;
 }
 
 export async function getAgentMailboxToken(db: D1, agentId: string): Promise<string | null> {

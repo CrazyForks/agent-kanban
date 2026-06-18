@@ -28,7 +28,13 @@ import {
   upsertLatestAgent,
 } from "./agentRepo";
 import { closeSession, createSession, listSessions, reopenSession, updateSessionUsage } from "./agentSessionRepo";
-import { ensureAmaOwnerIntegration, getAmaProjectId, hasAmaAccount, resolveAmaProjectId } from "./amaOwnerIntegrationRepo";
+import {
+  createAmaCloudSandboxEnvironment,
+  ensureAmaOwnerIntegration,
+  getAmaProjectId,
+  hasAmaAccount,
+  resolveAmaProjectId,
+} from "./amaOwnerIntegrationRepo";
 import {
   type AmaRunner,
   amaEnvironmentExists,
@@ -72,6 +78,7 @@ import { handleGithubPullRequestEvent, verifyGithubSignature } from "./githubWeb
 import { getArmoredPrivateKey, getRootKeyInfo, getRootPublicKey, getSubkeyIds } from "./gpgKeyRepo";
 import { createLogger } from "./logger";
 import {
+  createCloudMachine,
   deleteMachine,
   detectStaleMachines,
   getMachine,
@@ -97,6 +104,7 @@ import {
   amaRunnerCanRunRuntime,
   amaRuntimeName,
   apiUrl,
+  createAmaAgentForAkProfile,
   dispatchTaskToAma,
   ensureAmaAgentForAkAgent,
   getReadyAmaMachineEnvironmentForRuntime,
@@ -801,6 +809,7 @@ api.get("/api/machines/:id", async (c) => {
 
 api.post("/api/machines", async (c) => {
   markLegacyRuntimeSurface(c);
+  await requireAmaConnected(c.env.DB, c.env, c.get("ownerId"));
   const body = await c.req.json<{ name: string; os: string; version: string; runtimes: MachineRuntime[]; device_id: string }>();
   if (!body.name || !body.os || !body.version || !body.runtimes || !body.device_id) {
     throw new HTTPException(400, { message: "name, os, version, runtimes, and device_id are required" });
@@ -844,6 +853,23 @@ api.post("/api/machines", async (c) => {
   return c.json({ ...publicMachine(machine), runner }, 201);
 });
 
+// Cloud sandbox: an AMA-managed execution environment with no device, daemon,
+// or runner. AMA scales sandboxes per session. Creates the cloud AMA
+// environment first, then persists the machine row referencing it.
+api.post("/api/machines/cloud", async (c) => {
+  if (!isAmaTaskDispatchConfigured(c.env)) {
+    throw new HTTPException(500, { message: "Cloud sandboxes require AMA to be configured" });
+  }
+  await requireAmaConnected(c.env.DB, c.env, c.get("ownerId"));
+  const ownerId = c.get("ownerId");
+  const body = await c.req.json<{ name?: string }>().catch(() => ({}) as { name?: string });
+  const name = body?.name?.trim() || "Cloud sandbox";
+
+  const { environmentId } = await createAmaCloudSandboxEnvironment(c.env.DB, c.env, ownerId, name);
+  const machine = await createCloudMachine(c.env.DB, ownerId, { name, runtimes: ["ama"], amaEnvironmentId: environmentId });
+  return c.json(publicMachine(machine), 201);
+});
+
 api.delete("/api/machines/:id", async (c) => {
   markLegacyRuntimeSurface(c);
   const machineId = c.req.param("id");
@@ -856,6 +882,21 @@ api.delete("/api/machines/:id", async (c) => {
   await authCtx.adapter.delete({ model: "agentHost", where: [{ field: "id", value: machineId }] });
 
   return c.json({ ok: true });
+});
+
+// ─── AMA ───
+
+// Provisions the owner's AMA project + session-secret vault. The AccountPage
+// calls this right after the connect redirect so resources exist before the
+// user creates an agent or machine. Idempotent: ensureAmaOwnerIntegration
+// reuses a live project/vault. Requires the AMA account to be linked.
+api.post("/api/ama/provision", async (c) => {
+  if (!isAmaTaskDispatchConfigured(c.env)) {
+    throw new HTTPException(500, { message: "AMA is not configured" });
+  }
+  await requireAmaConnected(c.env.DB, c.env, c.get("ownerId"));
+  const integration = await ensureAmaOwnerIntegration(c.env.DB, c.env, c.get("ownerId"));
+  return c.json({ ok: true, project_id: integration.amaProjectId });
 });
 
 // ─── Models ───
@@ -928,6 +969,9 @@ api.post("/api/agents", async (c) => {
   assertSubagentList(body.subagents);
   assertSubagentRuntime(body.runtime, body.subagents);
   const ownerId = c.get("ownerId");
+  // The agent subsystem is AMA-backed: every AK agent mirrors an AMA agent.
+  // Require AMA connected so we can create the AMA agent before persisting.
+  await requireAmaConnected(c.env.DB, c.env, ownerId);
   await assertRegisteredSubagents(c.env.DB, ownerId, body.subagents);
 
   const existingUsername = await c.env.DB.prepare("SELECT owner_id FROM agents WHERE username = ? LIMIT 1")
@@ -959,7 +1003,17 @@ api.post("/api/agents", async (c) => {
         privateKeyJwk: JSON.parse(latestIdentity.private_key) as JsonWebKey,
       }
     : await createAgentIdentity(c.env.DB, ownerId, email);
-  const prepared = await prepareAgent(c.env.DB, ownerId, body as CreateAgentInput, identity);
+
+  // AMA-first: create the AMA agent before persisting anything. If it throws,
+  // the request fails and no AK agent row is written. Standalone AK (AMA not
+  // configured) skips this entirely — requireAmaConnected was a no-op above.
+  let amaAgentId: string | null = null;
+  if (isAmaTaskDispatchConfigured(c.env)) {
+    const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
+    const amaAgent = await createAmaAgentForAkProfile(c.env.DB, c.env, ownerId, body as CreateAgentInput, amaProjectId, amaRuntimeName(body.runtime));
+    amaAgentId = amaAgent.id;
+  }
+  const prepared = await prepareAgent(c.env.DB, ownerId, body as CreateAgentInput, identity, false, amaAgentId);
 
   // External service — create mailbox (skip if MAILS_ADMIN_TOKEN not configured)
   const mailboxToken = c.env.MAILS_ADMIN_TOKEN && !existingUsername ? await createMailbox(c.env.MAILS_ADMIN_TOKEN, email) : undefined;

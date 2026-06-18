@@ -1,6 +1,6 @@
-import { generateKeypair, isCloudAgentRuntime, type Task } from "@agent-kanban/shared";
+import { generateKeypair, type Task } from "@agent-kanban/shared";
 import { HTTPException } from "hono/http-exception";
-import { getAgent, updateAgentMetadataAnnotations } from "./agentRepo";
+import { getAgent, getAgentAmaId, setAgentAmaId } from "./agentRepo";
 import {
   bindAmaAgentSession,
   closeSession,
@@ -12,12 +12,13 @@ import {
 import {
   ensureAmaOwnerIntegration,
   getAmaProjectId,
-  resolveAmaCloudEnvironmentId,
+  requireAmaProjectId,
   resolveAmaProjectId,
   resolveAmaSessionSecretVaultId,
   upsertAmaOwnerIntegration,
 } from "./amaOwnerIntegrationRepo";
 import {
+  type AmaAgent,
   type AmaRunner,
   createAmaAgent,
   createAmaSessionSecret,
@@ -67,10 +68,18 @@ export async function dispatchTaskToAma(
   if (options.takeover !== true && dispatchBackoffActive(task)) return task;
 
   const assignedTo = task.assigned_to;
-  const amaProjectId = await resolveAmaProjectId(db, env, ownerId);
+  // The project is provisioned eagerly when the owner connects AMA; dispatch
+  // reads it rather than creating it.
+  const amaProjectId = await requireAmaProjectId(db, ownerId);
   const akAgent = await getAgent(db, assignedTo, ownerId);
   if (!akAgent) throw new HTTPException(404, { message: "Assigned agent not found" });
   const amaRuntime = amaRuntimeName(akAgent.runtime);
+  // The AMA agent is created eagerly when the AK agent is created; dispatch
+  // reads the stored id and never creates one.
+  const amaAgentId = await getAgentAmaId(db, assignedTo);
+  if (!amaAgentId) {
+    throw new HTTPException(409, { message: `Agent "${akAgent.username}" has no AMA agent; recreate it with AMA connected` });
+  }
 
   // Atomic dispatch claim: the create/assign request and the cron sweep can
   // race on the same task; without the claim both create a session and the
@@ -93,16 +102,21 @@ export async function dispatchTaskToAma(
     if (!(await claimTaskDispatch(db, task.id))) return task;
   }
 
+  // Environment selection runs over the owner's own machines: local self-hosted
+  // environments (gated on a runnable runner) and cloud-sandbox environments
+  // (AMA scales sandboxes per session, so no runner gate). A user with no
+  // suitable machine or sandbox cannot run the task.
+  const candidates = await listMachineEnvironmentCandidatesForRuntime(db, ownerId, akAgent.runtime);
+  if (candidates.length === 0) {
+    throw new HTTPException(409, {
+      message: `Runtime "${akAgent.runtime}" has no machine or cloud sandbox; add a machine or cloud sandbox to run tasks`,
+    });
+  }
+  const cloudCandidate = candidates.find((candidate) => candidate.hosting === "cloud");
   let amaEnvironmentId: string;
-  if (isCloudAgentRuntime(akAgent.runtime)) {
-    // Cloud runtimes run on AMA's sandbox plane: no machine, no runner
-    // capacity gate — AMA scales sandboxes per session.
-    amaEnvironmentId = await resolveAmaCloudEnvironmentId(db, env, ownerId);
+  if (cloudCandidate) {
+    amaEnvironmentId = cloudCandidate.environmentId;
   } else {
-    const candidates = await listMachineEnvironmentCandidatesForRuntime(db, ownerId, akAgent.runtime);
-    if (candidates.length === 0) {
-      throw new HTTPException(409, { message: `Runtime "${akAgent.runtime}" is not available on any machine` });
-    }
     const machineRuntime = await firstRunnableCandidate(env, ownerId, amaProjectId, candidates, amaRuntime, akAgent.model);
     // Capable machines exist but every runner is busy or offline: leave the task
     // queued and let the dispatch sweep retry when capacity frees up.
@@ -111,11 +125,12 @@ export async function dispatchTaskToAma(
     }
     amaEnvironmentId = machineRuntime.environmentId;
   }
-  const amaAgent = await ensureAmaAgentForAkAgent(db, env, ownerId, assignedTo, amaProjectId, amaRuntime);
 
   const sessionIdentity = await createAkAgentSessionIdentity(db, env, ownerId, assignedTo);
   const vaultId = await resolveAmaSessionSecretVaultId(db, env, ownerId);
-  const cloudDispatch = isCloudAgentRuntime(akAgent.runtime);
+  // A cloud sandbox has no AK skill install or gh CLI, so its session gets the
+  // self-contained step-by-step prompt regardless of the agent's runtime.
+  const cloudDispatch = Boolean(cloudCandidate);
   const resourceRefs = await taskResourceRefs(db, task);
   const githubTokenSecret = await githubTokenSecretRef(db, env, ownerId, amaProjectId, vaultId, sessionIdentity.sessionId, resourceRefs);
   let secret: Awaited<ReturnType<typeof createAmaSessionSecret>> | null = null;
@@ -132,7 +147,7 @@ export async function dispatchTaskToAma(
 
     dispatch = await createAmaTaskSession(env, ownerId, {
       projectId: amaProjectId,
-      agentId: amaAgent.id,
+      agentId: amaAgentId,
       environmentId: amaEnvironmentId,
       runtime: amaRuntime,
       title: `AK task ${task.id}: ${task.title}`,
@@ -167,7 +182,7 @@ export async function dispatchTaskToAma(
   const dispatched = await annotateTask(db, task, {
     "ama.projectId": dispatch.projectId,
     agentId: assignedTo,
-    "ama.agentId": amaAgent.id,
+    "ama.agentId": amaAgentId,
     "ama.environmentId": dispatch.environmentId,
     "ama.runtime": amaRuntime,
     "ama.sessionId": dispatch.sessionId,
@@ -182,23 +197,32 @@ export async function dispatchTaskToAma(
   return dispatched;
 }
 
-export async function ensureAmaAgentForAkAgent(
+// The AK agent fields the AMA agent mirrors. Accepts either a persisted agent
+// or a not-yet-persisted prepared one, so create-agent can build the AMA agent
+// before any local write.
+interface AkAgentProfile {
+  name?: string | null;
+  username: string;
+  bio?: string | null;
+  soul?: string | null;
+  role?: string | null;
+  model?: string | null;
+  skills?: string[] | null;
+  subagents?: string[] | null;
+  handoff_to?: string[] | null;
+}
+
+async function buildAmaAgentInput(
   db: D1,
-  env: Env,
   ownerId: string,
-  akAgentId: string,
+  akAgent: AkAgentProfile,
   projectId: string,
   runtime: string,
-  options: { memoryEnabled?: boolean } = {},
+  options: { memoryEnabled?: boolean },
 ) {
-  const akAgent = await getAgent(db, akAgentId, ownerId);
-  if (!akAgent) throw new HTTPException(404, { message: "Assigned agent not found" });
-  const runtimeProfile = resolveAmaProviderModelProfile({
-    runtime,
-    preferredModel: akAgent.model,
-  });
+  const runtimeProfile = resolveAmaProviderModelProfile({ runtime, preferredModel: akAgent.model });
   const subagents = await Promise.all((akAgent.subagents ?? []).map((id) => getSubagent(db, id, ownerId)));
-  const amaAgentInput = {
+  return {
     projectId,
     name: akAgent.name || akAgent.username,
     description: akAgent.bio,
@@ -213,29 +237,48 @@ export async function ensureAmaAgentForAkAgent(
     metadata: { runtime: runtimeProfile.runtime },
     memoryPolicy: amaAgentMemoryPolicy(options.memoryEnabled === true),
   };
-  const annotations = metadataObject(metadataObject(akAgent.metadata).annotations);
-  const existingAmaAgentId = stringAnnotation(annotations, "ama.agentId");
+}
+
+// Create-first primitive for eager agent creation: builds and creates the AMA
+// agent from a profile WITHOUT reading or writing the local agent. The caller
+// persists the returned id, so a thrown error leaves no partial AK row.
+export async function createAmaAgentForAkProfile(
+  db: D1,
+  env: Env,
+  ownerId: string,
+  akAgent: AkAgentProfile,
+  projectId: string,
+  runtime: string,
+  options: { memoryEnabled?: boolean } = {},
+): Promise<AmaAgent> {
+  const amaAgentInput = await buildAmaAgentInput(db, ownerId, akAgent, projectId, runtime, options);
+  return await createAmaAgent(env, ownerId, amaAgentInput);
+}
+
+export async function ensureAmaAgentForAkAgent(
+  db: D1,
+  env: Env,
+  ownerId: string,
+  akAgentId: string,
+  projectId: string,
+  runtime: string,
+  options: { memoryEnabled?: boolean } = {},
+) {
+  const akAgent = await getAgent(db, akAgentId, ownerId);
+  if (!akAgent) throw new HTTPException(404, { message: "Assigned agent not found" });
+  const amaAgentInput = await buildAmaAgentInput(db, ownerId, akAgent, projectId, runtime, options);
+  const existingAmaAgentId = akAgent.ama_agent_id;
   if (existingAmaAgentId) {
     const live = await readAmaAgent(env, ownerId, projectId, existingAmaAgentId);
     if (live) {
       await updateAmaAgentConfig(env, ownerId, projectId, live.id, amaAgentInput);
-      await updateAgentMetadataAnnotations(db, ownerId, akAgentId, {
-        "ama.projectId": projectId,
-        "ama.agentId": live.id,
-        "ama.provider": runtimeProfile.provider,
-        ...(runtimeProfile.model ? { "ama.model": runtimeProfile.model } : { "ama.model": null }),
-      });
+      await setAgentAmaId(db, ownerId, akAgentId, live.id);
       return live;
     }
   }
 
   const agent = await createAmaAgent(env, ownerId, amaAgentInput);
-  await updateAgentMetadataAnnotations(db, ownerId, akAgentId, {
-    "ama.projectId": projectId,
-    "ama.agentId": agent.id,
-    "ama.provider": agent.provider,
-    ...(agent.model ? { "ama.model": agent.model } : {}),
-  });
+  await setAgentAmaId(db, ownerId, akAgentId, agent.id);
   return agent;
 }
 

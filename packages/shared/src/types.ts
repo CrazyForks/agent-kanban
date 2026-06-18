@@ -132,11 +132,14 @@ export interface MachineRuntime {
   checked_at: string;
 }
 
+export type MachineHosting = "local" | "cloud";
+
 export interface Machine {
   id: string;
   owner_id: string;
   name: string;
   status: MachineStatus;
+  hosting: MachineHosting;
   os: string;
   version: string;
   runtimes: MachineRuntime[];
@@ -235,6 +238,7 @@ export interface Agent {
   public_key: string;
   fingerprint: string;
   builtin: number;
+  ama_agent_id: string | null;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;

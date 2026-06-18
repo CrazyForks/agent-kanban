@@ -104,7 +104,11 @@ export const api = {
   machines: {
     list: () => request<any[]>("GET", "/machines"),
     get: (id: string) => request<any>("GET", `/machines/${id}`),
+    createCloud: (input?: { name?: string }) => request<any>("POST", "/machines/cloud", input ?? {}),
     delete: (id: string) => request<void>("DELETE", `/machines/${id}`),
+  },
+  ama: {
+    provision: () => request<{ ok: boolean; project_id: string }>("POST", "/ama/provision"),
   },
   subagents: {
     list: () => request<any[]>("GET", "/subagents"),

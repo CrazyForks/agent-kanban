@@ -13,7 +13,7 @@
 import { randomUUID } from "node:crypto";
 import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { createTestAgent, seedUser, setupMiniflare } from "./helpers/db";
+import { addCloudSandboxMachine, createTestAgent, seedUser, setupMiniflare } from "./helpers/db";
 
 const OWNER = "ama-sweep-test-user";
 
@@ -1589,13 +1589,12 @@ describe("amaRunner installAmaRunner temp dir cleanup", () => {
 
 // ─── 8. Coverage gap: amaOwnerIntegrationRepo functions ─────────────────────
 
-describe("resolveAmaCloudEnvironmentId", () => {
-  it("creates a new cloud environment when none exists in metadata", async () => {
-    const { resolveAmaCloudEnvironmentId } = await import("../apps/web/server/amaOwnerIntegrationRepo");
+describe("createAmaCloudSandboxEnvironment", () => {
+  it("creates a fresh cloud environment under the owner's project", async () => {
+    const { createAmaCloudSandboxEnvironment } = await import("../apps/web/server/amaOwnerIntegrationRepo");
 
     const cloudOwner = `cloud-env-owner-${randomUUID()}`;
     await seedUser(db, cloudOwner, `${cloudOwner}@test.local`);
-    // Seed integration with no cloudEnvironmentId in metadata
     await db
       .prepare(
         `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
@@ -1605,63 +1604,62 @@ describe("resolveAmaCloudEnvironmentId", () => {
       .run();
 
     const newEnvId = "cloud_env_new_123";
+    let createBody: Record<string, any> | null = null;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      // readAmaProject: alive
+      // readAmaProject: alive (ensureAmaOwnerIntegration validation)
       if (url === "https://ama.test/api/v1/projects/project_cloud_new")
         return new Response(JSON.stringify({ id: "project_cloud_new", name: "Workspace" }), { status: 200 });
       // createAmaEnvironment: returns a new cloud env
-      if (url === "https://ama.test/api/v1/environments" && (init as any)?.method === "POST")
+      if (url === "https://ama.test/api/v1/environments" && (init as any)?.method === "POST") {
+        createBody = JSON.parse(String(init?.body)) as Record<string, any>;
         return new Response(JSON.stringify({ id: newEnvId }), { status: 201 });
+      }
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
 
     const env = makeEnv();
-    const result = await resolveAmaCloudEnvironmentId(db, env, cloudOwner);
+    const result = await createAmaCloudSandboxEnvironment(db, env, cloudOwner, "Cloud sandbox");
 
-    expect(result).toBe(newEnvId);
-    // Verify it was persisted to the DB
-    const row = await db.prepare("SELECT metadata FROM ama_owner_integrations WHERE owner_id = ?").bind(cloudOwner).first<{ metadata: string }>();
-    const meta = JSON.parse(row!.metadata ?? "{}") as Record<string, unknown>;
-    expect(meta.cloudEnvironmentId).toBe(newEnvId);
+    expect(result).toEqual({ projectId: "project_cloud_new", environmentId: newEnvId });
+    expect(createBody?.hostingMode).toBe("cloud");
   });
 
-  it("returns the cached cloudEnvironmentId when the environment is alive", async () => {
-    const { resolveAmaCloudEnvironmentId } = await import("../apps/web/server/amaOwnerIntegrationRepo");
+  it("always provisions a new environment (no per-owner singleton reuse)", async () => {
+    const { createAmaCloudSandboxEnvironment } = await import("../apps/web/server/amaOwnerIntegrationRepo");
 
-    const cachedOwner = `cloud-env-cached-owner-${randomUUID()}`;
-    await seedUser(db, cachedOwner, `${cachedOwner}@test.local`);
-    const existingEnvId = "cloud_env_cached_456";
+    const owner = `cloud-env-twice-owner-${randomUUID()}`;
+    await seedUser(db, owner, `${owner}@test.local`);
     await db
       .prepare(
         `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-         VALUES (?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, '{}')`,
       )
-      .bind(cachedOwner, "project_cloud_cached", cachedOwner, "vault_cloud_cached", JSON.stringify({ cloudEnvironmentId: existingEnvId }))
+      .bind(owner, "project_cloud_twice", owner, "vault_cloud_twice")
       .run();
 
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    let counter = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      // readAmaProject: alive
-      if (url === "https://ama.test/api/v1/projects/project_cloud_cached")
-        return new Response(JSON.stringify({ id: "project_cloud_cached", name: "Workspace" }), { status: 200 });
-      // amaEnvironmentExists: the cached environment is alive
-      if (url === `https://ama.test/api/v1/environments/${existingEnvId}`)
-        return new Response(JSON.stringify({ id: existingEnvId, name: "Cloud sandbox" }), { status: 200 });
+      if (url === "https://ama.test/api/v1/projects/project_cloud_twice")
+        return new Response(JSON.stringify({ id: "project_cloud_twice", name: "Workspace" }), { status: 200 });
+      if (url === "https://ama.test/api/v1/environments" && (init as any)?.method === "POST") {
+        counter += 1;
+        return new Response(JSON.stringify({ id: `cloud_env_${counter}` }), { status: 201 });
+      }
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
 
     const env = makeEnv();
-    const result = await resolveAmaCloudEnvironmentId(db, env, cachedOwner);
+    const first = await createAmaCloudSandboxEnvironment(db, env, owner, "Sandbox A");
+    const second = await createAmaCloudSandboxEnvironment(db, env, owner, "Sandbox B");
 
-    // Should return the cached ID without creating a new environment
-    expect(result).toBe(existingEnvId);
-    const postCalls = (fetchMock.mock.calls as [URL | string][]).filter(([url]) => String(url) === "https://ama.test/api/v1/environments");
-    expect(postCalls).toHaveLength(0);
+    expect(first.environmentId).toBe("cloud_env_1");
+    expect(second.environmentId).toBe("cloud_env_2");
   });
 });
 
@@ -1904,18 +1902,20 @@ describe("dispatchTaskToAma with cloud runtime (ama)", () => {
 
     const cloudRtOwner = `cloud-rt-owner-${randomUUID()}`;
     await seedUser(db, cloudRtOwner, `${cloudRtOwner}@test.local`);
-    // Seed integration with a pre-existing cloudEnvironmentId
     const cloudEnvId = "cloud_env_rt_123";
     await db
       .prepare(
         `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
          VALUES (?, ?, ?, ?, ?)`,
       )
-      .bind(cloudRtOwner, "project_cloud_rt", cloudRtOwner, "vault_cloud_rt", JSON.stringify({ cloudEnvironmentId: cloudEnvId }))
+      .bind(cloudRtOwner, "project_cloud_rt", cloudRtOwner, "vault_cloud_rt", "{}")
       .run();
+    // A cloud-sandbox machine carries the cloud env; dispatch selects it as the
+    // candidate (no runner gate) for the agent's cloud runtime.
+    await addCloudSandboxMachine(db, cloudRtOwner, ["ama"], cloudEnvId);
 
     const board = await createBoard(db, cloudRtOwner, `cloud-rt-board-${randomUUID()}`, "ops");
-    // Agent with "ama" runtime — isCloudAgentRuntime returns true; must pin a catalog model
+    // Agent with "ama" runtime — must pin a catalog model
     const agent = await createTestAgent(db, cloudRtOwner, {
       name: "CloudRtAgent",
       username: `cloud-rt-agent-${randomUUID()}`,

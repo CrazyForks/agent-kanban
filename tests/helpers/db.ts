@@ -44,6 +44,8 @@ export async function applyMigrations(db: D1Database) {
     "0022_ama_runtime_integration.sql",
     "0023_ama_session_secret_credential.sql",
     "0024_task_actions_dispatch.sql",
+    "0025_machine_hosting.sql",
+    "0026_agent_ama_agent_id.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
@@ -82,6 +84,36 @@ export async function linkAmaAccount(db: D1Database, userId: string, accessToken
     .run();
 }
 
+// Sets the agent's ama_agent_id column (the AMA agent is now created eagerly at
+// agent creation; dispatch reads this id). Mirrors what POST /api/agents stores.
+export async function setAgentAmaId(db: D1Database, agentId: string, amaAgentId: string) {
+  await db.prepare("UPDATE agents SET ama_agent_id = ? WHERE id = ?").bind(amaAgentId, agentId).run();
+}
+
+// Inserts a cloud-sandbox machine (no device/daemon) whose environment is a
+// dispatch candidate for the given runtimes.
+export async function addCloudSandboxMachine(db: D1Database, ownerId: string, runtimes: string[], amaEnvironmentId: string) {
+  const now = new Date().toISOString();
+  const id = `cloud-machine-${ownerId}-${amaEnvironmentId}`;
+  await db
+    .prepare(
+      `INSERT INTO machines (id, owner_id, device_id, name, os, version, runtimes, status, hosting, ama_environment_id, last_heartbeat_at, created_at)
+       VALUES (?, ?, ?, 'Cloud sandbox', 'cloud', 'cloud', ?, 'online', 'cloud', ?, ?, ?)
+       ON CONFLICT(owner_id, device_id) DO UPDATE SET ama_environment_id = excluded.ama_environment_id, runtimes = excluded.runtimes`,
+    )
+    .bind(
+      id,
+      ownerId,
+      `cloud-${id}`,
+      JSON.stringify(runtimes.map((name) => ({ name, status: "ready", checked_at: now }))),
+      amaEnvironmentId,
+      now,
+      now,
+    )
+    .run();
+  return id;
+}
+
 export async function signUpVerifiedUser(
   db: D1Database,
   auth: any,
@@ -114,7 +146,12 @@ export async function createTestAgent(db: D1Database, ownerId: string, input: Cr
 
   const { createAgent, createAgentIdentity } = await import("../../apps/web/server/agentRepo");
   const identity = await createAgentIdentity(db, ownerId, `${input.username}@mails.agent-kanban.dev`);
-  return createAgent(db, ownerId, input, identity, builtin);
+  const agent = await createAgent(db, ownerId, input, identity, builtin);
+  // Real agents are created eagerly with a backing AMA agent (POST /api/agents
+  // stores agents.ama_agent_id); dispatch reads it. Mirror that for test agents
+  // so they are dispatchable. Builtin/seed agents may exist without AMA.
+  if (!builtin) await setAgentAmaId(db, agent.id, `ama-agent-${agent.id}`);
+  return agent;
 }
 
 export async function createTestSubagent(db: D1Database, ownerId: string, input: CreateSubagentInput) {

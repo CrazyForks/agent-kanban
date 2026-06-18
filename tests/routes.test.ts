@@ -4,7 +4,16 @@ import { randomUUID } from "node:crypto";
 import { SignJWT } from "jose";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { createTestAgent, createTestEnv, createTestSubagent, linkAmaAccount, seedUser, setupMiniflare, signUpVerifiedUser } from "./helpers/db";
+import {
+  createTestAgent,
+  createTestEnv,
+  createTestSubagent,
+  linkAmaAccount,
+  seedUser,
+  setAgentAmaId,
+  setupMiniflare,
+  signUpVerifiedUser,
+} from "./helpers/db";
 
 const BETTER_AUTH_URL = "http://localhost:8788";
 const env = createTestEnv();
@@ -257,6 +266,9 @@ describe("routes", () => {
       handoff_to: ["worker"],
       skills: ["saltbo/agent-kanban@agent-kanban"],
     });
+    // The AMA agent is created eagerly at agent creation; the maintainer route
+    // now reads the stored ama_agent_id and reconciles config (read + update).
+    await setAgentAmaId(env.DB, maintainerAgent.id, "ama_agent_maintainer");
     const scheduleRequests: any[] = [];
     const updateRequests: any[] = [];
     const archiveRequests: string[] = [];
@@ -300,11 +312,9 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/providers/provider_codex/models" && init?.method === "POST") {
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
-      if (url === "https://ama.test/api/v1/agents") {
-        const body = JSON.parse(String(init?.body)) as Record<string, any>;
-        expect(body.skills).toEqual(["saltbo/agent-kanban@agent-kanban"]);
-        expect(body.handoffPolicy).toEqual({ enabled: true, targets: [{ role: "worker" }] });
-        expect(body.memoryPolicy).toEqual({ enabled: true, mode: "notebook", scope: "project_agent" });
+      // ensureAmaAgentForAkAgent reads the stored ama_agent_id then updates its
+      // config (the AMA agent was created eagerly at agent creation).
+      if (url === "https://ama.test/api/v1/agents/ama_agent_maintainer" && (init?.method ?? "GET") === "GET") {
         return new Response(
           JSON.stringify({
             id: "ama_agent_maintainer",
@@ -313,8 +323,15 @@ describe("routes", () => {
             providerId: "provider_codex",
             model: "gpt-5.3-codex",
           }),
-          { status: 201 },
+          { status: 200 },
         );
+      }
+      if (url === "https://ama.test/api/v1/agents/ama_agent_maintainer" && init?.method === "PATCH") {
+        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+        expect(body.skills).toEqual(["saltbo/agent-kanban@agent-kanban"]);
+        expect(body.handoffPolicy).toEqual({ enabled: true, targets: [{ role: "worker" }] });
+        expect(body.memoryPolicy).toEqual({ enabled: true, mode: "notebook", scope: "project_agent" });
+        return new Response(JSON.stringify({ id: "ama_agent_maintainer", projectId: "project_123", name: "agent" }), { status: 200 });
       }
       if (url === "https://ama.test/api/v1/triggers") {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
@@ -553,6 +570,7 @@ describe("routes", () => {
       handoff_to: ["worker"],
       skills: ["saltbo/agent-kanban@agent-kanban"],
     });
+    await setAgentAmaId(env.DB, patchAgent.id, "ama_agent_patch");
 
     const capturedPatchHeaders: Record<string, string>[] = [];
 
@@ -596,7 +614,8 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/providers/provider_codex_patch/models" && init?.method === "POST") {
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
-      if (url === "https://ama.test/api/v1/agents") {
+      // Maintainer route reconciles the eagerly-created AMA agent (read + patch).
+      if (url === "https://ama.test/api/v1/agents/ama_agent_patch" && (init?.method ?? "GET") === "GET") {
         return new Response(
           JSON.stringify({
             id: "ama_agent_patch",
@@ -605,8 +624,11 @@ describe("routes", () => {
             providerId: "provider_codex_patch",
             model: "gpt-5.3-codex",
           }),
-          { status: 201 },
+          { status: 200 },
         );
+      }
+      if (url === "https://ama.test/api/v1/agents/ama_agent_patch" && init?.method === "PATCH") {
+        return new Response(JSON.stringify({ id: "ama_agent_patch", projectId: amaProjectId, name: "agent" }), { status: 200 });
       }
       if (url === "https://ama.test/api/v1/triggers" && init?.method === "POST") {
         return new Response(
@@ -714,6 +736,7 @@ describe("routes", () => {
       handoff_to: ["worker"],
       skills: ["saltbo/agent-kanban@agent-kanban"],
     });
+    await setAgentAmaId(env.DB, deleteAgent.id, "ama_agent_delete");
 
     const capturedDeleteHeaders: Record<string, string>[] = [];
 
@@ -757,7 +780,8 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/providers/provider_codex_delete/models" && init?.method === "POST") {
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
-      if (url === "https://ama.test/api/v1/agents") {
+      // Maintainer route reconciles the eagerly-created AMA agent (read + patch).
+      if (url === "https://ama.test/api/v1/agents/ama_agent_delete" && (init?.method ?? "GET") === "GET") {
         return new Response(
           JSON.stringify({
             id: "ama_agent_delete",
@@ -766,8 +790,11 @@ describe("routes", () => {
             providerId: "provider_codex_delete",
             model: "gpt-5.3-codex",
           }),
-          { status: 201 },
+          { status: 200 },
         );
+      }
+      if (url === "https://ama.test/api/v1/agents/ama_agent_delete" && init?.method === "PATCH") {
+        return new Response(JSON.stringify({ id: "ama_agent_delete", projectId: amaProjectId, name: "agent" }), { status: 200 });
       }
       if (url === "https://ama.test/api/v1/triggers" && init?.method === "POST") {
         return new Response(
@@ -1901,6 +1928,9 @@ describe("routes", () => {
       skills: ["saltbo/agent-kanban@agent-kanban"],
       subagents: [reviewer.id],
     });
+    // The AMA agent is created eagerly at agent creation; dispatch reads the
+    // stored ama_agent_id rather than creating one.
+    await setAgentAmaId(env.DB, agentId, "ama_agent_123");
 
     const taskDetail = "Use the detail alias in the task dispatch prompt.";
     let runtimePrivateKeyJwk: JsonWebKey | null = null;
@@ -1935,37 +1965,6 @@ describe("routes", () => {
         expect(body.secret.secretValue).toContain('"kty":"OKP"');
         runtimePrivateKeyJwk = JSON.parse(body.secret.secretValue) as JsonWebKey;
         return new Response(JSON.stringify({ id: "vaultcred_123", activeVersionId: "vaultver_123" }), { status: 201 });
-      }
-      if (url === "https://ama.test/api/v1/agents") {
-        const body = JSON.parse(String(init?.body)) as Record<string, any>;
-        expect(body.metadata).toMatchObject({ runtime: "claude-code" });
-        // Provider is now the static vendor slug from the global catalog, not a provider id
-        expect(body.providerId).toBe("anthropic");
-        expect(body.skills).toEqual(["saltbo/agent-kanban@agent-kanban"]);
-        expect(body.subagents).toEqual([
-          {
-            id: reviewer.id,
-            username: "reviewer",
-            name: "Review Agent",
-            bio: null,
-            instructions: "Review implementation quality.",
-            role: "reviewer",
-            modelPreferences: { claude: "claude-sonnet-4-6" },
-            skills: ["saltbo/agent-kanban@agent-kanban"],
-          },
-        ]);
-        expect(body.handoffPolicy).toEqual({ enabled: true, targets: [{ role: "enduser" }] });
-        expect(body).not.toHaveProperty("model");
-        return new Response(
-          JSON.stringify({
-            id: "ama_agent_123",
-            projectId: "project_123",
-            name: body.name,
-            providerId: body.providerId,
-            model: null,
-          }),
-          { status: 201 },
-        );
       }
       if (url === "https://ama.test/api/v1/sessions") {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
@@ -2033,8 +2032,10 @@ describe("routes", () => {
       const bridgeMachine = await env.DB.prepare("SELECT id FROM machines WHERE device_id = 'ama-runtime-bridge'").first<{ id: string }>();
       expect(bridgeMachine).toBeNull();
       const calledUrls = fetchMock.mock.calls.map(([url]) => String(url));
-      // Provider resolution is now pure/local (no AMA provider CRUD calls)
-      expect(calledUrls).toContain("https://ama.test/api/v1/agents");
+      // Dispatch no longer creates the AMA agent (created eagerly at agent
+      // creation); it reads the stored id and only creates the session.
+      expect(calledUrls).not.toContain("https://ama.test/api/v1/agents");
+      expect(calledUrls).toContain("https://ama.test/api/v1/sessions");
 
       expect(runtimePrivateKeyJwk).toBeTruthy();
       const runtimePrivateKey = await crypto.subtle.importKey("jwk", runtimePrivateKeyJwk!, { name: "Ed25519" } as any, true, ["sign"]);
@@ -2223,6 +2224,7 @@ describe("routes", () => {
       username: `release-redispatch-${randomUUID()}`,
       runtime: "codex",
     });
+    await setAgentAmaId(env.DB, tempAgent.id, "ama_agent_release");
 
     let sessionCreateCount = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

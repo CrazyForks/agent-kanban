@@ -19,14 +19,11 @@ test.describe("Machines Page", () => {
     await expect(dialog).toBeVisible();
     await expect(dialog.getByText("Add Machine")).toBeVisible();
 
-    // expect: Two options are presented: 'Your Computer' (enabled) and 'Cloud Sandbox' (disabled/coming soon)
+    // expect: Two options are presented: 'Your Computer' and 'Cloud Sandbox', both enabled.
     await expect(dialog.getByRole("button", { name: /Your Computer/ })).toBeVisible();
     await expect(dialog.getByRole("button", { name: /Your Computer/ })).toBeEnabled();
 
     await expect(dialog.getByRole("button", { name: /Cloud Sandbox/ })).toBeVisible();
-    await expect(dialog.getByRole("button", { name: /Cloud Sandbox/ })).toBeDisabled();
-
-    // expect: The 'Cloud Sandbox' option is visually greyed out with 'Coming soon' text
-    await expect(dialog.getByText("Coming soon")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: /Cloud Sandbox/ })).toBeEnabled();
   });
 });

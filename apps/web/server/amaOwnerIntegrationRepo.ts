@@ -1,4 +1,4 @@
-import { amaEnvironmentExists, createAmaEnvironment, createAmaProject, createAmaVault, readAmaProject } from "./amaRuntime";
+import { createAmaEnvironment, createAmaProject, createAmaVault, readAmaProject } from "./amaRuntime";
 import type { D1 } from "./db";
 import type { Env } from "./types";
 
@@ -98,8 +98,7 @@ export async function ensureAmaOwnerIntegration(db: D1, env: Env, ownerId: strin
     amaProjectId: projectId,
     externalTenantId: existing?.externalTenantId ?? ownerId,
     sessionSecretVaultId: reuseVault ? existing!.sessionSecretVaultId : (vault?.id ?? null),
-    // A re-provisioned project starts with no cloud environment; drop the stale
-    // cloudEnvironmentId so resolveAmaCloudEnvironmentId recreates it.
+    // A re-provisioned project's cloud sandboxes are gone; drop stale metadata.
     metadata: projectAlive ? (existing?.metadata ?? {}) : {},
   });
 }
@@ -113,34 +112,40 @@ export async function getAmaProjectId(db: D1, ownerId: string): Promise<string |
   return (await getAmaOwnerIntegration(db, ownerId))?.amaProjectId ?? null;
 }
 
+// Read-only project id for dispatch: the project is provisioned eagerly when
+// the owner connects AMA, so dispatch must find it rather than create it. A
+// missing integration means the owner never connected (or provisioning never
+// ran) — fail loudly rather than silently provisioning mid-dispatch.
+export async function requireAmaProjectId(db: D1, ownerId: string): Promise<string> {
+  const projectId = await getAmaProjectId(db, ownerId);
+  if (!projectId) {
+    throw new Error(`No AMA project for owner ${ownerId}; connect AMA before dispatching tasks`);
+  }
+  return projectId;
+}
+
 export async function resolveAmaExternalTenantId(db: D1, env: Env, ownerId: string): Promise<string> {
   return (await ensureAmaOwnerIntegration(db, env, ownerId)).externalTenantId;
 }
 
-// One cloud AMA environment per owner: cloud sessions are sandbox-isolated by
-// AMA, so a single environment serves every cloud-runtime task of the tenant.
-export async function resolveAmaCloudEnvironmentId(db: D1, env: Env, ownerId: string): Promise<string> {
+// Creates a fresh cloud-sandbox AMA environment for a cloud-sandbox machine.
+// Each cloud sandbox is its own environment (AMA scales sandboxes per session),
+// so this always provisions a new one rather than reusing a per-owner singleton.
+export async function createAmaCloudSandboxEnvironment(
+  db: D1,
+  env: Env,
+  ownerId: string,
+  name: string,
+): Promise<{ projectId: string; environmentId: string }> {
   const integration = await ensureAmaOwnerIntegration(db, env, ownerId);
-  const existing = integration.metadata.cloudEnvironmentId;
-  if (typeof existing === "string" && existing && (await amaEnvironmentExists(env, ownerId, integration.amaProjectId, existing))) {
-    return existing;
-  }
-
   const environment = await createAmaEnvironment(env, ownerId, {
     projectId: integration.amaProjectId,
-    name: "Cloud sandbox",
-    description: `Cloud execution environment for AK owner ${ownerId}.`,
+    name,
+    description: `Cloud sandbox for AK owner ${ownerId}.`,
     hostingMode: "cloud",
     metadata: { ownerId },
   });
-  await upsertAmaOwnerIntegration(db, {
-    ownerId,
-    amaProjectId: integration.amaProjectId,
-    externalTenantId: integration.externalTenantId,
-    sessionSecretVaultId: integration.sessionSecretVaultId,
-    metadata: { ...integration.metadata, cloudEnvironmentId: environment.id },
-  });
-  return environment.id;
+  return { projectId: integration.amaProjectId, environmentId: environment.id };
 }
 
 export async function resolveAmaSessionSecretVaultId(db: D1, env: Env, ownerId: string): Promise<string> {

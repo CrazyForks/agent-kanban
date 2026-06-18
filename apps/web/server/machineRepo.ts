@@ -1,4 +1,4 @@
-import type { AgentRuntime, Machine, MachineRuntime, MachineRuntimeStatus, MachineWithAgents, UsageInfo } from "@agent-kanban/shared";
+import type { AgentRuntime, Machine, MachineHosting, MachineRuntime, MachineRuntimeStatus, MachineWithAgents, UsageInfo } from "@agent-kanban/shared";
 import { AGENT_RUNTIMES, MACHINE_STALE_TIMEOUT_MS, normalizeRuntime, RUNTIME_LABELS } from "@agent-kanban/shared";
 import { type D1, newId, parseJsonFields } from "./db";
 
@@ -38,6 +38,28 @@ export async function upsertMachine(db: D1, ownerId: string, info: CreateMachine
   return parseMachine(row!);
 }
 
+// A cloud-sandbox machine: no device, no daemon, no heartbeat. It declares the
+// cloud runtimes it can host and carries the cloud AMA environment dispatch
+// targets. status stays 'online' so the UI shows it as available.
+export async function createCloudMachine(
+  db: D1,
+  ownerId: string,
+  info: { name: string; runtimes: AgentRuntime[]; amaEnvironmentId: string },
+): Promise<MachineRecord> {
+  const id = newId();
+  const now = new Date().toISOString();
+  const runtimes = info.runtimes.map((runtime) => ({ name: runtime, status: "ready" as const, checked_at: now }));
+  await db
+    .prepare(
+      `INSERT INTO machines (id, owner_id, device_id, name, os, version, runtimes, status, hosting, ama_environment_id, last_heartbeat_at, created_at)
+       VALUES (?, ?, ?, ?, 'cloud', 'cloud', ?, 'online', 'cloud', ?, ?, ?)`,
+    )
+    .bind(id, ownerId, `cloud-${id}`, info.name, JSON.stringify(runtimes), info.amaEnvironmentId, now, now)
+    .run();
+  const row = await db.prepare("SELECT * FROM machines WHERE id = ?").bind(id).first<MachineRecord>();
+  return parseMachine(row!);
+}
+
 export async function updateMachineAmaEnvironment(
   db: D1,
   machineId: string,
@@ -53,17 +75,22 @@ export async function updateMachineAmaEnvironment(
   return parseMachine(row!);
 }
 
-export async function listMachineEnvironmentCandidatesForRuntime(
-  db: D1,
-  ownerId: string,
-  runtime: string,
-): Promise<{ machineId: string; environmentId: string }[]> {
+export interface MachineEnvironmentCandidate {
+  machineId: string;
+  environmentId: string;
+  hosting: MachineHosting;
+}
+
+// Candidate environments for a runtime: any of the owner's machines (local or
+// cloud) whose declared runtimes include it. Cloud sandboxes sort first so
+// dispatch prefers them — AMA scales them per session, no runner gate.
+export async function listMachineEnvironmentCandidatesForRuntime(db: D1, ownerId: string, runtime: string): Promise<MachineEnvironmentCandidate[]> {
   const values = runtimeMatchValues(runtime);
   const placeholders = values.map(() => "?").join(", ");
   const result = await db
     .prepare(
       `
-      SELECT m.id, m.ama_environment_id AS environment_id
+      SELECT m.id, m.ama_environment_id AS environment_id, m.hosting AS hosting
       FROM machines m, json_each(m.runtimes) rt
       WHERE m.owner_id = ?
         AND (
@@ -74,12 +101,12 @@ export async function listMachineEnvironmentCandidatesForRuntime(
           )
         )
         AND m.ama_environment_id IS NOT NULL
-      ORDER BY COALESCE(m.last_heartbeat_at, m.created_at) DESC
+      ORDER BY (m.hosting = 'cloud') DESC, COALESCE(m.last_heartbeat_at, m.created_at) DESC
     `,
     )
     .bind(ownerId, ...values, ...values)
-    .all<{ id: string; environment_id: string }>();
-  return result.results.map((row) => ({ machineId: row.id, environmentId: row.environment_id }));
+    .all<{ id: string; environment_id: string; hosting: MachineHosting }>();
+  return result.results.map((row) => ({ machineId: row.id, environmentId: row.environment_id, hosting: row.hosting }));
 }
 
 export async function deleteMachine(db: D1, machineId: string, ownerId: string): Promise<boolean> {
