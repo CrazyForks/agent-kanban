@@ -62,7 +62,8 @@ After every significant code change, follow this sequence:
 
 **Ownership rule**: you (main agent) only modify source code. Test code is owned by test agents — all test modifications go through them.
 3. **Regression** — run build + type check + full test suite to catch breakage.
-   - `pnpm build && pnpm tsc --noEmit && npx vitest run`
+   - `pnpm build && pnpm typecheck && npx vitest run`
+   - Use `pnpm typecheck`, NOT `tsc --noEmit` at the root: the root tsconfig is solution-style (`files: []` + `references`), so `tsc --noEmit` there checks nothing. `pnpm typecheck` runs `tsc --noEmit` per project (shared, cli, web/server/worker) and actually catches type errors.
    - Any failure → fix and re-run. If fix touches source code, go back to step 1.
 4. **Daemon smoke test** — if changes touch daemon code (`packages/cli/src/daemon/`), run `./scripts/daemon-smoke-test.sh` and ensure it passes before considering the task done.
    - Before smoke, always refresh the local CLI with `bash scripts/install-cli.sh`.

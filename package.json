@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "pnpm --filter @agent-kanban/web dev",
     "build": "pnpm --filter @agent-kanban/shared build && pnpm --filter @agent-kanban/web build",
+    "typecheck": "tsc -p packages/shared/tsconfig.json --noEmit && tsc -p packages/cli/tsconfig.json --noEmit && tsc -p apps/web/tsconfig.json --noEmit",
     "test": "vitest",
     "lint": "pnpm -r --parallel run lint",
     "format": "biome format --write .",
