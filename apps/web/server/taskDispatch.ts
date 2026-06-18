@@ -164,8 +164,7 @@ export async function dispatchTaskToAma(
     throw error;
   }
 
-  await addTaskAction(db, task.id, "system", "system", "dispatched", null, sessionIdentity.sessionId);
-  return await annotateTask(db, task, {
+  const dispatched = await annotateTask(db, task, {
     "ama.projectId": dispatch.projectId,
     agentId: assignedTo,
     "ama.agentId": amaAgent.id,
@@ -177,6 +176,10 @@ export async function dispatchTaskToAma(
     "ama.dispatch.lastReason": null,
     ...(githubTokenSecret?.credentialId ? { "ama.ghCredentialId": githubTokenSecret.credentialId } : {}),
   });
+  // Timeline entry last: a crash here leaves the task correctly marked accepted,
+  // just missing one cosmetic note (better than a note with no accepted state).
+  await addTaskAction(db, task.id, "system", "system", "dispatched", null, sessionIdentity.sessionId);
+  return dispatched;
 }
 
 export async function ensureAmaAgentForAkAgent(
@@ -689,11 +692,17 @@ function dispatchBackoffActive(task: Task): boolean {
 
 // Records a failed dispatch attempt: clears the binding result and arms the
 // backoff. Returns the updated task.
-// Human-readable, one-line reason for the task timeline (raw error detail stays
-// in the logs). Strips the noisy "AMA <verb> failed with HTTP NNN:" envelope.
+// One-line reason for the task timeline. The wrapped AMA error is
+// "AMA <op> failed[ HTTP NNN][: <raw response body>]". Keep the envelope
+// (operation + status) and, when the body carries a structured human message,
+// append just that field — never the raw response body, which can carry
+// internal detail (credential ids, etc.). The raw error stays in the worker logs.
 function dispatchErrorReason(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.replace(/\s+/g, " ").trim().slice(0, 300) || "unknown error";
+  const raw = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
+  const envelope = raw.split(/:\s*[{[]/, 1)[0]?.trim() ?? raw;
+  const bodyMessage = raw.match(/"(?:message|detail|error)"\s*:\s*"([^"]{1,160})"/)?.[1];
+  const reason = bodyMessage ? `${envelope}: ${bodyMessage}` : envelope;
+  return (reason || raw).slice(0, 300) || "unknown error";
 }
 
 async function recordDispatchFailure(db: D1, task: Task, error: unknown): Promise<Task> {
