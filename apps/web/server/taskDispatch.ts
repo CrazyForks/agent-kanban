@@ -618,13 +618,21 @@ export async function reconcileAmaBoundTasks(db: D1, env: Env): Promise<void> {
           continue;
         }
       }
+      const deadReason =
+        status === null
+          ? "runtime session ended unexpectedly"
+          : status === "idle"
+            ? "runtime session went idle without being claimed"
+            : status === "pending"
+              ? "runtime session stuck pending; no runner picked it up"
+              : `runtime session ended in state '${status}'`;
       const released = await releaseTaskRuntimeBinding(db, env, task, "runtime_error");
       if (row.status === "in_progress") {
         await releaseTask(db, task.id, "machine", "system", "machine", "released");
       }
       // The session died before the task progressed; arm the backoff so the
       // dispatch sweep does not immediately re-dispatch into the same failure.
-      await recordDispatchFailure(db, released);
+      await recordDispatchFailure(db, released, new Error(deadReason));
     } catch (error) {
       logger.warn(`reconcile sweep failed for task ${row.id}: ${error}`);
     }
@@ -698,6 +706,7 @@ function dispatchBackoffActive(task: Task): boolean {
 // append just that field — never the raw response body, which can carry
 // internal detail (credential ids, etc.). The raw error stays in the worker logs.
 function dispatchErrorReason(error: unknown): string {
+  if (error == null) return "dispatch failed";
   const raw = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
   const envelope = raw.split(/:\s*[{[]/, 1)[0]?.trim() ?? raw;
   const bodyMessage = raw.match(/"(?:message|detail|error)"\s*:\s*"([^"]{1,160})"/)?.[1];
