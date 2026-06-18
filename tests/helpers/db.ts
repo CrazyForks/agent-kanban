@@ -62,6 +62,24 @@ export async function seedUser(db: D1Database, id: string, email: string) {
     .prepare("INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES (?, ?, ?, 1, ?, ?)")
     .bind(id, "Test User", email, now, now)
     .run();
+  // AK calls AMA as the logged-in user's own linked AMA account; seed that link
+  // so dispatch paths can resolve a per-user token (getAccessToken). AK stores
+  // OAuth tokens unencrypted, so a plaintext token with a future expiry is
+  // returned as-is, never triggering a refresh.
+  await linkAmaAccount(db, id);
+}
+
+// Links an AMA generic-OIDC account to the user with a long-lived access token
+// so BetterAuth's getAccessToken returns it without a refresh round-trip.
+export async function linkAmaAccount(db: D1Database, userId: string, accessToken = "user-token") {
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + 3600_000).toISOString();
+  await db
+    .prepare(
+      "INSERT INTO account (id, accountId, providerId, userId, accessToken, refreshToken, accessTokenExpiresAt, scope, createdAt, updatedAt) VALUES (?, ?, 'ama', ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(`acct-ama-${userId}`, `ama-sub-${userId}`, userId, accessToken, "user-refresh", expiresAt, "openid profile email offline_access", now, now)
+    .run();
 }
 
 export async function signUpVerifiedUser(

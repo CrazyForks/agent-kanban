@@ -18,6 +18,17 @@ type AmaOwnerIntegrationRow = {
   metadata: string;
 };
 
+// True when the AK user has linked their own AMA account (a BetterAuth
+// generic-OIDC "ama" account). AMA/cloud-scheduling features gate on this; a
+// standalone user who never connected AMA simply has no row.
+export async function hasAmaAccount(db: D1, ownerId: string): Promise<boolean> {
+  const row = await db
+    .prepare("SELECT 1 AS present FROM account WHERE userId = ? AND providerId = 'ama' LIMIT 1")
+    .bind(ownerId)
+    .first<{ present: number }>();
+  return row !== null;
+}
+
 export async function getAmaOwnerIntegration(db: D1, ownerId: string): Promise<AmaOwnerIntegration | null> {
   const row = await db
     .prepare("SELECT owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata FROM ama_owner_integrations WHERE owner_id = ?")
@@ -67,14 +78,14 @@ export async function ensureAmaOwnerIntegration(db: D1, env: Env, ownerId: strin
   // of band (e.g. a control-plane data reset), leaving our ids dangling. A
   // missing project means its vault and cloud environment are gone too, so
   // re-provision the whole integration rather than dispatch against ghosts.
-  const projectAlive = existing?.amaProjectId ? (await readAmaProject(env, existing.amaProjectId)) !== null : false;
+  const projectAlive = existing?.amaProjectId ? (await readAmaProject(env, ownerId, existing.amaProjectId)) !== null : false;
   if (existing?.sessionSecretVaultId && projectAlive) return existing;
 
-  const projectId = projectAlive ? existing!.amaProjectId : (await createAmaProject(env, { name: `Workspace ${ownerId}` })).id;
+  const projectId = projectAlive ? existing!.amaProjectId : (await createAmaProject(env, ownerId, { name: `Workspace ${ownerId}` })).id;
   const reuseVault = Boolean(projectAlive && existing?.sessionSecretVaultId);
   const vault = reuseVault
     ? null
-    : await createAmaVault(env, {
+    : await createAmaVault(env, ownerId, {
         projectId,
         name: "Session secrets",
         description: "Session credentials used by runtime sessions.",
@@ -111,11 +122,11 @@ export async function resolveAmaExternalTenantId(db: D1, env: Env, ownerId: stri
 export async function resolveAmaCloudEnvironmentId(db: D1, env: Env, ownerId: string): Promise<string> {
   const integration = await ensureAmaOwnerIntegration(db, env, ownerId);
   const existing = integration.metadata.cloudEnvironmentId;
-  if (typeof existing === "string" && existing && (await amaEnvironmentExists(env, integration.amaProjectId, existing))) {
+  if (typeof existing === "string" && existing && (await amaEnvironmentExists(env, ownerId, integration.amaProjectId, existing))) {
     return existing;
   }
 
-  const environment = await createAmaEnvironment(env, {
+  const environment = await createAmaEnvironment(env, ownerId, {
     projectId: integration.amaProjectId,
     name: "Cloud sandbox",
     description: `Cloud execution environment for AK owner ${ownerId}.`,

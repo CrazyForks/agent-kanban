@@ -439,7 +439,7 @@ describe("session usage accounting via releaseTaskRuntimeBinding", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await releaseTaskRuntimeBinding(db, env, task);
+    await releaseTaskRuntimeBinding(db, env, OWNER, task);
 
     // Verify that the ama_agent_sessions row has the usage totals populated
     const sessionRow = await db
@@ -509,7 +509,7 @@ describe("session usage accounting via releaseTaskRuntimeBinding", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await releaseTaskRuntimeBinding(db, env, task);
+    await releaseTaskRuntimeBinding(db, env, OWNER, task);
 
     const sessionRow = await db
       .prepare("SELECT input_tokens, output_tokens, cost_micro_usd FROM ama_agent_sessions WHERE id = ?")
@@ -577,7 +577,7 @@ describe("session usage accounting via releaseTaskRuntimeBinding", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     // Should not throw; teardown still completes
-    const updated = await releaseTaskRuntimeBinding(db, env, task);
+    const updated = await releaseTaskRuntimeBinding(db, env, OWNER, task);
     // Binding annotations cleared despite usage failure
     const meta = (updated.metadata as any) ?? {};
     expect(meta?.annotations?.["ama.sessionId"]).toBeNull();

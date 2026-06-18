@@ -296,6 +296,9 @@ describe("GET /api/admin/stats", () => {
     const ownerId = "admin-ama-machine-owner";
     const machineId = "admin-ama-machine";
     const now = new Date().toISOString();
+    // The owner connects AMA as their own account; seedUser links the "ama"
+    // account so the admin stats route can resolve a per-user runner token.
+    await seedUser(env.DB, ownerId, `${ownerId}@test.local`);
     await env.DB.prepare(
       `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
        VALUES (?, 'project_admin_stats', ?, 'vault_admin_stats', '{}')

@@ -25,7 +25,7 @@ const PREFERRED_CLOUD_MODELS = ["@cf/moonshotai/kimi-k2.7-code", "@cf/openai/gpt
 export async function listRuntimeModels(db: D1, env: Env, ownerId: string, runtime: AgentRuntime): Promise<RuntimeModel[]> {
   if (!isAmaTaskDispatchConfigured(env)) return [];
   if (isCloudAgentRuntime(runtime)) {
-    const catalog = (await listAmaCatalogModels(env)).filter((model) => model.availability === "available");
+    const catalog = (await listAmaCatalogModels(env, ownerId)).filter((model) => model.availability === "available");
     return orderCloudModels(catalog).map((model) => ({ id: model.modelId, ...(model.displayName ? { name: model.displayName } : {}) }));
   }
   // Self-hosted-only runtimes discover their models from live runner capabilities.
@@ -36,7 +36,7 @@ export async function listRuntimeModels(db: D1, env: Env, ownerId: string, runti
   const environmentIds = [...new Set(candidates.map((candidate) => candidate.environmentId))];
   const modelIds = new Set<string>();
   for (const environmentId of environmentIds) {
-    const runners = await listAmaRunners(env, projectId, environmentId);
+    const runners = await listAmaRunners(env, ownerId, projectId, environmentId);
     for (const runner of runners.data) {
       if (runner.status !== "active") continue;
       for (const capability of runner.capabilities) {

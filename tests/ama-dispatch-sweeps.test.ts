@@ -977,8 +977,7 @@ describe("reconcileAmaBoundTasks", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method !== "PATCH")
-        return new Response(null, { status: 404 });
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method !== "PATCH") return new Response(null, { status: 404 });
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method === "PATCH")
         return new Response(JSON.stringify({ id: sessionId, state: "stopped" }), { status: 200 });
       throw new Error(`Unexpected fetch: ${url}`);
@@ -1056,7 +1055,9 @@ describe("reconcileAmaBoundTasks", () => {
       const url = String(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method !== "PATCH")
-        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", state: "pending", stateReason: null }), { status: 200 });
+        return new Response(JSON.stringify({ id: sessionId, agentId: "a", environmentId: "e", state: "pending", stateReason: null }), {
+          status: 200,
+        });
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && init?.method === "PATCH")
         return new Response(JSON.stringify({ id: sessionId, state: "stopped" }), { status: 200 });
       throw new Error(`Unexpected fetch: ${url}`);
@@ -1302,169 +1303,33 @@ describe("POST /api/tasks/:id/reject AMA 409 handling", () => {
 
 // ─── 6. amaRuntime 401 retry ─────────────────────────────────────────────────
 
-describe("amaRuntime createAmaClient 401 retry", () => {
+// AMA calls now authenticate as the logged-in user's own linked AMA account
+// (BetterAuth getAccessToken), not a client-credentials exchange. These unit
+// tests use the shared test DB where OWNER has a seeded "ama" account whose
+// access token resolves to "user-token", so AMA SDK calls carry that bearer.
+
+describe("amaRuntime requireEnv guards", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    // Reset module-level token cache by ensuring the next test gets a fresh
-    // OAuth token (the cache key includes clientId; using a distinct id here
-    // via env overrides effectively isolates each test).
-  });
-
-  it("retries once on 401 when a cached token is stale server-side and succeeds", async () => {
-    const { readAmaSession } = await import("../apps/web/server/amaRuntime");
-
-    // Use a unique client ID so this test gets its own cache slot.
-    const clientId = `ak-retry-${randomUUID()}`;
-    let tokenFetchCount = 0;
-    let sessionAttemptCount = 0;
-
-    // Single combined mock: token endpoint always succeeds; session endpoint
-    // returns 401 on the first attempt, then 200.
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url === "https://auth.test/oauth/token") {
-        tokenFetchCount += 1;
-        return new Response(JSON.stringify({ access_token: `token-${tokenFetchCount}`, expires_in: 3600 }), { status: 200 });
-      }
-      if (url === "https://ama.test/api/v1/sessions/session_retry") {
-        sessionAttemptCount += 1;
-        // First attempt → 401 (simulates a server-side token revocation)
-        // Second attempt (after cache eviction + re-auth) → 200
-        if (sessionAttemptCount === 1) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
-        return new Response(JSON.stringify({ id: "session_retry", state: "running", agentId: "a", environmentId: "e", stateReason: null }), {
-          status: 200,
-        });
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const env: any = {
-      AMA_ORIGIN: "https://ama.test",
-      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
-      AMA_OAUTH_CLIENT_ID: clientId,
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-    };
-
-    const result = await readAmaSession(env, "session_retry");
-
-    expect(result).toMatchObject({ id: "session_retry", state: "running" });
-    // Session was attempted twice: once with first token (→ 401), once with new token (→ 200)
-    expect(sessionAttemptCount).toBe(2);
-    // OAuth token was fetched at least twice: once initially, once after cache eviction
-    expect(tokenFetchCount).toBeGreaterThanOrEqual(2);
-  });
-
-  it("re-fetches the OAuth token after a 401 clears the cache, then caches the new token for subsequent calls", async () => {
-    const { readAmaSession } = await import("../apps/web/server/amaRuntime");
-
-    // Use a unique client ID so this test's token cache slot is independent of others.
-    const clientId = `ak-recache-${randomUUID()}`;
-    let tokenFetchCount = 0;
-    let sessionCallCount = 0;
-
-    // Phase 1: warm the cache then simulate 401 on first read to force a retry.
-    // Phase 2: subsequent reads should use the refreshed token without re-fetching.
-    let forceError = true;
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url === "https://auth.test/oauth/token") {
-        tokenFetchCount += 1;
-        return new Response(JSON.stringify({ access_token: `token-${tokenFetchCount}`, expires_in: 3600 }), { status: 200 });
-      }
-      if (url === "https://ama.test/api/v1/sessions/session_recache") {
-        sessionCallCount += 1;
-        if (forceError && sessionCallCount === 1) {
-          return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
-        }
-        forceError = false;
-        return new Response(JSON.stringify({ id: "session_recache", state: "running", agentId: "a", environmentId: "e", stateReason: null }), {
-          status: 200,
-        });
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const env: any = {
-      AMA_ORIGIN: "https://ama.test",
-      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
-      AMA_OAUTH_CLIENT_ID: clientId,
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-    };
-
-    // First call: cache cold for this clientId → fetches token, gets 401, retries (re-fetches token), succeeds
-    const result = await readAmaSession(env, "session_recache");
-    expect(result).toMatchObject({ id: "session_recache" });
-
-    // At least two token fetches happened (one before 401, one after cache clear)
-    const tokenFetchesAfterFirstCall = tokenFetchCount;
-    expect(tokenFetchesAfterFirstCall).toBeGreaterThanOrEqual(2);
-
-    // Second call: token is now cached — no extra token fetch needed
-    await readAmaSession(env, "session_recache");
-    expect(tokenFetchCount).toBe(tokenFetchesAfterFirstCall); // no new token fetch
-  });
-});
-
-// ─── 6b. amaRuntime accessToken error paths ──────────────────────────────────
-
-describe("amaRuntime accessToken error handling", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("throws when the OAuth token endpoint returns a non-2xx status", async () => {
-    const { readAmaSession } = await import("../apps/web/server/amaRuntime");
-
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url === "https://auth.test/oauth/token") return new Response(JSON.stringify({ error: "invalid_client" }), { status: 401 });
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const env: any = {
-      AMA_ORIGIN: "https://ama.test",
-      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
-      AMA_OAUTH_CLIENT_ID: `ak-oautherr-${randomUUID()}`,
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-    };
-
-    await expect(readAmaSession(env, "session_x")).rejects.toThrow("AMA OAuth token request failed with HTTP 401");
-  });
-
-  it("throws when the OAuth token response is missing access_token", async () => {
-    const { readAmaSession } = await import("../apps/web/server/amaRuntime");
-
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url === "https://auth.test/oauth/token") return new Response(JSON.stringify({ token_type: "Bearer" }), { status: 200 });
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const env: any = {
-      AMA_ORIGIN: "https://ama.test",
-      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
-      AMA_OAUTH_CLIENT_ID: `ak-noaccess-${randomUUID()}`,
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-    };
-
-    await expect(readAmaSession(env, "session_x")).rejects.toThrow("AMA OAuth token response did not include access_token");
   });
 
   it("throws when AMA_ORIGIN is missing (requireEnv guard)", async () => {
     const { readAmaSession } = await import("../apps/web/server/amaRuntime");
+    await expect(readAmaSession(makeEnv({ AMA_ORIGIN: undefined }), OWNER, "session_x")).rejects.toThrow("AMA_ORIGIN is required");
+  });
 
-    const env: any = {
-      AMA_ORIGIN: undefined,
-      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-    };
-
-    await expect(readAmaSession(env, "session_x")).rejects.toThrow("AMA_ORIGIN is required");
+  it("throws a clear error when the owner has no linked AMA account", async () => {
+    const { revokeAmaVaultCredential } = await import("../apps/web/server/amaRuntime");
+    // A freshly seeded user with no AMA account link.
+    const unlinkedOwner = `unlinked-${randomUUID()}`;
+    const now = new Date().toISOString();
+    await db
+      .prepare("INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES (?, ?, ?, 1, ?, ?)")
+      .bind(unlinkedOwner, "Unlinked", `${unlinkedOwner}@test.local`, now, now)
+      .run();
+    await expect(revokeAmaVaultCredential(makeEnv(), unlinkedOwner, "project_test", "vault_test", "cred_test")).rejects.toThrow(
+      /No linked AMA account/,
+    );
   });
 });
 
@@ -1481,8 +1346,8 @@ describe("amaRuntime vault credential helpers", () => {
     const revokeCalls: { url: string; body: unknown }[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
       if (url === "https://ama.test/api/v1/vaults/vault_test/credentials/cred_test") {
+        expect((init?.headers as Record<string, string>).authorization).toBe("Bearer user-token");
         revokeCalls.push({ url, body: JSON.parse(String(init?.body)) });
         return new Response(JSON.stringify({ id: "cred_test", state: "revoked" }), { status: 200 });
       }
@@ -1490,14 +1355,7 @@ describe("amaRuntime vault credential helpers", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const env: any = {
-      AMA_ORIGIN: "https://ama.test",
-      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
-      AMA_OAUTH_CLIENT_ID: `ak-revoke-${randomUUID()}`,
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-    };
-
-    await revokeAmaVaultCredential(env, "project_test", "vault_test", "cred_test");
+    await revokeAmaVaultCredential(makeEnv(), OWNER, "project_test", "vault_test", "cred_test");
 
     expect(revokeCalls).toHaveLength(1);
     expect(revokeCalls[0].body).toMatchObject({ state: "revoked", revokeReason: "AK agent session closed" });
@@ -1508,7 +1366,6 @@ describe("amaRuntime vault credential helpers", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
       if (url === "https://ama.test/api/v1/vaults/vault_noversion/credentials")
         // Credential response missing activeVersionId
         return new Response(JSON.stringify({ id: "cred_noversion" }), { status: 201 });
@@ -1516,159 +1373,14 @@ describe("amaRuntime vault credential helpers", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const env: any = {
-      AMA_ORIGIN: "https://ama.test",
-      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
-      AMA_OAUTH_CLIENT_ID: `ak-noversion-${randomUUID()}`,
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-    };
-
     await expect(
-      createAmaSessionSecret(env, {
+      createAmaSessionSecret(makeEnv(), OWNER, {
         projectId: "project_test",
         vaultId: "vault_noversion",
         name: "test-secret",
         secretValue: "secret-value",
       }),
     ).rejects.toThrow("AMA vault credential response did not include activeVersionId");
-  });
-});
-
-// ─── 6c2. createAmaFederatedTenant error path ────────────────────────────────
-
-describe("amaRuntime createAmaFederatedTenant error path", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("treats a 409 from AMA as idempotent success (no error thrown)", async () => {
-    const { createAmaFederatedTenant } = await import("../apps/web/server/amaRuntime");
-
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/v1/auth/federated-tenants") return new Response(JSON.stringify({ message: "conflict" }), { status: 409 });
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const env: any = {
-      AMA_ORIGIN: "https://ama.test",
-      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
-      AMA_OAUTH_CLIENT_ID: `ak-bind-${randomUUID()}`,
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-    };
-
-    // 409 is idempotent — no throw
-    await expect(
-      createAmaFederatedTenant(env, {
-        projectId: "project_bind",
-        issuer: "https://runner.test",
-        externalTenantId: "tenant_123",
-      }),
-    ).resolves.toBeUndefined();
-  });
-
-  it("wraps a non-409 AMA failure into a descriptive error", async () => {
-    const { createAmaFederatedTenant } = await import("../apps/web/server/amaRuntime");
-
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/v1/auth/federated-tenants")
-        return new Response(JSON.stringify({ message: "internal error" }), { status: 500 });
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const env: any = {
-      AMA_ORIGIN: "https://ama.test",
-      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
-      AMA_OAUTH_CLIENT_ID: `ak-bind-err-${randomUUID()}`,
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-    };
-
-    await expect(
-      createAmaFederatedTenant(env, {
-        projectId: "project_bind",
-        issuer: "https://runner.test",
-        externalTenantId: "tenant_123",
-      }),
-    ).rejects.toThrow("AMA federated tenant binding failed HTTP 500");
-  });
-});
-
-// ─── 6d. createAmaFederatedRunnerToken token exchange error paths ─────────────
-
-// Fixed ES256 test keypair — used for signing subject tokens in these tests.
-const TEST_SIGNING_JWK_SWEEPS = {
-  kty: "EC",
-  x: "YgsMptfXEIq8ALzmNQclYp40b4d2nxKbsjle3TfEyTE",
-  y: "DP6x9I_82Y1J43QC9mEBiXZjOcL1J_k9S-AzZJbyAGc",
-  crv: "P-256",
-  d: "xa0meReZA9XMRXqAEyC_gEgnaZfrDL1CrHBXO_hCDy0",
-  kid: "test-ak",
-  alg: "ES256",
-};
-
-describe("amaRuntime createAmaFederatedRunnerToken error paths", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  const baseEnv: any = {
-    AMA_ORIGIN: "https://ama.test",
-    AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
-    AMA_OAUTH_CLIENT_ID: "ak-app",
-    AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-    AK_FEDERATED_SIGNING_KEY: JSON.stringify(TEST_SIGNING_JWK_SWEEPS),
-  };
-
-  const baseInput = {
-    projectId: "project_federated",
-    issuer: "https://runner.test",
-    subject: "runner-machine-1",
-    environmentId: "env_federated",
-  };
-
-  it("throws when token exchange endpoint returns a non-2xx status", async () => {
-    const { createAmaFederatedRunnerToken } = await import("../apps/web/server/amaRuntime");
-
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url === "https://auth.test/oauth/token") return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(createAmaFederatedRunnerToken(baseEnv, baseInput)).rejects.toThrow("AMA token exchange failed with HTTP 400");
-  });
-
-  it("throws when token exchange response is missing access_token", async () => {
-    const { createAmaFederatedRunnerToken } = await import("../apps/web/server/amaRuntime");
-
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url === "https://auth.test/oauth/token")
-        return new Response(JSON.stringify({ refresh_token: "rt", token_type: "Bearer" }), { status: 200 });
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(createAmaFederatedRunnerToken(baseEnv, baseInput)).rejects.toThrow("AMA token exchange response did not include access_token");
-  });
-
-  it("throws when token exchange response is missing refresh_token", async () => {
-    const { createAmaFederatedRunnerToken } = await import("../apps/web/server/amaRuntime");
-
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url === "https://auth.test/oauth/token") return new Response(JSON.stringify({ access_token: "at", token_type: "Bearer" }), { status: 200 });
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(createAmaFederatedRunnerToken(baseEnv, baseInput)).rejects.toThrow("AMA token exchange response did not include refresh_token");
   });
 });
 
@@ -1684,21 +1396,13 @@ describe("amaRuntime list helpers", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
       if (url === "https://ama.test/api/v1/agents?limit=100")
         return new Response(JSON.stringify({ data: [{ id: "ama_agent_1" }], pagination: {} }), { status: 200 });
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const env: any = {
-      AMA_ORIGIN: "https://ama.test",
-      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
-      AMA_OAUTH_CLIENT_ID: `ak-listagents-${randomUUID()}`,
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-    };
-
-    const result = await listAmaAgents(env);
+    const result = await listAmaAgents(makeEnv(), OWNER);
     expect(result.data).toHaveLength(1);
     expect(result.data[0]).toMatchObject({ id: "ama_agent_1" });
   });
@@ -1708,21 +1412,13 @@ describe("amaRuntime list helpers", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
       if (url === "https://ama.test/api/v1/environments?limit=100")
         return new Response(JSON.stringify({ data: [{ id: "env_1", name: "Production" }], pagination: {} }), { status: 200 });
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const env: any = {
-      AMA_ORIGIN: "https://ama.test",
-      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
-      AMA_OAUTH_CLIENT_ID: `ak-listenvs-${randomUUID()}`,
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-    };
-
-    const result = await listAmaEnvironments(env);
+    const result = await listAmaEnvironments(makeEnv(), OWNER);
     expect(result.data).toHaveLength(1);
     expect(result.data[0]).toMatchObject({ id: "env_1" });
   });
@@ -1860,7 +1556,6 @@ describe("amaRuntime listAmaCatalogModels", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
       if (url === "https://ama.test/api/v1/providers/models") {
         return new Response(JSON.stringify({ data: catalogData, pagination: { nextCursor: null } }), { status: 200 });
       }
@@ -1868,14 +1563,7 @@ describe("amaRuntime listAmaCatalogModels", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const env: any = {
-      AMA_ORIGIN: "https://ama.test",
-      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
-      AMA_OAUTH_CLIENT_ID: `ak-catalog-${randomUUID()}`,
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-    };
-
-    const result = await listAmaCatalogModels(env);
+    const result = await listAmaCatalogModels(makeEnv(), OWNER);
     expect(result).toHaveLength(3);
     expect(result[0]).toMatchObject({ providerId: "moonshotai", modelId: "@cf/moonshotai/kimi-k2.7-code", availability: "available" });
     expect(result[2]).toMatchObject({ providerId: "meta", modelId: "@cf/meta/llama-3.3-70b", availability: "disabled" });
@@ -2502,10 +2190,7 @@ describe("ensureMachineAmaEnvironment self-heal (Feature A)", () => {
       )
       .run();
 
-    const env = makeEnv({
-      DB: db,
-      AK_FEDERATED_SIGNING_KEY: JSON.stringify(TEST_SIGNING_JWK_SWEEPS),
-    });
+    const env = makeEnv({ DB: db });
     const res = await api.request(
       "/api/machines",
       {
@@ -2566,8 +2251,12 @@ describe("dispatch task_actions (dispatch_failed / dispatched)", () => {
         // readAmaAgent: return a live agent so ensureAmaAgentForAkAgent proceeds
         const agentId = url.split("/").pop();
         if ((init as any)?.method === "PATCH")
-          return new Response(JSON.stringify({ id: agentId, projectId: "project_123", name: "agent", providerId: "provider_claude", model: null }), { status: 200 });
-        return new Response(JSON.stringify({ id: agentId, projectId: "project_123", name: "agent", providerId: "provider_claude", model: null }), { status: 200 });
+          return new Response(JSON.stringify({ id: agentId, projectId: "project_123", name: "agent", providerId: "provider_claude", model: null }), {
+            status: 200,
+          });
+        return new Response(JSON.stringify({ id: agentId, projectId: "project_123", name: "agent", providerId: "provider_claude", model: null }), {
+          status: 200,
+        });
       }
       if (url === "https://ama.test/api/v1/sessions") return sessionErrorFactory();
       // Stop call during cleanup
@@ -2595,10 +2284,9 @@ describe("dispatch task_actions (dispatch_failed / dispatched)", () => {
         );
       if (url === "https://ama.test/api/v1/sessions") {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
-        return new Response(
-          JSON.stringify({ id: sessionId, agentId: body.agentId, environmentId, state: "pending", stateReason: null }),
-          { status: 201 },
-        );
+        return new Response(JSON.stringify({ id: sessionId, agentId: body.agentId, environmentId, state: "pending", stateReason: null }), {
+          status: 201,
+        });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2747,7 +2435,10 @@ describe("dispatch task_actions (dispatch_failed / dispatched)", () => {
     const env = makeEnv();
 
     // First failure — reason A (503 provider_unavailable)
-    vi.stubGlobal("fetch", makeFailFetchMock("env_df_newreason", () => new Response(JSON.stringify({ error: "provider_unavailable" }), { status: 503 })));
+    vi.stubGlobal(
+      "fetch",
+      makeFailFetchMock("env_df_newreason", () => new Response(JSON.stringify({ error: "provider_unavailable" }), { status: 503 })),
+    );
     await expect(dispatchTaskToAma(db, env, owner, task, { apiOrigin: "https://ak.test" })).rejects.toThrow();
 
     // Clear backoff in DB so the second dispatch attempt is not skipped
@@ -2767,7 +2458,10 @@ describe("dispatch task_actions (dispatch_failed / dispatched)", () => {
 
     // Second failure — different reason B (429 quota_exceeded)
     vi.unstubAllGlobals();
-    vi.stubGlobal("fetch", makeFailFetchMock("env_df_newreason", () => new Response(JSON.stringify({ error: "quota_exceeded" }), { status: 429 })));
+    vi.stubGlobal(
+      "fetch",
+      makeFailFetchMock("env_df_newreason", () => new Response(JSON.stringify({ error: "quota_exceeded" }), { status: 429 })),
+    );
     await expect(dispatchTaskToAma(db, env, owner, task2!, { apiOrigin: "https://ak.test" })).rejects.toThrow();
 
     const rows = await db

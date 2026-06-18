@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { SignJWT } from "jose";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { createTestAgent, createTestEnv, createTestSubagent, seedUser, setupMiniflare, signUpVerifiedUser } from "./helpers/db";
+import { createTestAgent, createTestEnv, createTestSubagent, linkAmaAccount, seedUser, setupMiniflare, signUpVerifiedUser } from "./helpers/db";
 
 const BETTER_AUTH_URL = "http://localhost:8788";
 const env = createTestEnv();
@@ -60,6 +60,10 @@ describe("routes", () => {
   }
 
   async function configureAmaOwnerRuntime(ownerId: string, runtime: string, environmentId: string, projectId = "project_123", vaultId = "vault_123") {
+    // AK dispatches to AMA as the owner's own linked AMA account; ensure the
+    // link exists so the per-user token resolves (idempotent across owners).
+    const linked = await env.DB.prepare("SELECT 1 FROM account WHERE userId = ? AND providerId = 'ama'").bind(ownerId).first();
+    if (!linked) await linkAmaAccount(env.DB, ownerId);
     const now = new Date().toISOString();
     await env.DB.prepare(
       `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)

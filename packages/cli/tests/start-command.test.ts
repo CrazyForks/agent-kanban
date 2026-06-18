@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
@@ -34,10 +34,6 @@ function mockMachineRunnerFetch(origin = "https://runner-control.test") {
             origin,
             projectId: "project_1",
             environmentId: "env_1",
-            accessToken: "runner-token",
-            refreshToken: "runner-refresh-token",
-            tokenType: "Bearer",
-            expiresIn: 3600,
           },
         }),
         { status: 201, headers: { "content-type": "application/json" } },
@@ -104,7 +100,7 @@ afterEach(() => {
 });
 
 describe("start runtime command", () => {
-  it("starts the Machine runner through AK onboarding with the original credentials flow", async () => {
+  it("starts the Machine runner, pointing it at the AMA origin and project/environment to join (runner self-authenticates)", async () => {
     const program = new Command();
     registerStartCommand(program);
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -121,10 +117,6 @@ describe("start runtime command", () => {
               origin: "https://runner-control.test",
               projectId: "project_1",
               environmentId: "env_1",
-              accessToken: "runner-token",
-              refreshToken: "runner-refresh-token",
-              tokenType: "Bearer",
-              expiresIn: 3600,
             },
           }),
           { status: 201, headers: { "content-type": "application/json" } },
@@ -146,8 +138,6 @@ describe("start runtime command", () => {
     expect(spawnMock).toHaveBeenCalledWith(
       testRunnerBin,
       [
-        "--config",
-        join(testSessionsDir, "ama-runner-config.json"),
         "--api-server",
         "https://runner-control.test",
         "--project-id",
@@ -160,15 +150,8 @@ describe("start runtime command", () => {
       ],
       expect.objectContaining({ detached: true }),
     );
-    const runnerConfig = JSON.parse(readFileSync(join(testSessionsDir, "ama-runner-config.json"), "utf-8"));
-    expect(runnerConfig).toMatchObject({
-      apiServer: "https://runner-control.test",
-      accessToken: "runner-token",
-      refreshToken: "runner-refresh-token",
-      tokenType: "Bearer",
-      projectId: "project_1",
-      environmentId: "env_1",
-    });
+    // No runner token config is written — the runner performs its own device login.
+    expect(existsSync(join(testSessionsDir, "ama-runner-config.json"))).toBe(false);
     expect(spawnMock.mock.calls[0]?.[2]?.env).not.toMatchObject({ AMA_TOKEN: "runner-token" });
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Machine runner started"));
     const state = JSON.parse(readFileSync(join(testSessionsDir, "daemon-state.json"), "utf-8"));
@@ -187,8 +170,6 @@ describe("start runtime command", () => {
     expect(spawnMock).toHaveBeenCalledWith(
       testRunnerBin,
       [
-        "--config",
-        join(testSessionsDir, "ama-runner-config.json"),
         "--api-server",
         "https://ama.test",
         "--project-id",
@@ -216,8 +197,6 @@ describe("restart runtime command", () => {
     expect(spawnMock).toHaveBeenCalledWith(
       testRunnerBin,
       [
-        "--config",
-        join(testSessionsDir, "ama-runner-config.json"),
         "--api-server",
         "https://runner-control.test",
         "--project-id",
@@ -401,4 +380,3 @@ describe("status command — ama-runner with machineId", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
-

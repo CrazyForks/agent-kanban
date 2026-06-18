@@ -28,7 +28,6 @@ import { getVersion } from "../version.js";
 
 const MAX_LOG_ARCHIVES = 5;
 const DEFAULT_MAX_CONCURRENT = 5;
-const AMA_RUNNER_CONFIG_FILE = join(STATE_DIR, "ama-runner-config.json");
 interface DaemonState {
   providers: string[];
   maxConcurrent: number;
@@ -44,10 +43,6 @@ interface AmaRunnerOnboardingResponse {
   origin: string;
   projectId: string;
   environmentId: string;
-  accessToken: string;
-  refreshToken: string;
-  tokenType?: string;
-  expiresIn?: number | null;
   version?: string | null;
 }
 
@@ -128,7 +123,8 @@ function amaRunnerArgs(opts: Record<string, unknown>): string[] {
   const add = (flag: string, value: unknown) => {
     if (typeof value === "string" && value.length > 0) args.push(flag, value);
   };
-  add("--config", opts.amaConfigPath);
+  // The spawned ama-runner performs its own device login against the AMA API
+  // server; AK only points it at the origin and the project/environment to join.
   add("--api-server", opts.amaOrigin);
   add("--project-id", opts.amaProjectId);
   add("--environment-id", opts.amaEnvironmentId);
@@ -247,44 +243,14 @@ async function applyAmaRunnerOnboarding(opts: Record<string, unknown>) {
   }
   const machine = (await machineResponse.json()) as RegisteredMachine;
   const onboarding = machine.runner;
-  if (!onboarding?.accessToken || !onboarding.refreshToken) {
-    throw new Error("Machine registration did not return runner onboarding credentials");
+  if (!onboarding) {
+    throw new Error("Machine registration did not return runner onboarding details");
   }
   opts.machineId = machine.id;
   if (onboarding.version) opts.amaRunnerVersion = onboarding.version;
-  // The runner only adopts the saved token when the --api-server origin matches
-  // the saved origin exactly, so trim once and use the same value everywhere.
   opts.amaOrigin = onboarding.origin.replace(/\/$/, "");
   opts.amaProjectId = onboarding.projectId;
   opts.amaEnvironmentId = onboarding.environmentId;
-  opts.amaConfigPath = writeAmaRunnerConfig({ ...onboarding, origin: opts.amaOrigin as string });
-}
-
-function writeAmaRunnerConfig(onboarding: AmaRunnerOnboardingResponse): string {
-  mkdirSync(STATE_DIR, { recursive: true });
-  const configPath = AMA_RUNNER_CONFIG_FILE;
-  const expiresAt =
-    typeof onboarding.expiresIn === "number" && onboarding.expiresIn > 0
-      ? new Date(Date.now() + onboarding.expiresIn * 1000).toISOString()
-      : undefined;
-  writeFileSync(
-    configPath,
-    JSON.stringify(
-      {
-        apiServer: onboarding.origin,
-        accessToken: onboarding.accessToken,
-        refreshToken: onboarding.refreshToken,
-        tokenType: onboarding.tokenType ?? "Bearer",
-        ...(expiresAt ? { expiresAt } : {}),
-        projectId: onboarding.projectId,
-        environmentId: onboarding.environmentId,
-      },
-      null,
-      2,
-    ),
-    { mode: 0o600 },
-  );
-  return configPath;
 }
 
 export function registerStartCommand(program: Command) {
@@ -373,9 +339,6 @@ export function registerStopCommand(program: Command) {
       } else {
         console.log(`● Machine runner stopped (PID ${pid})`);
       }
-      // The config file holds live access/refresh tokens; a stopped runner
-      // must not leave them on disk. `ak start` re-onboards with fresh tokens.
-      rmSync(AMA_RUNNER_CONFIG_FILE, { force: true });
       if (uptimeStr) console.log(`  Uptime: ${uptimeStr}`);
     });
 }

@@ -54,7 +54,7 @@ export async function detectAndReleaseStaleAll(db: D1, env: Env): Promise<void> 
     // burning quota against a task that is no longer running it.
     try {
       const task = await getTask(db, stale.id, stale.owner_id);
-      if (task) await releaseTaskRuntimeBinding(db, env, task, "timeout");
+      if (task) await releaseTaskRuntimeBinding(db, env, stale.owner_id, task, "timeout");
     } catch (error) {
       logger.warn(`runtime teardown failed for stale task ${stale.id}: ${error}`);
     }

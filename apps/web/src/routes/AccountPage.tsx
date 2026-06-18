@@ -1,4 +1,4 @@
-import { CheckCircle2, Github, Monitor, RefreshCw, Shield } from "lucide-react";
+import { CheckCircle2, Cloud, Github, Monitor, RefreshCw, Shield } from "lucide-react";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -62,6 +62,7 @@ export function AccountPage() {
 
   const hasCredentialAccount = accounts?.some((a) => a.providerId === "credential") ?? false;
   const githubAccount = accounts?.find((a) => a.providerId === "github");
+  const amaAccount = accounts?.find((a) => a.providerId === "ama");
 
   const [githubConnecting, setGithubConnecting] = useState(false);
   const [githubError, setGithubError] = useState<string | null>(null);
@@ -76,6 +77,43 @@ export function AccountPage() {
       setGithubError(msg);
       toast.error(msg);
     }
+  }
+
+  const [amaConnecting, setAmaConnecting] = useState(false);
+  const [amaError, setAmaError] = useState<string | null>(null);
+
+  async function handleConnectAma() {
+    setAmaConnecting(true);
+    setAmaError(null);
+    const { data, error } = await accountAuthClient.oauth2.link({ providerId: "ama", callbackURL: "/settings/account" });
+    if (error) {
+      setAmaConnecting(false);
+      const msg = error.message || "Failed to connect AMA";
+      setAmaError(msg);
+      toast.error(msg);
+      return;
+    }
+    // The link endpoint returns the AMA authorization URL to redirect to.
+    if (data?.url) {
+      window.location.href = data.url;
+      return;
+    }
+    setAmaConnecting(false);
+  }
+
+  async function handleDisconnectAma() {
+    setAmaConnecting(true);
+    setAmaError(null);
+    const { error } = await accountAuthClient.unlinkAccount({ providerId: "ama" });
+    setAmaConnecting(false);
+    if (error) {
+      const msg = error.message || "Failed to disconnect AMA";
+      setAmaError(msg);
+      toast.error(msg);
+      return;
+    }
+    toast.success("AMA disconnected");
+    loadAccounts();
   }
 
   return (
@@ -163,6 +201,53 @@ export function AccountPage() {
               <Button size="sm" onClick={handleConnectGitHub} disabled={githubConnecting} className="shrink-0">
                 <Github className="size-3.5" />
                 {githubConnecting ? "Connecting..." : "Connect GitHub"}
+              </Button>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* AMA connection */}
+      <section className="space-y-4">
+        <SectionHeader icon={Cloud} title="AMA" />
+        <div className="max-w-2xl rounded-lg border border-border bg-surface-secondary p-4">
+          {accountsLoading ? (
+            <Skeleton className="h-8 w-48" />
+          ) : accountsError ? (
+            <p role="alert" className="text-sm text-error">
+              {accountsError}
+            </p>
+          ) : amaAccount ? (
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-0.5">
+                <p className="text-sm font-medium text-content-primary">AMA connected</p>
+                <p className="text-xs text-content-tertiary">
+                  Account ID: <span className="font-mono">{amaAccount.accountId}</span>
+                </p>
+                {amaError && (
+                  <p role="alert" className="text-xs text-error">
+                    {amaError}
+                  </p>
+                )}
+              </div>
+              <Button variant="outline" size="sm" onClick={handleDisconnectAma} disabled={amaConnecting} className="shrink-0">
+                {amaConnecting ? "Working..." : "Disconnect"}
+              </Button>
+            </div>
+          ) : (
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-0.5">
+                <p className="text-sm font-medium text-content-primary">AMA not connected</p>
+                <p className="text-xs text-content-tertiary">Connect AMA to enable cloud scheduling and dispatch agents to your own AMA account.</p>
+                {amaError && (
+                  <p role="alert" className="text-xs text-error">
+                    {amaError}
+                  </p>
+                )}
+              </div>
+              <Button size="sm" onClick={handleConnectAma} disabled={amaConnecting} className="shrink-0">
+                <Cloud className="size-3.5" />
+                {amaConnecting ? "Connecting..." : "Connect AMA"}
               </Button>
             </div>
           )}

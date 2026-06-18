@@ -1,5 +1,5 @@
 import { AmaClient, type AmaOperationId, type AmaRequestOptions } from "@any-managed-agents/sdk";
-import { type JWK, SignJWT, importJWK } from "jose";
+import { createAuth } from "./betterAuth";
 import type { Env } from "./types";
 
 export type AmaResourceRef = Record<string, unknown>;
@@ -188,13 +188,6 @@ export interface AmaRunner {
   runtimeUsage?: AmaRuntimeUsage[];
 }
 
-interface OAuthTokenResponse {
-  access_token?: string;
-  refresh_token?: string;
-  token_type?: string;
-  expires_in?: number;
-}
-
 export interface AmaFederatedTenantInput {
   projectId: string;
   issuer: string;
@@ -207,20 +200,6 @@ export interface AmaFederatedTenantInput {
 // A runner federated tenant must be allowed to poll for and claim work; these
 // are the capabilities AMA's self-hosted runner protocol checks.
 const RUNNER_FEDERATION_CAPABILITIES = ["session:poll", "session:claim"];
-
-export interface AmaRunnerTokenInput {
-  projectId: string;
-  issuer: string;
-  subject: string;
-  environmentId: string;
-}
-
-export interface AmaRunnerToken {
-  accessToken: string;
-  refreshToken: string;
-  tokenType: string;
-  expiresIn: number | null;
-}
 
 export interface AmaProject {
   id: string;
@@ -275,16 +254,23 @@ export function vendorFromModelId(modelId: string): string {
   return segments.length >= 2 && first ? first : "unknown";
 }
 
+// AMA is "configured" for this AK instance when the AMA origin and the OAuth
+// client used to register the OIDC provider are present. Per-call authorization
+// is the logged-in user's own linked AMA account (resolved at request time).
+function hasAmaOAuthClient(env: Env): boolean {
+  return Boolean(env.AMA_OAUTH_TOKEN_URL && env.AMA_OAUTH_CLIENT_ID && env.AMA_OAUTH_CLIENT_SECRET);
+}
+
 export function isAmaRuntimeConfigured(env: Env): boolean {
-  return Boolean(env.AMA_ORIGIN && hasTokenSource(env));
+  return Boolean(env.AMA_ORIGIN && hasAmaOAuthClient(env));
 }
 
 export function isAmaTaskDispatchConfigured(env: Env): boolean {
   return isAmaRuntimeConfigured(env);
 }
 
-export async function createAmaTaskSession(env: Env, input: AmaTaskSessionInput): Promise<AmaSessionDispatch> {
-  const client = await createAmaClient(env, input.projectId);
+export async function createAmaTaskSession(env: Env, ownerId: string, input: AmaTaskSessionInput): Promise<AmaSessionDispatch> {
+  const client = await createAmaClient(env, ownerId, input.projectId);
   const session = await withAmaErrorDetails("create session", () =>
     client.request<AmaSessionResponse>("createSession", {
       body: {
@@ -319,8 +305,8 @@ function toAmaSecretEnv(entries: AmaRuntimeSecretEnvRef[]): { name: string; cred
   }));
 }
 
-export async function createAmaAgent(env: Env, input: AmaAgentInput): Promise<AmaAgent> {
-  const client = await createAmaClient(env, input.projectId);
+export async function createAmaAgent(env: Env, ownerId: string, input: AmaAgentInput): Promise<AmaAgent> {
+  const client = await createAmaClient(env, ownerId, input.projectId);
   const agent = await withAmaErrorDetails("create runtime agent", () =>
     client.request<AmaAgentResponse>("createAgent", {
       body: {
@@ -348,16 +334,16 @@ export async function createAmaAgent(env: Env, input: AmaAgentInput): Promise<Am
   };
 }
 
-export async function createAmaProject(env: Env, input: { name: string }): Promise<AmaProject> {
-  const client = await createAmaClient(env);
+export async function createAmaProject(env: Env, ownerId: string, input: { name: string }): Promise<AmaProject> {
+  const client = await createAmaClient(env, ownerId);
   const project = await withAmaErrorDetails("create project", () =>
     client.request<{ id: string; name: string }>("createProject", { body: { name: input.name } }),
   );
   return { id: project.id, name: project.name };
 }
 
-export async function createAmaVault(env: Env, input: AmaVaultInput): Promise<AmaVault> {
-  const client = await createAmaClient(env, input.projectId);
+export async function createAmaVault(env: Env, ownerId: string, input: AmaVaultInput): Promise<AmaVault> {
+  const client = await createAmaClient(env, ownerId, input.projectId);
   const vault = await withAmaErrorDetails("create vault", () =>
     client.request<{ id: string }>("createVault", {
       body: {
@@ -371,8 +357,8 @@ export async function createAmaVault(env: Env, input: AmaVaultInput): Promise<Am
   return { id: vault.id };
 }
 
-export async function createAmaEnvironment(env: Env, input: AmaEnvironmentInput): Promise<AmaEnvironment> {
-  const client = await createAmaClient(env, input.projectId);
+export async function createAmaEnvironment(env: Env, ownerId: string, input: AmaEnvironmentInput): Promise<AmaEnvironment> {
+  const client = await createAmaClient(env, ownerId, input.projectId);
   const environment = await withAmaErrorDetails("create environment", () =>
     client.request<AmaEnvironmentResponse>("createEnvironment", {
       body: {
@@ -397,8 +383,8 @@ async function withAmaErrorDetails<T>(operation: string, fn: () => Promise<T>): 
   }
 }
 
-export async function readAmaAgent(env: Env, projectId: string, agentId: string): Promise<AmaAgent | null> {
-  const client = await createAmaClient(env, projectId);
+export async function readAmaAgent(env: Env, ownerId: string, projectId: string, agentId: string): Promise<AmaAgent | null> {
+  const client = await createAmaClient(env, ownerId, projectId);
   try {
     const agent = await client.request<AmaAgentResponse>("readAgent", { path: { agentId } });
     return {
@@ -414,8 +400,8 @@ export async function readAmaAgent(env: Env, projectId: string, agentId: string)
   }
 }
 
-export async function updateAmaAgentConfig(env: Env, projectId: string, agentId: string, input: AmaAgentInput): Promise<void> {
-  const client = await createAmaClient(env, projectId);
+export async function updateAmaAgentConfig(env: Env, ownerId: string, projectId: string, agentId: string, input: AmaAgentInput): Promise<void> {
+  const client = await createAmaClient(env, ownerId, projectId);
   await withAmaErrorDetails("update runtime agent config", () =>
     client.request("updateAgent", {
       path: { agentId },
@@ -437,8 +423,8 @@ export async function updateAmaAgentConfig(env: Env, projectId: string, agentId:
   );
 }
 
-export async function readAmaEnvironment(env: Env, projectId: string, environmentId: string): Promise<AmaEnvironment> {
-  const client = await createAmaClient(env, projectId);
+export async function readAmaEnvironment(env: Env, ownerId: string, projectId: string, environmentId: string): Promise<AmaEnvironment> {
+  const client = await createAmaClient(env, ownerId, projectId);
   const environment = await client.request<AmaEnvironmentResponse>("readEnvironment", { path: { environmentId } });
   return { id: environment.id };
 }
@@ -447,8 +433,8 @@ export async function readAmaEnvironment(env: Env, projectId: string, environmen
 // (e.g. an AMA data migration that resets the control plane). These let the
 // "ensure" paths detect a dangling id and re-provision instead of dispatching
 // against a resource that no longer exists.
-export async function readAmaProject(env: Env, projectId: string): Promise<AmaProject | null> {
-  const client = await createAmaClient(env, projectId);
+export async function readAmaProject(env: Env, ownerId: string, projectId: string): Promise<AmaProject | null> {
+  const client = await createAmaClient(env, ownerId, projectId);
   try {
     const project = await client.request<{ id: string; name: string }>("readProject", { path: { projectId } });
     return { id: project.id, name: project.name };
@@ -458,8 +444,8 @@ export async function readAmaProject(env: Env, projectId: string): Promise<AmaPr
   }
 }
 
-export async function amaEnvironmentExists(env: Env, projectId: string, environmentId: string): Promise<boolean> {
-  const client = await createAmaClient(env, projectId);
+export async function amaEnvironmentExists(env: Env, ownerId: string, projectId: string, environmentId: string): Promise<boolean> {
+  const client = await createAmaClient(env, ownerId, projectId);
   try {
     await client.request("readEnvironment", { path: { environmentId } });
     return true;
@@ -487,8 +473,8 @@ export function resolveAmaProviderModelProfile(input: { runtime: string; preferr
   return { runtime, provider: configured.providerSlug, model };
 }
 
-export async function createAmaFederatedTenant(env: Env, input: AmaFederatedTenantInput): Promise<void> {
-  const client = await createAmaClient(env, input.projectId);
+export async function createAmaFederatedTenant(env: Env, ownerId: string, input: AmaFederatedTenantInput): Promise<void> {
+  const client = await createAmaClient(env, ownerId, input.projectId);
   try {
     await client.request("createFederatedTenant", {
       body: {
@@ -510,60 +496,8 @@ export async function createAmaFederatedTenant(env: Env, input: AmaFederatedTena
   }
 }
 
-export async function createAmaFederatedRunnerToken(env: Env, input: AmaRunnerTokenInput): Promise<AmaRunnerToken> {
-  const tokenUrl = requireEnv(env.AMA_OAUTH_TOKEN_URL, "AMA_OAUTH_TOKEN_URL");
-  const clientId = requireEnv(env.AMA_OAUTH_CLIENT_ID, "AMA_OAUTH_CLIENT_ID");
-  const clientSecret = requireEnv(env.AMA_OAUTH_CLIENT_SECRET, "AMA_OAUTH_CLIENT_SECRET");
-  const audience = requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN").replace(/\/$/, "");
-  const issuer = input.issuer.replace(/\/$/, "");
-  // Self-signed subject assertion (ES256). It names the target AMA project via
-  // ama_project_id; AMA validates that project belongs to AK's organization. No
-  // self-asserted tenant id — the workspace is the project, the trust is AK's.
-  const subjectToken = await signSubjectToken(env, {
-    iss: issuer,
-    sub: input.subject,
-    aud: audience,
-    exp: Math.floor(Date.now() / 1000) + 120,
-    ama_project_id: input.projectId,
-    ama_environment_id: input.environmentId,
-  });
-  const body = new URLSearchParams({
-    grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
-    subject_token: subjectToken,
-    subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
-    requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
-    audience,
-    scope: "runner:connect offline_access",
-  });
-  const response = await fetch(tokenUrl, {
-    method: "POST",
-    headers: {
-      authorization: `Basic ${btoa(`${encodeURIComponent(clientId)}:${encodeURIComponent(clientSecret)}`)}`,
-      "content-type": "application/x-www-form-urlencoded",
-    },
-    body,
-  });
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(`AMA token exchange failed with HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
-  }
-  const token = (await response.json()) as OAuthTokenResponse;
-  if (!token.access_token) {
-    throw new Error("AMA token exchange response did not include access_token");
-  }
-  if (!token.refresh_token) {
-    throw new Error("AMA token exchange response did not include refresh_token");
-  }
-  return {
-    accessToken: token.access_token,
-    refreshToken: token.refresh_token,
-    tokenType: token.token_type ?? "Bearer",
-    expiresIn: token.expires_in ?? null,
-  };
-}
-
-export async function createAmaSessionSecret(env: Env, input: AmaSessionSecretInput): Promise<AmaSessionSecret> {
-  const client = await createAmaClient(env, input.projectId);
+export async function createAmaSessionSecret(env: Env, ownerId: string, input: AmaSessionSecretInput): Promise<AmaSessionSecret> {
+  const client = await createAmaClient(env, ownerId, input.projectId);
   const credential = await client.request<AmaCredentialResponse>("createVaultCredential", {
     path: { vaultId: input.vaultId },
     body: {
@@ -589,8 +523,13 @@ export interface AmaSessionUsageTotals {
   costMicros: number;
 }
 
-export async function readAmaSessionUsageTotals(env: Env, projectId: string, sessionId: string): Promise<AmaSessionUsageTotals | null> {
-  const client = await createAmaClient(env, projectId);
+export async function readAmaSessionUsageTotals(
+  env: Env,
+  ownerId: string,
+  projectId: string,
+  sessionId: string,
+): Promise<AmaSessionUsageTotals | null> {
+  const client = await createAmaClient(env, ownerId, projectId);
   // /api/v1 usage-summary groups only by provider/model/agent; per-session
   // totals come from summing the session's usage records. The endpoint caps
   // limit at 100, so page through all records via the cursor.
@@ -612,16 +551,22 @@ export async function readAmaSessionUsageTotals(env: Env, projectId: string, ses
   return records === 0 ? null : totals;
 }
 
-export async function revokeAmaVaultCredential(env: Env, projectId: string, vaultId: string, credentialId: string): Promise<void> {
-  const client = await createAmaClient(env, projectId);
+export async function revokeAmaVaultCredential(env: Env, ownerId: string, projectId: string, vaultId: string, credentialId: string): Promise<void> {
+  const client = await createAmaClient(env, ownerId, projectId);
   await client.request("updateVaultCredential", {
     path: { vaultId, credentialId },
     body: { state: "revoked", revokeReason: "AK agent session closed" },
   });
 }
 
-export async function sendAmaSessionMessage(env: Env, projectId: string, sessionId: string, message: string): Promise<AmaRuntimeCommandResult> {
-  const client = await createAmaClient(env, projectId);
+export async function sendAmaSessionMessage(
+  env: Env,
+  ownerId: string,
+  projectId: string,
+  sessionId: string,
+  message: string,
+): Promise<AmaRuntimeCommandResult> {
+  const client = await createAmaClient(env, ownerId, projectId);
   // A 201 means the prompt message was accepted and queued for the session.
   await client.request<{ id: string }>("createSessionMessage", {
     path: { sessionId },
@@ -638,11 +583,12 @@ export interface AmaSessionEventsQuery {
 
 export async function getAmaSessionRuntimeSnapshot(
   env: Env,
+  ownerId: string,
   sessionId: string,
   projectId?: string,
   events: AmaSessionEventsQuery = {},
 ): Promise<AmaSessionRuntimeSnapshot> {
-  const client = await createAmaClient(env, projectId);
+  const client = await createAmaClient(env, ownerId, projectId);
   const eventQuery: Record<string, string | number | boolean | undefined> = { limit: events.limit ?? 100, order: events.order ?? "asc" };
   if (events.cursor !== undefined) eventQuery.cursor = events.cursor;
   const [session, eventPage] = await Promise.all([
@@ -660,8 +606,8 @@ export async function getAmaSessionRuntimeSnapshot(
   };
 }
 
-export async function readAmaSession(env: Env, sessionId: string, projectId?: string): Promise<Record<string, unknown> | null> {
-  const client = await createAmaClient(env, projectId);
+export async function readAmaSession(env: Env, ownerId: string, sessionId: string, projectId?: string): Promise<Record<string, unknown> | null> {
+  const client = await createAmaClient(env, ownerId, projectId);
   try {
     return await client.request<Record<string, unknown>>("readSession", { path: { sessionId } });
   } catch (error) {
@@ -670,15 +616,15 @@ export async function readAmaSession(env: Env, sessionId: string, projectId?: st
   }
 }
 
-export async function listAmaAgents(env: Env): Promise<AmaListResponse<Record<string, unknown>>> {
-  const client = await createAmaClient(env);
+export async function listAmaAgents(env: Env, ownerId: string): Promise<AmaListResponse<Record<string, unknown>>> {
+  const client = await createAmaClient(env, ownerId);
   return await client.request<AmaListResponse<Record<string, unknown>>>("listAgents", {
     query: { limit: 100 },
   });
 }
 
-export async function listAmaEnvironments(env: Env): Promise<AmaListResponse<Record<string, unknown>>> {
-  const client = await createAmaClient(env);
+export async function listAmaEnvironments(env: Env, ownerId: string): Promise<AmaListResponse<Record<string, unknown>>> {
+  const client = await createAmaClient(env, ownerId);
   return await client.request<AmaListResponse<Record<string, unknown>>>("listEnvironments", {
     query: { limit: 100 },
   });
@@ -696,8 +642,8 @@ export interface AmaCatalogModel {
 // the same way through the Workers AI binding. The caller filters/orders it for
 // the cloud (ama) runtime; self-hosted runtimes ignore it (their models come
 // from the runner's live capabilities).
-export async function listAmaCatalogModels(env: Env): Promise<AmaCatalogModel[]> {
-  const client = await createAmaClient(env);
+export async function listAmaCatalogModels(env: Env, ownerId: string): Promise<AmaCatalogModel[]> {
+  const client = await createAmaClient(env, ownerId);
   // GET /api/v1/providers/models returns the entire catalog in one envelope
   // (the AMA route lists all rows; pagination is always {hasMore:false}), so no
   // cursor loop is needed.
@@ -716,8 +662,8 @@ interface AmaRunnerResponse {
   runtimeUsage?: AmaRuntimeUsage[];
 }
 
-export async function listAmaRunners(env: Env, projectId: string, environmentId: string): Promise<AmaListResponse<AmaRunner>> {
-  const client = await createAmaClient(env, projectId);
+export async function listAmaRunners(env: Env, ownerId: string, projectId: string, environmentId: string): Promise<AmaListResponse<AmaRunner>> {
+  const client = await createAmaClient(env, ownerId, projectId);
   const page = await client.request<AmaListResponse<AmaRunnerResponse>>("listRunners", {
     query: { environmentId, limit: 100 },
   });
@@ -804,11 +750,12 @@ function toAmaScheduledTriggerRun(run: AmaTriggerRunResponse): AmaScheduledTrigg
 
 export async function listAmaScheduledTriggerRuns(
   env: Env,
+  ownerId: string,
   projectId: string,
   triggerId: string,
   options: { limit?: number } = {},
 ): Promise<AmaListResponse<AmaScheduledTriggerRun>> {
-  const client = await createAmaClient(env, projectId);
+  const client = await createAmaClient(env, ownerId, projectId);
   const page = await client.request<AmaListResponse<AmaTriggerRunResponse>>("listTriggerRuns", {
     path: { triggerId },
     query: { limit: options.limit ?? 20 },
@@ -818,17 +765,18 @@ export async function listAmaScheduledTriggerRuns(
 
 export async function stopAmaSession(
   env: Env,
+  ownerId: string,
   projectId: string,
   sessionId: string,
   reason: "user_requested" | "timeout" | "policy" | "runtime_error",
 ) {
-  const client = await createAmaClient(env, projectId);
+  const client = await createAmaClient(env, ownerId, projectId);
   // /api/v1 has no dedicated stop verb: transition the session to `stopped`.
   await client.request("updateSession", { path: { sessionId }, body: { state: "stopped", metadata: { stopReason: reason } } });
 }
 
-export async function createAmaScheduledAgentTrigger(env: Env, input: AmaScheduledTriggerInput): Promise<AmaScheduledTrigger> {
-  const client = await createAmaClient(env, input.projectId);
+export async function createAmaScheduledAgentTrigger(env: Env, ownerId: string, input: AmaScheduledTriggerInput): Promise<AmaScheduledTrigger> {
+  const client = await createAmaClient(env, ownerId, input.projectId);
   const trigger = await client.request<AmaTriggerResponse>("createTrigger", {
     body: {
       agentId: input.agentId,
@@ -848,6 +796,7 @@ export async function createAmaScheduledAgentTrigger(env: Env, input: AmaSchedul
 
 export async function updateAmaScheduledAgentTrigger(
   env: Env,
+  ownerId: string,
   projectId: string,
   scheduleId: string,
   input: AmaScheduledTriggerUpdate,
@@ -860,7 +809,7 @@ export async function updateAmaScheduledAgentTrigger(
   if (input.promptTemplate !== undefined) body.promptTemplate = input.promptTemplate;
   if (input.intervalSeconds !== undefined) body.schedule = { type: "interval", intervalSeconds: input.intervalSeconds };
   if (input.status !== undefined) body.enabled = input.status !== "paused";
-  const client = await createAmaClient(env, projectId);
+  const client = await createAmaClient(env, ownerId, projectId);
   const trigger = await client.request<AmaTriggerResponse>("updateTrigger", {
     path: { triggerId: scheduleId },
     body,
@@ -868,74 +817,48 @@ export async function updateAmaScheduledAgentTrigger(
   return toAmaScheduledTrigger(trigger);
 }
 
-export async function archiveAmaScheduledAgentTrigger(env: Env, projectId: string, scheduleId: string): Promise<void> {
-  const client = await createAmaClient(env, projectId);
+export async function archiveAmaScheduledAgentTrigger(env: Env, ownerId: string, projectId: string, scheduleId: string): Promise<void> {
+  const client = await createAmaClient(env, ownerId, projectId);
   await client.request("updateTrigger", { path: { triggerId: scheduleId }, body: { archived: true } });
 }
 
-async function createAmaClient(env: Env, projectId?: string) {
+// Resolves the AMA access token for the linked AMA account of the AK user
+// `ownerId`. BetterAuth's getAccessToken auto-refreshes via the stored refresh
+// token. Surfaces a clear "no linked AMA account" error when the user hasn't
+// connected AMA (BetterAuth raises ACCOUNT_NOT_FOUND); other failures (e.g. a
+// revoked refresh token, network) propagate unchanged.
+async function userAmaAccessToken(env: Env, ownerId: string): Promise<string> {
+  const auth = createAuth(env);
+  let res: { accessToken?: string } | undefined;
+  try {
+    res = await auth.api.getAccessToken({ body: { providerId: "ama", userId: ownerId } });
+  } catch (error) {
+    if (isAmaAccountNotFound(error)) {
+      throw new Error(`No linked AMA account for user ${ownerId}; connect AMA to enable cloud scheduling`);
+    }
+    throw error;
+  }
+  if (!res?.accessToken) {
+    throw new Error(`No linked AMA account for user ${ownerId}; connect AMA to enable cloud scheduling`);
+  }
+  return res.accessToken;
+}
+
+function isAmaAccountNotFound(error: unknown): boolean {
+  const code = (error as { body?: { code?: unknown } })?.body?.code;
+  if (code === "ACCOUNT_NOT_FOUND") return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /account not found/i.test(message);
+}
+
+async function createAmaClient(env: Env, ownerId: string, projectId?: string) {
   const origin = requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN");
-  const attempt = async <T>(operationId: AmaOperationId, options?: AmaRequestOptions) =>
-    new AmaClient({ origin, accessToken: await accessToken(env), projectId }).request<T>(operationId, options);
   return {
-    // A cached token can be revoked server-side before its TTL expires; on the
-    // first 401 drop the cache and re-authenticate once.
     async request<T>(operationId: AmaOperationId, options?: AmaRequestOptions): Promise<T> {
-      const usedCachedToken = cachedAmaToken !== null;
-      try {
-        return await attempt<T>(operationId, options);
-      } catch (error) {
-        if ((error as { status?: unknown }).status === 401 && usedCachedToken) {
-          cachedAmaToken = null;
-          return await attempt<T>(operationId, options);
-        }
-        throw error;
-      }
+      const accessToken = await userAmaAccessToken(env, ownerId);
+      return new AmaClient({ origin, accessToken, projectId }).request<T>(operationId, options);
     },
   };
-}
-
-// The client-credentials token is valid for ~1h; cache it per isolate so each
-// AMA call doesn't pay a second remote round-trip re-authenticating. Keyed by
-// client id so a credential change invalidates the cache.
-let cachedAmaToken: { key: string; token: string; expiresAt: number } | null = null;
-const AMA_TOKEN_REFRESH_SKEW_MS = 60_000;
-
-async function accessToken(env: Env) {
-  const tokenUrl = requireEnv(env.AMA_OAUTH_TOKEN_URL, "AMA_OAUTH_TOKEN_URL");
-  const clientId = requireEnv(env.AMA_OAUTH_CLIENT_ID, "AMA_OAUTH_CLIENT_ID");
-  const clientSecret = requireEnv(env.AMA_OAUTH_CLIENT_SECRET, "AMA_OAUTH_CLIENT_SECRET");
-  if (cachedAmaToken && cachedAmaToken.key === clientId && cachedAmaToken.expiresAt > Date.now()) {
-    return cachedAmaToken.token;
-  }
-  const body = new URLSearchParams({
-    grant_type: "client_credentials",
-    client_id: clientId,
-    client_secret: clientSecret,
-  });
-  if (env.AMA_OAUTH_SCOPE) {
-    body.set("scope", env.AMA_OAUTH_SCOPE);
-  }
-
-  const response = await fetch(tokenUrl, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body,
-  });
-  if (!response.ok) {
-    throw new Error(`AMA OAuth token request failed with HTTP ${response.status}`);
-  }
-  const token = (await response.json()) as OAuthTokenResponse;
-  if (!token.access_token) {
-    throw new Error("AMA OAuth token response did not include access_token");
-  }
-  const ttlMs = Math.max((token.expires_in ?? 3600) * 1000 - AMA_TOKEN_REFRESH_SKEW_MS, 30_000);
-  cachedAmaToken = { key: clientId, token: token.access_token, expiresAt: Date.now() + ttlMs };
-  return token.access_token;
-}
-
-function hasTokenSource(env: Env) {
-  return Boolean(env.AMA_OAUTH_TOKEN_URL && env.AMA_OAUTH_CLIENT_ID && env.AMA_OAUTH_CLIENT_SECRET);
 }
 
 function requireEnv(value: string | undefined, name: string): string {
@@ -943,37 +866,4 @@ function requireEnv(value: string | undefined, name: string): string {
     throw new Error(`${name} is required`);
   }
   return value;
-}
-
-function loadSigningJwk(env: Env): JWK & { kid: string } {
-  const raw = requireEnv(env.AK_FEDERATED_SIGNING_KEY, "AK_FEDERATED_SIGNING_KEY");
-  const jwk = JSON.parse(raw) as JWK & { kid?: string };
-  if (!jwk.kid) throw new Error("AK_FEDERATED_SIGNING_KEY must include a kid");
-  return jwk as JWK & { kid: string };
-}
-
-async function signSubjectToken(env: Env, payload: Record<string, unknown>) {
-  const jwk = loadSigningJwk(env);
-  const key = await importJWK(jwk, "ES256");
-  const { iss, sub, aud, exp, ...claims } = payload as {
-    iss: string;
-    sub: string;
-    aud: string;
-    exp: number;
-  } & Record<string, unknown>;
-  return new SignJWT(claims)
-    .setProtectedHeader({ alg: "ES256", kid: jwk.kid, typ: "JWT" })
-    .setIssuer(iss)
-    .setSubject(sub)
-    .setAudience(aud)
-    .setExpirationTime(exp)
-    .setIssuedAt()
-    .sign(key);
-}
-
-// Public JWK set served at /.well-known/jwks.json so FlareAuth can verify the
-// runner subject tokens. The private `d` component is stripped.
-export function federatedSigningPublicJwks(env: Env): { keys: JWK[] } {
-  const { d: _d, ...publicJwk } = loadSigningJwk(env);
-  return { keys: [{ ...publicJwk, use: "sig", alg: "ES256" }] };
 }

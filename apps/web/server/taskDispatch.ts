@@ -89,7 +89,7 @@ export async function dispatchTaskToAma(
   // fully loaded runner. Teardown clears the dispatch claim, so re-claim.
   const staleBinding = taskAnnotations(task);
   if (stringAnnotation(staleBinding, "ama.sessionId") || stringAnnotation(staleBinding, "agentSessionId")) {
-    task = await releaseTaskRuntimeBinding(db, env, task);
+    task = await releaseTaskRuntimeBinding(db, env, ownerId, task);
     if (!(await claimTaskDispatch(db, task.id))) return task;
   }
 
@@ -103,7 +103,7 @@ export async function dispatchTaskToAma(
     if (candidates.length === 0) {
       throw new HTTPException(409, { message: `Runtime "${akAgent.runtime}" is not available on any machine` });
     }
-    const machineRuntime = await firstRunnableCandidate(env, amaProjectId, candidates, amaRuntime, akAgent.model);
+    const machineRuntime = await firstRunnableCandidate(env, ownerId, amaProjectId, candidates, amaRuntime, akAgent.model);
     // Capable machines exist but every runner is busy or offline: leave the task
     // queued and let the dispatch sweep retry when capacity frees up.
     if (!machineRuntime) {
@@ -121,7 +121,7 @@ export async function dispatchTaskToAma(
   let secret: Awaited<ReturnType<typeof createAmaSessionSecret>> | null = null;
   let dispatch: Awaited<ReturnType<typeof createAmaTaskSession>> | null = null;
   try {
-    secret = await createAmaSessionSecret(env, {
+    secret = await createAmaSessionSecret(env, ownerId, {
       projectId: amaProjectId,
       vaultId,
       name: secretReferenceName(sessionIdentity.sessionId),
@@ -130,7 +130,7 @@ export async function dispatchTaskToAma(
     });
     await setAmaAgentSessionSecretCredential(db, sessionIdentity.sessionId, secret.credentialId);
 
-    dispatch = await createAmaTaskSession(env, {
+    dispatch = await createAmaTaskSession(env, ownerId, {
       projectId: amaProjectId,
       agentId: amaAgent.id,
       environmentId: amaEnvironmentId,
@@ -216,9 +216,9 @@ export async function ensureAmaAgentForAkAgent(
   const annotations = metadataObject(metadataObject(akAgent.metadata).annotations);
   const existingAmaAgentId = stringAnnotation(annotations, "ama.agentId");
   if (existingAmaAgentId) {
-    const live = await readAmaAgent(env, projectId, existingAmaAgentId);
+    const live = await readAmaAgent(env, ownerId, projectId, existingAmaAgentId);
     if (live) {
-      await updateAmaAgentConfig(env, projectId, live.id, amaAgentInput);
+      await updateAmaAgentConfig(env, ownerId, projectId, live.id, amaAgentInput);
       await updateAgentMetadataAnnotations(db, ownerId, akAgentId, {
         "ama.projectId": projectId,
         "ama.agentId": live.id,
@@ -229,7 +229,7 @@ export async function ensureAmaAgentForAkAgent(
     }
   }
 
-  const agent = await createAmaAgent(env, amaAgentInput);
+  const agent = await createAmaAgent(env, ownerId, amaAgentInput);
   await updateAgentMetadataAnnotations(db, ownerId, akAgentId, {
     "ama.projectId": projectId,
     "ama.agentId": agent.id,
@@ -291,11 +291,12 @@ export async function getReadyAmaMachineEnvironmentForRuntime(
   model: string | null = null,
 ): Promise<{ machineId: string; environmentId: string } | null> {
   const candidates = await listMachineEnvironmentCandidatesForRuntime(db, ownerId, runtime);
-  return firstRunnableCandidate(env, projectId, candidates, amaRuntimeName(runtime), model);
+  return firstRunnableCandidate(env, ownerId, projectId, candidates, amaRuntimeName(runtime), model);
 }
 
 async function firstRunnableCandidate(
   env: Env,
+  ownerId: string,
   projectId: string,
   candidates: { machineId: string; environmentId: string }[],
   amaRuntime: string,
@@ -306,7 +307,7 @@ async function firstRunnableCandidate(
   // runners that predate model declarations.
   let fallback: { machineId: string; environmentId: string } | null = null;
   for (const candidate of candidates) {
-    const runners = await listAmaRunners(env, projectId, candidate.environmentId);
+    const runners = await listAmaRunners(env, ownerId, projectId, candidate.environmentId);
     const runnable = runners.data.filter((runner) => amaRunnerCanRunRuntime(runner, amaRuntime, model));
     if (runnable.length === 0) continue;
     if (!model || runnable.some((runner) => amaRunnerDeclaresModel(runner, amaRuntime, model))) return candidate;
@@ -358,17 +359,17 @@ function runtimeQuotaExhausted(runner: AmaRunner, runtime: string): boolean {
   return usage.windows.some((window) => window.utilization >= 100 && Date.parse(window.resetsAt) > now);
 }
 
-export async function sendTaskMessageToAma(env: Env, task: Task, message: string): Promise<Task> {
+export async function sendTaskMessageToAma(env: Env, ownerId: string, task: Task, message: string): Promise<Task> {
   const sessionId = amaSessionId(task);
   const projectId = amaProjectId(task);
   if (!sessionId || !projectId || !isAmaRuntimeConfigured(env)) {
     return task;
   }
-  await sendAmaSessionMessage(env, projectId, sessionId, message);
+  await sendAmaSessionMessage(env, ownerId, projectId, sessionId, message);
   return task;
 }
 
-export async function sendTaskRejectToAma(db: D1, env: Env, task: Task, reason: string | undefined): Promise<Task> {
+export async function sendTaskRejectToAma(db: D1, env: Env, ownerId: string, task: Task, reason: string | undefined): Promise<Task> {
   const sessionId = amaSessionId(task);
   const projectId = amaProjectId(task);
   if (!sessionId || !projectId || !isAmaRuntimeConfigured(env)) {
@@ -376,6 +377,7 @@ export async function sendTaskRejectToAma(db: D1, env: Env, task: Task, reason: 
   }
   await sendAmaSessionMessage(
     env,
+    ownerId,
     projectId,
     sessionId,
     [
@@ -399,6 +401,7 @@ export async function sendTaskRejectToAma(db: D1, env: Env, task: Task, reason: 
 export async function releaseTaskRuntimeBinding(
   db: D1,
   env: Env,
+  ownerId: string,
   task: Task,
   reason: "user_requested" | "timeout" | "policy" | "runtime_error" = "user_requested",
 ): Promise<Task> {
@@ -410,7 +413,7 @@ export async function releaseTaskRuntimeBinding(
 
   if (sessionId && projectId && isAmaRuntimeConfigured(env)) {
     try {
-      await stopAmaSession(env, projectId, sessionId, reason);
+      await stopAmaSession(env, ownerId, projectId, sessionId, reason);
     } catch (error) {
       // 404: session no longer exists; 409: already archived. Both terminal.
       const status = (error as { status?: unknown }).status;
@@ -449,7 +452,7 @@ async function revokeGithubTokenCredential(db: D1, env: Env, akSessionId: string
   const projectId = await resolveAmaProjectId(db, env, session.owner_id);
   const vaultId = await resolveAmaSessionSecretVaultId(db, env, session.owner_id);
   try {
-    await revokeAmaVaultCredential(env, projectId, vaultId, credentialId);
+    await revokeAmaVaultCredential(env, session.owner_id, projectId, vaultId, credentialId);
   } catch (error) {
     // 404: credential already gone; 400: already revoked.
     const status = (error as { status?: unknown }).status;
@@ -465,7 +468,7 @@ async function collectAkAgentSessionUsage(db: D1, env: Env, akSessionId: string)
   if (!session?.ama_session_id || session.status !== "active") return;
   const projectId = await getAmaProjectId(db, session.owner_id);
   if (!projectId) return;
-  const totals = await readAmaSessionUsageTotals(env, projectId, session.ama_session_id);
+  const totals = await readAmaSessionUsageTotals(env, session.owner_id, projectId, session.ama_session_id);
   if (totals) await setAmaAgentSessionUsageTotals(db, akSessionId, totals);
 }
 
@@ -476,7 +479,7 @@ async function revokeAkAgentSessionSecret(db: D1, env: Env, akSessionId: string)
   const projectId = await resolveAmaProjectId(db, env, session.owner_id);
   const vaultId = await resolveAmaSessionSecretVaultId(db, env, session.owner_id);
   try {
-    await revokeAmaVaultCredential(env, projectId, vaultId, session.secret_credential_id);
+    await revokeAmaVaultCredential(env, session.owner_id, projectId, vaultId, session.secret_credential_id);
   } catch (error) {
     // 404: credential already gone; 400: already revoked.
     const status = (error as { status?: unknown }).status;
@@ -593,13 +596,13 @@ export async function reconcileAmaBoundTasks(db: D1, env: Env): Promise<void> {
       const task = await getTask(db, row.id, row.owner_id);
       if (!task) continue;
       if (row.status === "done" || row.status === "cancelled") {
-        await releaseTaskRuntimeBinding(db, env, task);
+        await releaseTaskRuntimeBinding(db, env, row.owner_id, task);
         continue;
       }
       const sessionId = amaSessionId(task);
       const projectId = amaProjectId(task);
       if (!sessionId || !projectId) continue;
-      const session = await readAmaSession(env, sessionId, projectId);
+      const session = await readAmaSession(env, row.owner_id, sessionId, projectId);
       if (!session && Date.parse(task.updated_at) > Date.now() - RECONCILE_MIN_TASK_AGE_MS) continue;
       const status = session ? String(session.state) : null;
       if (status && !DEAD_AMA_SESSION_STATUSES.has(status)) {
@@ -626,7 +629,7 @@ export async function reconcileAmaBoundTasks(db: D1, env: Env): Promise<void> {
             : status === "pending"
               ? "runtime session stuck pending; no runner picked it up"
               : `runtime session ended in state '${status}'`;
-      const released = await releaseTaskRuntimeBinding(db, env, task, "runtime_error");
+      const released = await releaseTaskRuntimeBinding(db, env, row.owner_id, task, "runtime_error");
       if (row.status === "in_progress") {
         await releaseTask(db, task.id, "machine", "system", "machine", "released");
       }
@@ -802,7 +805,7 @@ async function githubTokenSecretRef(
   if (repo && isGithubAppConfigured(env)) {
     try {
       const minted = await mintGithubInstallationToken(env, repo.owner, repo.repo);
-      const secret = await createAmaSessionSecret(env, {
+      const secret = await createAmaSessionSecret(env, ownerId, {
         projectId,
         vaultId,
         name: `GH_TOKEN_${akSessionId.replaceAll(/[^A-Za-z0-9_]/g, "_")}`,
@@ -835,7 +838,7 @@ async function ownerGithubTokenSecretRef(
       versionId: typeof existingVersionId === "string" ? existingVersionId : null,
     };
   }
-  const secret = await createAmaSessionSecret(env, {
+  const secret = await createAmaSessionSecret(env, ownerId, {
     projectId,
     vaultId,
     name: "GH_AGENT_TOKEN",

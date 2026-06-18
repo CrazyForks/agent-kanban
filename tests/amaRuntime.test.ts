@@ -1,26 +1,21 @@
 // @vitest-environment node
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { importJWK, jwtVerify } from "jose";
-import {
-  createAmaFederatedRunnerToken,
-  createAmaFederatedTenant,
-  createAmaSessionSecret,
-  createAmaTaskSession,
-  isAmaRuntimeConfigured,
-} from "../apps/web/server/amaRuntime";
-import type { Env } from "../apps/web/server/types";
 
-// Fixed ES256 test keypair — generated once, stable across runs.
-const TEST_SIGNING_JWK = {
-  kty: "EC",
-  x: "YgsMptfXEIq8ALzmNQclYp40b4d2nxKbsjle3TfEyTE",
-  y: "DP6x9I_82Y1J43QC9mEBiXZjOcL1J_k9S-AzZJbyAGc",
-  crv: "P-256",
-  d: "xa0meReZA9XMRXqAEyC_gEgnaZfrDL1CrHBXO_hCDy0",
-  kid: "test-ak",
-  alg: "ES256",
-};
+// The per-user AMA token now comes from the linked AMA account via BetterAuth's
+// getAccessToken (auto-refreshed), not a client-credentials exchange. Stub
+// createAuth so amaRuntime resolves a deterministic token for the test owner.
+const getAccessTokenMock = vi.fn(async ({ body }: { body: { providerId: string; userId: string } }) => {
+  expect(body.providerId).toBe("ama");
+  expect(body.userId).toBe("owner_123");
+  return { accessToken: "user-token", accessTokenExpiresAt: new Date(Date.now() + 3600_000), scopes: [], idToken: undefined };
+});
+vi.mock("../apps/web/server/betterAuth", () => ({
+  createAuth: () => ({ api: { getAccessToken: getAccessTokenMock } }),
+}));
+
+import { createAmaSessionSecret, createAmaTaskSession, isAmaRuntimeConfigured } from "../apps/web/server/amaRuntime";
+import type { Env } from "../apps/web/server/types";
 
 function env(overrides: Partial<Env> = {}): Env {
   return {
@@ -42,34 +37,30 @@ function env(overrides: Partial<Env> = {}): Env {
     AMA_OAUTH_CLIENT_ID: "ak-app",
     AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     AMA_OAUTH_SCOPE: "ama:project",
-    AK_FEDERATED_SIGNING_KEY: JSON.stringify(TEST_SIGNING_JWK),
     ...overrides,
   };
 }
 
+const OWNER = "owner_123";
+
 describe("AMA runtime adapter", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    getAccessTokenMock.mockClear();
   });
 
-  it("reports configured when origin, environment, and a token source exist", () => {
+  it("reports configured when origin and the OAuth client exist", () => {
     expect(isAmaRuntimeConfigured(env())).toBe(true);
     expect(isAmaRuntimeConfigured(env({ AMA_OAUTH_CLIENT_SECRET: undefined }))).toBe(false);
-    expect(isAmaRuntimeConfigured(env())).toBe(true);
+    expect(isAmaRuntimeConfigured(env({ AMA_ORIGIN: undefined }))).toBe(false);
   });
 
-  it("creates sessions through AMA SDK without sending AK product correlation", async () => {
+  it("creates sessions through AMA SDK as the owner's linked AMA account", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "https://auth.test/oauth/token") {
-        expect(init?.method).toBe("POST");
-        expect(String(init?.body)).toContain("grant_type=client_credentials");
-        expect(String(init?.body)).toContain("client_id=ak-app");
-        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
-      }
       if (url === "https://ama.test/api/v1/sessions") {
         expect(init?.method).toBe("POST");
-        expect((init?.headers as Record<string, string>).authorization).toBe("Bearer oauth-token");
+        expect((init?.headers as Record<string, string>).authorization).toBe("Bearer user-token");
         expect((init?.headers as Record<string, string>)["x-ama-project-id"]).toBe("project_123");
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         expect(body).toEqual({
@@ -99,7 +90,7 @@ describe("AMA runtime adapter", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const dispatch = await createAmaTaskSession(env(), {
+    const dispatch = await createAmaTaskSession(env(), OWNER, {
       projectId: "project_123",
       agentId: "agent_123",
       environmentId: "env_123",
@@ -119,18 +110,17 @@ describe("AMA runtime adapter", () => {
       status: "pending",
       statusReason: null,
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Only the AMA SDK call — the token comes from getAccessToken, not a fetch.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getAccessTokenMock).toHaveBeenCalledWith({ body: { providerId: "ama", userId: OWNER } });
   });
 
   it("stores runtime session secrets in AMA vault credentials", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
-      }
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
         expect(init?.method).toBe("POST");
-        expect((init?.headers as Record<string, string>).authorization).toBe("Bearer oauth-token");
+        expect((init?.headers as Record<string, string>).authorization).toBe("Bearer user-token");
         expect((init?.headers as Record<string, string>)["x-ama-project-id"]).toBe("project_123");
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
         expect(body).toMatchObject({
@@ -149,7 +139,7 @@ describe("AMA runtime adapter", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
-      createAmaSessionSecret(env(), {
+      createAmaSessionSecret(env(), OWNER, {
         projectId: "project_123",
         vaultId: "vault_123",
         name: "AK_AGENT_KEY_session_123",
@@ -159,74 +149,21 @@ describe("AMA runtime adapter", () => {
     ).resolves.toEqual({ credentialId: "vaultcred_123", activeVersionId: "vaultver_123" });
   });
 
-  it("creates federated tenants and exchanges AK subject tokens for runner tokens", async () => {
-    // The public JWK (no private component) used to verify subject tokens in the test.
-    const { d: _d, ...publicJwk } = TEST_SIGNING_JWK;
-    const publicKey = await importJWK(publicJwk, "ES256");
-
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url === "https://auth.test/oauth/token" && String(init?.body).includes("client_credentials")) {
-        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
-      }
-      if (url === "https://ama.test/api/v1/auth/federated-tenants") {
-        expect(init?.method).toBe("POST");
-        expect((init?.headers as Record<string, string>)["x-ama-project-id"]).toBe("project_123");
-        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        expect(body).toMatchObject({
-          issuer: "https://ak.example.com",
-          externalTenantId: "owner_123",
-          environmentId: "env_123",
-          capabilities: ["session:poll", "session:claim"],
-        });
-        return new Response(JSON.stringify({ id: "ft_123" }), { status: 201 });
-      }
-      if (url === "https://auth.test/oauth/token" && String(init?.body).includes("token-exchange")) {
-        expect((init?.headers as Record<string, string>).authorization).toBe(`Basic ${btoa("ak-app:ak-secret")}`);
-        const form = new URLSearchParams(String(init?.body));
-        expect(form.get("grant_type")).toBe("urn:ietf:params:oauth:grant-type:token-exchange");
-        expect(form.get("audience")).toBe("https://ama.test");
-        expect(form.get("scope")).toBe("runner:connect offline_access");
-        // Verify the subject token is a valid ES256 JWT with the expected claims
-        const subjectToken = form.get("subject_token")!;
-        const { payload } = await jwtVerify(subjectToken, publicKey, { issuer: "https://ak.example.com" });
-        expect(payload.sub).toBe("machine:machine_123");
-        expect(payload.aud).toBe("https://ama.test");
-        expect(payload.ama_project_id).toBe("project_123");
-        expect(payload.ama_environment_id).toBe("env_123");
-        expect(payload).not.toHaveProperty("external_tenant_id");
-        return new Response(
-          JSON.stringify({
-            access_token: "runner-token",
-            refresh_token: "runner-refresh-token",
-            token_type: "Bearer",
-            expires_in: 3600,
-          }),
-          { status: 200 },
-        );
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await createAmaFederatedTenant(env(), {
-      projectId: "project_123",
-      issuer: "https://ak.example.com",
-      externalTenantId: "owner_123",
-      environmentId: "env_123",
-    });
-    await expect(
-      createAmaFederatedRunnerToken(env(), {
-        projectId: "project_123",
-        issuer: "https://ak.example.com",
-        subject: "machine:machine_123",
-        environmentId: "env_123",
+  it("throws a clear error when the owner has no linked AMA account", async () => {
+    getAccessTokenMock.mockResolvedValueOnce({ accessToken: "", accessTokenExpiresAt: undefined, scopes: [], idToken: undefined } as any);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("fetch must not be called when there is no token");
       }),
-    ).resolves.toEqual({
-      accessToken: "runner-token",
-      refreshToken: "runner-refresh-token",
-      tokenType: "Bearer",
-      expiresIn: 3600,
-    });
+    );
+    await expect(
+      createAmaSessionSecret(env(), OWNER, {
+        projectId: "project_123",
+        vaultId: "vault_123",
+        name: "AK_AGENT_KEY_session_123",
+        secretValue: "{}",
+      }),
+    ).rejects.toThrow(/No linked AMA account/);
   });
 });

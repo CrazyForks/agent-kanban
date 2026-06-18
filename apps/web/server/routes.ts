@@ -28,15 +28,13 @@ import {
   upsertLatestAgent,
 } from "./agentRepo";
 import { closeSession, createSession, listSessions, reopenSession, updateSessionUsage } from "./agentSessionRepo";
-import { ensureAmaOwnerIntegration, getAmaProjectId, resolveAmaProjectId } from "./amaOwnerIntegrationRepo";
+import { ensureAmaOwnerIntegration, getAmaProjectId, hasAmaAccount, resolveAmaProjectId } from "./amaOwnerIntegrationRepo";
 import {
   type AmaRunner,
   amaEnvironmentExists,
   archiveAmaScheduledAgentTrigger,
   createAmaEnvironment,
-  createAmaFederatedRunnerToken,
   createAmaScheduledAgentTrigger,
-  federatedSigningPublicJwks,
   getAmaSessionRuntimeSnapshot,
   isAmaTaskDispatchConfigured,
   listAmaRunners,
@@ -302,7 +300,7 @@ async function publicBoardMaintainerWithAmaStatus(db: D1, env: Env, ownerId: str
 
   const projectId = await getAmaProjectId(db, ownerId);
   if (!projectId) return publicMaintainer;
-  const runs = await listAmaScheduledTriggerRuns(env, projectId, maintainer.ama_schedule_id, { limit: 1 });
+  const runs = await listAmaScheduledTriggerRuns(env, ownerId, projectId, maintainer.ama_schedule_id, { limit: 1 });
   const latestRun = runs.data[0];
   return {
     ...publicMaintainer,
@@ -325,7 +323,7 @@ async function availableAmaRuntimes(db: D1, env: Env, ownerId: string): Promise<
   if (environmentIds.length === 0) return runtimes;
   const projectId = await getAmaProjectId(db, ownerId);
   if (!projectId) return runtimes;
-  const runnerLists = await Promise.all(environmentIds.map((environmentId) => listAmaRunners(env, projectId, environmentId)));
+  const runnerLists = await Promise.all(environmentIds.map((environmentId) => listAmaRunners(env, ownerId, projectId, environmentId)));
   for (const runners of runnerLists) {
     for (const runner of runners.data) {
       for (const runtime of AGENT_RUNTIMES) {
@@ -336,6 +334,16 @@ async function availableAmaRuntimes(db: D1, env: Env, ownerId: string): Promise<
     }
   }
   return runtimes;
+}
+
+// Gates a user-initiated AMA dispatch on the owner having linked their own AMA
+// account. Standalone AK (no AMA env) never reaches here; an AMA-configured AK
+// where the user hasn't connected returns a clear 4xx. No-op otherwise.
+async function requireAmaConnected(db: D1, env: Env, ownerId: string): Promise<void> {
+  if (!isAmaTaskDispatchConfigured(env)) return;
+  if (!(await hasAmaAccount(db, ownerId))) {
+    throw new HTTPException(403, { message: "Connect AMA to enable cloud scheduling" });
+  }
 }
 
 function publicMaintainerRun(run: {
@@ -367,11 +375,16 @@ function publicMachine<T extends MachineRecord | MachineWithAgentsRecord>(machin
   return publicMachine;
 }
 
-async function machineWithAmaRunnerStatus<T extends MachineRecord | MachineWithAgentsRecord>(env: Env, projectId: string, machine: T): Promise<T> {
+async function machineWithAmaRunnerStatus<T extends MachineRecord | MachineWithAgentsRecord>(
+  env: Env,
+  ownerId: string,
+  projectId: string,
+  machine: T,
+): Promise<T> {
   if (!machine.ama_environment_id) {
     return { ...machine, status: "offline", last_heartbeat_at: null, runtimes: [] };
   }
-  const runners = await listAmaRunners(env, projectId, machine.ama_environment_id);
+  const runners = await listAmaRunners(env, ownerId, projectId, machine.ama_environment_id);
   const activeRunners = runners.data.filter((runner) => runner.status === "active");
   const activeLoad = activeRunners.reduce((sum, runner) => sum + runner.currentLoad, 0);
   const lastHeartbeatAt = runners.data
@@ -444,7 +457,7 @@ async function machinesWithRuntimeStatus<T extends MachineRecord | MachineWithAg
   if (!projectId) {
     return machines.map((machine) => ({ ...machine, status: "offline", last_heartbeat_at: null, runtimes: [] }));
   }
-  return await Promise.all(machines.map((machine) => machineWithAmaRunnerStatus(env, projectId, machine)));
+  return await Promise.all(machines.map((machine) => machineWithAmaRunnerStatus(env, ownerId, projectId, machine)));
 }
 
 async function machinesWithRuntimeStatusByOwner<T extends MachineRecord | MachineWithAgentsRecord>(db: D1, env: Env, machines: T[]): Promise<T[]> {
@@ -465,7 +478,7 @@ async function machinesWithRuntimeStatusByOwner<T extends MachineRecord | Machin
       if (!projectId) {
         return { ...machine, status: "offline", last_heartbeat_at: null, runtimes: [] };
       }
-      return await machineWithAmaRunnerStatus(env, projectId, machine);
+      return await machineWithAmaRunnerStatus(env, machine.owner_id, projectId, machine);
     }),
   );
 }
@@ -475,10 +488,10 @@ async function ensureMachineAmaEnvironment(db: D1, env: Env, ownerId: string, ma
   // Validate the stored environment still exists. An AMA data reset (or a
   // re-provisioned project) leaves the id dangling, which makes the runner's
   // registration fail with "Runner environment is unavailable"; recreate it.
-  if (machine.ama_environment_id && (await amaEnvironmentExists(env, binding.amaProjectId, machine.ama_environment_id))) {
+  if (machine.ama_environment_id && (await amaEnvironmentExists(env, ownerId, binding.amaProjectId, machine.ama_environment_id))) {
     return machine.ama_environment_id;
   }
-  const environment = await createAmaEnvironment(env, {
+  const environment = await createAmaEnvironment(env, ownerId, {
     projectId: binding.amaProjectId,
     name: machine.name,
     description: `Self-hosted environment for AK machine ${machine.id}.`,
@@ -488,33 +501,20 @@ async function ensureMachineAmaEnvironment(db: D1, env: Env, ownerId: string, ma
   return environment.id;
 }
 
-async function createMachineRunnerOnboarding(env: Env, machine: MachineRecord, ownerId: string, requestOrigin: string) {
+// The self-hosted runner authenticates itself (device login against AMA); AK no
+// longer mints a federated runner token. Onboarding just hands the runner the
+// AMA origin and the project/environment it should join.
+async function createMachineRunnerOnboarding(env: Env, machine: MachineRecord, ownerId: string) {
   const environmentId = machine.ama_environment_id;
   if (!environmentId) return null;
   if (readyAmaRuntimeNames(machine.runtimes).length === 0) return null;
 
   const projectId = await resolveAmaProjectId(env.DB, env, ownerId);
-  // Federation issuer is the AK instance's stable identity, registered once as a
-  // federated credential under AK's application in FlareAuth — not the URL agents
-  // call back on (AK_API_URL may be an ephemeral dev tunnel). The runner token
-  // names the owner's project; AMA scopes the workspace by project, not a tenant.
-  const issuer = env.AK_FEDERATED_ISSUER ?? apiUrl(env, requestOrigin);
-
-  const token = await createAmaFederatedRunnerToken(env, {
-    projectId,
-    issuer,
-    subject: `machine:${machine.id}`,
-    environmentId,
-  });
 
   return {
     origin: env.AMA_ORIGIN,
     projectId,
     environmentId,
-    accessToken: token.accessToken,
-    refreshToken: token.refreshToken,
-    tokenType: token.tokenType,
-    expiresIn: token.expiresIn,
     // Server-pinned runner version: lets the control plane roll the runner
     // forward without a CLI release. Absent → the CLI falls back to its pin.
     version: env.AMA_RUNNER_VERSION ?? null,
@@ -683,12 +683,6 @@ api.get("/.well-known/openpgpkey/policy", (c) => {
   return new Response("", { headers: { "Content-Type": "text/plain" } });
 });
 
-// Public JWK set for runner federation: FlareAuth fetches this to verify the
-// ES256 subject tokens AK signs during the AMA runner token exchange.
-api.get("/.well-known/jwks.json", (c) => {
-  return c.json(federatedSigningPublicJwks(c.env), 200, { "cache-control": "public, max-age=300" });
-});
-
 // ─── Share SSR (meta tag injection for social sharing) ───
 
 api.get("/share/*", async (c) => {
@@ -846,9 +840,7 @@ api.post("/api/machines", async (c) => {
     });
   }
 
-  const runner = isAmaTaskDispatchConfigured(c.env)
-    ? await createMachineRunnerOnboarding(c.env, machine, c.get("ownerId"), new URL(c.req.url).origin)
-    : null;
+  const runner = isAmaTaskDispatchConfigured(c.env) ? await createMachineRunnerOnboarding(c.env, machine, c.get("ownerId")) : null;
   return c.json({ ...publicMachine(machine), runner }, 201);
 });
 
@@ -1130,7 +1122,7 @@ api.get("/api/agents/:agentId/sessions", async (c) => {
     sessions.map(async (session) => {
       const amaSessionId = typeof (session as any).ama_session_id === "string" ? (session as any).ama_session_id : null;
       if (!amaSessionId) return session;
-      const runtimeSession = await readAmaSession(c.env, amaSessionId, projectId).catch(() => null);
+      const runtimeSession = await readAmaSession(c.env, ownerId, amaSessionId, projectId).catch(() => null);
       return {
         ...session,
         runtime_session: runtimeSession,
@@ -1223,7 +1215,7 @@ api.get("/api/tasks/:id/runtime", async (c) => {
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : undefined;
   const cursorRaw = Number.parseInt(c.req.query("cursor") ?? "", 10);
   const cursor = Number.isFinite(cursorRaw) ? cursorRaw : undefined;
-  const runtime = await getAmaSessionRuntimeSnapshot(c.env, sessionId, projectId, { order, limit, cursor });
+  const runtime = await getAmaSessionRuntimeSnapshot(c.env, c.get("ownerId"), sessionId, projectId, { order, limit, cursor });
   return c.json({
     task_id: task.id,
     session_id: sessionId,
@@ -1291,7 +1283,7 @@ api.post("/api/tasks/:id/complete", async (c) => {
   // reconcile sweep mops up if AMA is unreachable right now.
   let unbound: Task | null = null;
   try {
-    unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, task);
+    unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
   } catch (error) {
     logger.warn(`runtime teardown failed for completed task ${task.id}: ${error}`);
   }
@@ -1307,7 +1299,7 @@ api.post("/api/tasks/:id/release", async (c) => {
   // the reconcile sweep tears the leftover binding down later.
   let unbound: Task;
   try {
-    unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, task);
+    unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
   } catch (error) {
     logger.warn(`runtime teardown failed for released task ${task.id}: ${error}`);
     return c.json(task);
@@ -1327,6 +1319,7 @@ api.post("/api/tasks/:id/assign", async (c) => {
   if (!targetAgentId) throw new HTTPException(400, { message: "agent_id is required" });
 
   const { actorType, actorId, sessionId } = resolveActor(c);
+  await requireAmaConnected(c.env.DB, c.env, c.get("ownerId"));
   const existing = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!existing) throw new HTTPException(404, { message: "Task not found" });
   if (existing.status === "todo" && existing.assigned_to === targetAgentId) {
@@ -1362,7 +1355,7 @@ api.post("/api/tasks/:id/cancel", async (c) => {
   // reconcile sweep mops up if AMA is unreachable right now.
   let unbound: Task | null = null;
   try {
-    unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, cancelled);
+    unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), cancelled);
   } catch (error) {
     logger.warn(`runtime teardown failed for cancelled task ${cancelled.id}: ${error}`);
   }
@@ -1383,7 +1376,7 @@ api.post("/api/tasks/:id/reject", async (c) => {
   const task = await rejectTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), body.reason, sessionId);
   if (!task) throw new HTTPException(404, { message: "Task not found" });
   try {
-    return c.json(await sendTaskRejectToAma(c.env.DB, c.env, task, body.reason));
+    return c.json(await sendTaskRejectToAma(c.env.DB, c.env, c.get("ownerId"), task, body.reason));
   } catch (error) {
     const status = (error as { status?: unknown }).status;
     if (status === 404 || status === 409) {
@@ -1391,7 +1384,7 @@ api.post("/api/tasks/:id/reject", async (c) => {
       // resume. Tear down the dead binding and release the task; the dispatch
       // sweep starts a fresh session, and the rejection reason stays visible
       // in the task notes.
-      const unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, task, "runtime_error");
+      const unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task, "runtime_error");
       // System-initiated recovery release, not a reviewer action.
       const released = await releaseTask(c.env.DB, task.id, "machine", "system", "machine", "released", sessionId);
       return c.json(released ?? unbound);
@@ -1413,7 +1406,7 @@ api.post("/api/tasks/:id/notes", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
   const action = await addTaskAction(c.env.DB, c.req.param("id"), actorType, actorId, "commented", body.detail, sessionId);
   if (actorType === "agent:leader" && task.status === "in_progress") {
-    await sendTaskMessageToAma(c.env, task, body.detail);
+    await sendTaskMessageToAma(c.env, c.get("ownerId"), task, body.detail);
   }
   return c.json(action, 201);
 });
@@ -1446,7 +1439,7 @@ api.post("/api/tasks/:id/messages", async (c) => {
 
   const message = await createMessage(c.env.DB, c.req.param("id"), body.sender_type, senderId, body.content);
   if (body.sender_type === "user") {
-    await sendTaskMessageToAma(c.env, task, body.content);
+    await sendTaskMessageToAma(c.env, c.get("ownerId"), task, body.content);
   }
   return c.json(message, 201);
 });
@@ -1515,6 +1508,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
   if (!isAmaTaskDispatchConfigured(c.env)) {
     throw new HTTPException(500, { message: "Task dispatch runtime is not configured" });
   }
+  await requireAmaConnected(c.env.DB, c.env, c.get("ownerId"));
 
   const ownerId = c.get("ownerId");
   const boardId = c.req.param("id");
@@ -1551,7 +1545,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     memoryEnabled: true,
   });
   const name = body.name?.trim() || `${board.name} maintainer`;
-  const schedule = await createAmaScheduledAgentTrigger(c.env, {
+  const schedule = await createAmaScheduledAgentTrigger(c.env, ownerId, {
     projectId: amaProjectId,
     agentId: amaAgent.id,
     environmentId: amaEnvironmentId,
@@ -1603,7 +1597,7 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
     throw new HTTPException(400, { message: "status must be active or paused" });
   }
   const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
-  const schedule = await updateAmaScheduledAgentTrigger(c.env, amaProjectId, maintainer.ama_schedule_id, {
+  const schedule = await updateAmaScheduledAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_schedule_id, {
     name: body.name,
     promptTemplate: body.prompt ? boardMaintainerPrompt(boardId, body.prompt) : undefined,
     intervalSeconds: body.interval_seconds,
@@ -1629,7 +1623,7 @@ api.get("/api/boards/:id/maintainers/:maintainerId/runs", async (c) => {
   if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
   const projectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
   const limit = Number.parseInt(c.req.query("limit") ?? "20", 10);
-  const runs = await listAmaScheduledTriggerRuns(c.env, projectId, maintainer.ama_schedule_id, {
+  const runs = await listAmaScheduledTriggerRuns(c.env, ownerId, projectId, maintainer.ama_schedule_id, {
     limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 100) : 20,
   });
   return c.json({
@@ -1647,7 +1641,7 @@ api.delete("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
   if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
   const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
-  await archiveAmaScheduledAgentTrigger(c.env, amaProjectId, maintainer.ama_schedule_id);
+  await archiveAmaScheduledAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_schedule_id);
   const updated = await updateBoardMaintainer(c.env.DB, ownerId, boardId, maintainer.id, { status: "archived" });
   if (!updated) throw new HTTPException(404, { message: "Board maintainer not found" });
   return c.json(await publicBoardMaintainerWithAmaStatus(c.env.DB, c.env, ownerId, updated));

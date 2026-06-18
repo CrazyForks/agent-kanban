@@ -1,11 +1,41 @@
 import { agentAuth } from "@better-auth/agent-auth";
 import { apiKey } from "@better-auth/api-key";
-import { betterAuth } from "better-auth";
-import { admin, bearer } from "better-auth/plugins";
+import { type BetterAuthPlugin, betterAuth } from "better-auth";
+import { admin, bearer, genericOAuth } from "better-auth/plugins";
 import { Kysely } from "kysely";
 import { D1Dialect } from "kysely-d1";
 import { sendVerificationEmail } from "./emailService";
 import type { Env } from "./types";
+
+// AMA OIDC discovery url. Explicit AMA_OIDC_DISCOVERY_URL wins; otherwise it is
+// derived from the client-credentials token url. Returns undefined in
+// standalone mode (no AMA configured) so the provider plugin is skipped.
+function amaOidcDiscoveryUrl(env: Env): string | undefined {
+  if (env.AMA_OIDC_DISCOVERY_URL) return env.AMA_OIDC_DISCOVERY_URL;
+  if (!env.AMA_OAUTH_TOKEN_URL) return undefined;
+  return `${env.AMA_OAUTH_TOKEN_URL.replace(/\/oauth2\/token$/, "")}/.well-known/openid-configuration`;
+}
+
+// Registers AMA as a generic OIDC provider so each AK user can link their own
+// AMA account. Only added when AMA OAuth is configured; standalone AK skips it.
+function amaProviderPlugins(env: Env): BetterAuthPlugin[] {
+  const discoveryUrl = amaOidcDiscoveryUrl(env);
+  if (!discoveryUrl || !env.AMA_OAUTH_CLIENT_ID || !env.AMA_OAUTH_CLIENT_SECRET) return [];
+  return [
+    genericOAuth({
+      config: [
+        {
+          providerId: "ama",
+          discoveryUrl,
+          clientId: env.AMA_OAUTH_CLIENT_ID,
+          clientSecret: env.AMA_OAUTH_CLIENT_SECRET,
+          scopes: ["openid", "profile", "email", "offline_access"],
+          pkce: true,
+        },
+      ],
+    }),
+  ];
+}
 
 export function createAuth(env: Env) {
   return betterAuth({
@@ -81,6 +111,7 @@ export function createAuth(env: Env) {
           { name: "agent:usage", description: "Report token usage" },
         ],
       }),
+      ...amaProviderPlugins(env),
     ],
   });
 }

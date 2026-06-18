@@ -1,6 +1,6 @@
 import { agentAuthClient } from "@better-auth/agent-auth/client";
 import { apiKeyClient } from "@better-auth/api-key/client";
-import { adminClient } from "better-auth/client/plugins";
+import { adminClient, genericOAuthClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
 
 const TOKEN_KEY = "auth-token";
@@ -35,7 +35,7 @@ export async function refreshAuthToken(): Promise<string | null> {
 }
 
 export const authClient = createAuthClient({
-  plugins: [agentAuthClient(), apiKeyClient(), adminClient()],
+  plugins: [agentAuthClient(), apiKeyClient(), adminClient(), genericOAuthClient()],
   fetchOptions: {
     auth: {
       type: "Bearer",
@@ -83,6 +83,11 @@ type AccountAuthClient = {
   changePassword: (body: { currentPassword: string; newPassword: string; revokeOtherSessions?: boolean }) => AuthResult<{ status: boolean }>;
   revokeOtherSessions: () => AuthResult<{ status: boolean }>;
   linkSocial: (body: { provider: string; callbackURL?: string }) => AuthResult<unknown>;
+  unlinkAccount: (body: { providerId: string; accountId?: string }) => AuthResult<{ status: boolean }>;
+  // Generic OIDC link (AMA). The genericOAuth client exposes it as oauth2.link.
+  oauth2: {
+    link: (body: { providerId: string; callbackURL?: string }) => AuthResult<{ url: string; redirect: boolean }>;
+  };
 };
 
 export const accountAuthClient = authClient as unknown as AccountAuthClient;

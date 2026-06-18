@@ -70,7 +70,7 @@ export async function handleGithubPullRequestEvent(
     transitioned.push(row.id);
     try {
       const fresh = await getTask(db, row.id, row.owner_id);
-      if (fresh) await releaseTaskRuntimeBinding(db, env, fresh);
+      if (fresh) await releaseTaskRuntimeBinding(db, env, row.owner_id, fresh);
     } catch (error) {
       logger.warn(`runtime teardown failed for task ${row.id} after PR ${merged ? "merge" : "close"}: ${error}`);
     }
