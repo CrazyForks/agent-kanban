@@ -43,6 +43,7 @@ export async function applyMigrations(db: D1Database) {
     "0021_subagents.sql",
     "0022_ama_runtime_integration.sql",
     "0023_ama_session_secret_credential.sql",
+    "0024_task_actions_dispatch.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");

@@ -40,7 +40,7 @@ import { createLogger } from "./logger";
 import { listMachineEnvironmentCandidatesForRuntime } from "./machineRepo";
 import { getSubagent } from "./subagentRepo";
 import { computeBlocked } from "./taskDeps";
-import { getTask, releaseTask, updateTask } from "./taskRepo";
+import { addTaskAction, getTask, releaseTask, updateTask } from "./taskRepo";
 import type { Env } from "./types";
 
 type Annotations = Record<string, unknown>;
@@ -158,12 +158,13 @@ export async function dispatchTaskToAma(
       logger.warn(`failed to revoke session secret for ${sessionIdentity.sessionId}: ${revokeError}`);
     });
     await closeSession(db, sessionIdentity.sessionId);
-    await recordDispatchFailure(db, task).catch(() => {
+    await recordDispatchFailure(db, task, error).catch(() => {
       // claim cleanup is best-effort; the stale-claim sweep recovers it
     });
     throw error;
   }
 
+  await addTaskAction(db, task.id, "system", "system", "dispatched", null, sessionIdentity.sessionId);
   return await annotateTask(db, task, {
     "ama.projectId": dispatch.projectId,
     agentId: assignedTo,
@@ -173,6 +174,7 @@ export async function dispatchTaskToAma(
     "ama.sessionId": dispatch.sessionId,
     agentSessionId: sessionIdentity.sessionId,
     "ama.dispatch.result": "accepted",
+    "ama.dispatch.lastReason": null,
     ...(githubTokenSecret?.credentialId ? { "ama.ghCredentialId": githubTokenSecret.credentialId } : {}),
   });
 }
@@ -687,12 +689,28 @@ function dispatchBackoffActive(task: Task): boolean {
 
 // Records a failed dispatch attempt: clears the binding result and arms the
 // backoff. Returns the updated task.
-async function recordDispatchFailure(db: D1, task: Task): Promise<Task> {
-  const current = taskAnnotations(task)["ama.dispatch.attempts"];
+// Human-readable, one-line reason for the task timeline (raw error detail stays
+// in the logs). Strips the noisy "AMA <verb> failed with HTTP NNN:" envelope.
+function dispatchErrorReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/\s+/g, " ").trim().slice(0, 300) || "unknown error";
+}
+
+async function recordDispatchFailure(db: D1, task: Task, error: unknown): Promise<Task> {
+  const annotations = taskAnnotations(task);
+  const current = annotations["ama.dispatch.attempts"];
   const attempts = (typeof current === "number" ? current : 0) + 1;
+  const reason = dispatchErrorReason(error);
+  // Dispatch retries with backoff; record one timeline event per DISTINCT reason
+  // (not every retry tick) so the task timeline shows "stuck dispatching, because X"
+  // without flooding it.
+  if (annotations["ama.dispatch.lastReason"] !== reason) {
+    await addTaskAction(db, task.id, "system", "system", "dispatch_failed", reason, null);
+  }
   return await annotateTask(db, task, {
     "ama.dispatch.result": null,
     "ama.dispatch.attempts": attempts,
+    "ama.dispatch.lastReason": reason,
     "ama.dispatch.nextRetryAt": new Date(Date.now() + dispatchBackoffMs(attempts)).toISOString(),
   });
 }

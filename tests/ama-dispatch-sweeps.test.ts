@@ -2369,6 +2369,308 @@ describe("ensureMachineAmaEnvironment self-heal (Feature A)", () => {
   });
 });
 
+// ─── 9a. dispatch_failed / dispatched task_actions (Feature B) ────────────────
+
+describe("dispatch task_actions (dispatch_failed / dispatched)", () => {
+  // Shared fetch mock builder for dispatch failure tests.
+  // The session endpoint is the failure point; everything else succeeds so we
+  // reach the createAmaTaskSession call and can inspect what recordDispatchFailure writes.
+  // sessionErrorFactory is called each time the /sessions endpoint is hit so the
+  // Response body stream is never consumed twice.
+  function makeFailFetchMock(environmentId: string, sessionErrorFactory: () => Response) {
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://ama.test/api/v1/projects/project_123")
+        return new Response(JSON.stringify({ id: "project_123", name: "Workspace" }), { status: 200 });
+      if (url === `https://ama.test/api/v1/runners?environmentId=${environmentId}&limit=100`)
+        return activeRunnerResponse(environmentId, "claude-code");
+      if (url === "https://ama.test/api/v1/providers?limit=100")
+        return new Response(JSON.stringify({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }), { status: 200 });
+      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials")
+        return new Response(JSON.stringify({ id: `vaultcred_${randomUUID()}`, activeVersionId: `vaultver_${randomUUID()}` }), { status: 201 });
+      // Revoke credential during cleanup (PATCH on a specific credential id)
+      if (url.includes("/vaults/vault_123/credentials/") && (init as any)?.method === "PATCH")
+        return new Response(JSON.stringify({ state: "revoked" }), { status: 200 });
+      // Create AMA agent (POST) or read existing agent (GET /agents/{id})
+      if (url === "https://ama.test/api/v1/agents")
+        return new Response(
+          JSON.stringify({ id: `ama_agent_${randomUUID()}`, projectId: "project_123", name: "agent", providerId: "provider_claude", model: null }),
+          { status: 201 },
+        );
+      if (url.startsWith("https://ama.test/api/v1/agents/")) {
+        // readAmaAgent: return a live agent so ensureAmaAgentForAkAgent proceeds
+        const agentId = url.split("/").pop();
+        if ((init as any)?.method === "PATCH")
+          return new Response(JSON.stringify({ id: agentId, projectId: "project_123", name: "agent", providerId: "provider_claude", model: null }), { status: 200 });
+        return new Response(JSON.stringify({ id: agentId, projectId: "project_123", name: "agent", providerId: "provider_claude", model: null }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/v1/sessions") return sessionErrorFactory();
+      // Stop call during cleanup
+      if (url.includes("/sessions/") && (init as any)?.method === "PATCH") return new Response(JSON.stringify({ state: "stopped" }), { status: 200 });
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+  }
+
+  function makeSuccessFetchMock(environmentId: string, sessionId: string) {
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://ama.test/api/v1/projects/project_123")
+        return new Response(JSON.stringify({ id: "project_123", name: "Workspace" }), { status: 200 });
+      if (url === `https://ama.test/api/v1/runners?environmentId=${environmentId}&limit=100`)
+        return activeRunnerResponse(environmentId, "claude-code");
+      if (url === "https://ama.test/api/v1/providers?limit=100")
+        return new Response(JSON.stringify({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }), { status: 200 });
+      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials")
+        return new Response(JSON.stringify({ id: `vaultcred_${randomUUID()}`, activeVersionId: `vaultver_${randomUUID()}` }), { status: 201 });
+      if (url === "https://ama.test/api/v1/agents")
+        return new Response(
+          JSON.stringify({ id: `ama_agent_${randomUUID()}`, projectId: "project_123", name: "agent", providerId: "provider_claude", model: null }),
+          { status: 201 },
+        );
+      if (url === "https://ama.test/api/v1/sessions") {
+        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+        return new Response(
+          JSON.stringify({ id: sessionId, agentId: body.agentId, environmentId, state: "pending", stateReason: null }),
+          { status: 201 },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+  }
+
+  it("records exactly one dispatch_failed action with actor_type=system on a failed dispatch", async () => {
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createTask } = await import("../apps/web/server/taskRepo");
+    const { dispatchTaskToAma } = await import("../apps/web/server/taskDispatch");
+
+    const owner = `df-action-owner-${randomUUID()}`;
+    await seedUser(db, owner, `${owner}@test.local`);
+    await configureAmaIntegration(owner);
+    await configureAmaEnvironment(owner, "claude", "env_df_action");
+
+    const board = await createBoard(db, owner, `df-action-board-${randomUUID()}`, "ops");
+    const agent = await createTestAgent(db, owner, {
+      name: "DfActionAgent",
+      username: `df-action-agent-${randomUUID()}`,
+      runtime: "claude",
+    });
+    const task = await createTask(db, owner, {
+      title: "Dispatch failed action task",
+      board_id: board.id,
+      assigned_to: agent.id,
+      skipRuntimeAvailability: true,
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      makeFailFetchMock("env_df_action", () => new Response(JSON.stringify({ error: "provider_unavailable" }), { status: 503 })),
+    );
+
+    const env = makeEnv();
+    await expect(dispatchTaskToAma(db, env, owner, task, { apiOrigin: "https://ak.test" })).rejects.toThrow();
+
+    const rows = await db
+      .prepare("SELECT action, actor_type, detail FROM task_actions WHERE task_id = ? AND action IN ('dispatched', 'dispatch_failed')")
+      .bind(task.id)
+      .all<{ action: string; actor_type: string; detail: string | null }>();
+
+    expect(rows.results).toHaveLength(1);
+    expect(rows.results[0].action).toBe("dispatch_failed");
+    expect(rows.results[0].actor_type).toBe("system");
+    expect(typeof rows.results[0].detail).toBe("string");
+    expect(rows.results[0].detail!.length).toBeGreaterThan(0);
+
+    // ama.dispatch.lastReason and attempts must also be set
+    const row = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(task.id).first<{ metadata: string }>();
+    const annotations = JSON.parse(row!.metadata ?? "{}").annotations ?? {};
+    expect(typeof annotations["ama.dispatch.lastReason"]).toBe("string");
+    expect(annotations["ama.dispatch.lastReason"].length).toBeGreaterThan(0);
+    expect(annotations["ama.dispatch.attempts"]).toBe(1);
+  });
+
+  it("does NOT add a second dispatch_failed row when the second failure has the same reason (dedupe)", async () => {
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createTask } = await import("../apps/web/server/taskRepo");
+    const { getTask } = await import("../apps/web/server/taskRepo");
+    const { dispatchTaskToAma } = await import("../apps/web/server/taskDispatch");
+
+    const owner = `df-dedupe-owner-${randomUUID()}`;
+    await seedUser(db, owner, `${owner}@test.local`);
+    await configureAmaIntegration(owner);
+    await configureAmaEnvironment(owner, "claude", "env_df_dedupe");
+
+    const board = await createBoard(db, owner, `df-dedupe-board-${randomUUID()}`, "ops");
+    const agent = await createTestAgent(db, owner, {
+      name: "DfDedupeAgent",
+      username: `df-dedupe-agent-${randomUUID()}`,
+      runtime: "claude",
+    });
+    const task = await createTask(db, owner, {
+      title: "Dispatch failed dedupe task",
+      board_id: board.id,
+      assigned_to: agent.id,
+      skipRuntimeAvailability: true,
+    });
+
+    // Same factory on both calls — same reason string in the 503 body → dedupe must kick in.
+    const sameErrorFactory = () => new Response(JSON.stringify({ error: "provider_unavailable" }), { status: 503 });
+
+    const env = makeEnv();
+
+    // First failure
+    vi.stubGlobal("fetch", makeFailFetchMock("env_df_dedupe", sameErrorFactory));
+    await expect(dispatchTaskToAma(db, env, owner, task, { apiOrigin: "https://ak.test" })).rejects.toThrow();
+
+    // Clear backoff in DB so the second dispatch attempt reaches the AMA session call
+    await db
+      .prepare(
+        `UPDATE tasks SET metadata = json_set(
+          COALESCE(metadata, '{}'),
+          '$.annotations."ama.dispatch.nextRetryAt"', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-10 seconds')
+        ) WHERE id = ?`,
+      )
+      .bind(task.id)
+      .run();
+
+    // Reload the task from DB so dispatchTaskToAma sees the cleared backoff
+    const task2 = await getTask(db, task.id, owner);
+    expect(task2).not.toBeNull();
+
+    // Second failure with identical reason
+    vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", makeFailFetchMock("env_df_dedupe", sameErrorFactory));
+    await expect(dispatchTaskToAma(db, env, owner, task2!, { apiOrigin: "https://ak.test" })).rejects.toThrow();
+
+    const rows = await db
+      .prepare("SELECT action FROM task_actions WHERE task_id = ? AND action = 'dispatch_failed'")
+      .bind(task.id)
+      .all<{ action: string }>();
+
+    // Only one row — the second failure was deduped
+    expect(rows.results).toHaveLength(1);
+
+    // But attempts should have been incremented to 2
+    const metaRow = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(task.id).first<{ metadata: string }>();
+    const annotations = JSON.parse(metaRow!.metadata ?? "{}").annotations ?? {};
+    expect(annotations["ama.dispatch.attempts"]).toBe(2);
+  });
+
+  it("adds a new dispatch_failed row when the failure reason changes", async () => {
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createTask, getTask } = await import("../apps/web/server/taskRepo");
+    const { dispatchTaskToAma } = await import("../apps/web/server/taskDispatch");
+
+    const owner = `df-newreason-owner-${randomUUID()}`;
+    await seedUser(db, owner, `${owner}@test.local`);
+    await configureAmaIntegration(owner);
+    await configureAmaEnvironment(owner, "claude", "env_df_newreason");
+
+    const board = await createBoard(db, owner, `df-newreason-board-${randomUUID()}`, "ops");
+    const agent = await createTestAgent(db, owner, {
+      name: "DfNewreasonAgent",
+      username: `df-newreason-agent-${randomUUID()}`,
+      runtime: "claude",
+    });
+    const task = await createTask(db, owner, {
+      title: "Dispatch failed new reason task",
+      board_id: board.id,
+      assigned_to: agent.id,
+      skipRuntimeAvailability: true,
+    });
+
+    const env = makeEnv();
+
+    // First failure — reason A (503 provider_unavailable)
+    vi.stubGlobal("fetch", makeFailFetchMock("env_df_newreason", () => new Response(JSON.stringify({ error: "provider_unavailable" }), { status: 503 })));
+    await expect(dispatchTaskToAma(db, env, owner, task, { apiOrigin: "https://ak.test" })).rejects.toThrow();
+
+    // Clear backoff in DB so the second dispatch attempt is not skipped
+    await db
+      .prepare(
+        `UPDATE tasks SET metadata = json_set(
+          COALESCE(metadata, '{}'),
+          '$.annotations."ama.dispatch.nextRetryAt"', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-10 seconds')
+        ) WHERE id = ?`,
+      )
+      .bind(task.id)
+      .run();
+
+    // Reload task from DB so the in-memory object reflects updated metadata
+    const task2 = await getTask(db, task.id, owner);
+    expect(task2).not.toBeNull();
+
+    // Second failure — different reason B (429 quota_exceeded)
+    vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", makeFailFetchMock("env_df_newreason", () => new Response(JSON.stringify({ error: "quota_exceeded" }), { status: 429 })));
+    await expect(dispatchTaskToAma(db, env, owner, task2!, { apiOrigin: "https://ak.test" })).rejects.toThrow();
+
+    const rows = await db
+      .prepare("SELECT action, detail FROM task_actions WHERE task_id = ? AND action = 'dispatch_failed' ORDER BY created_at ASC")
+      .bind(task.id)
+      .all<{ action: string; detail: string | null }>();
+
+    // Two distinct rows because the reason changed
+    expect(rows.results).toHaveLength(2);
+    // The two reasons must be different
+    expect(rows.results[0].detail).not.toBe(rows.results[1].detail);
+  });
+
+  it("records a dispatched action with actor_type=system and clears ama.dispatch.lastReason on success", async () => {
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createTask } = await import("../apps/web/server/taskRepo");
+    const { dispatchTaskToAma } = await import("../apps/web/server/taskDispatch");
+
+    const owner = `df-success-owner-${randomUUID()}`;
+    await seedUser(db, owner, `${owner}@test.local`);
+    await configureAmaIntegration(owner);
+    await configureAmaEnvironment(owner, "claude", "env_df_success");
+
+    const board = await createBoard(db, owner, `df-success-board-${randomUUID()}`, "ops");
+    const agent = await createTestAgent(db, owner, {
+      name: "DfSuccessAgent",
+      username: `df-success-agent-${randomUUID()}`,
+      runtime: "claude",
+    });
+    // Seed the task with a previous failure reason so we can verify it gets cleared.
+    const task = await createTask(db, owner, {
+      title: "Dispatch success action task",
+      board_id: board.id,
+      assigned_to: agent.id,
+      skipRuntimeAvailability: true,
+      metadata: {
+        annotations: {
+          "ama.dispatch.lastReason": "previous error reason",
+          "ama.dispatch.attempts": 2,
+          "ama.dispatch.nextRetryAt": new Date(Date.now() - 1000).toISOString(),
+        },
+      },
+    });
+
+    const sessionId = `session_df_success_${randomUUID()}`;
+    vi.stubGlobal("fetch", makeSuccessFetchMock("env_df_success", sessionId));
+
+    const env = makeEnv();
+    await dispatchTaskToAma(db, env, owner, task, { apiOrigin: "https://ak.test" });
+
+    // Exactly one dispatched action, actor_type=system
+    const rows = await db
+      .prepare("SELECT action, actor_type FROM task_actions WHERE task_id = ? AND action IN ('dispatched', 'dispatch_failed')")
+      .bind(task.id)
+      .all<{ action: string; actor_type: string }>();
+
+    expect(rows.results).toHaveLength(1);
+    expect(rows.results[0].action).toBe("dispatched");
+    expect(rows.results[0].actor_type).toBe("system");
+
+    // ama.dispatch.lastReason must be null after a successful dispatch
+    const metaRow = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(task.id).first<{ metadata: string }>();
+    const annotations = JSON.parse(metaRow!.metadata ?? "{}").annotations ?? {};
+    expect(annotations["ama.dispatch.lastReason"]).toBeNull();
+  });
+});
+
 // ─── 9. Feature B — re-dispatch backoff ──────────────────────────────────────
 
 describe("re-dispatch backoff (Feature B)", () => {

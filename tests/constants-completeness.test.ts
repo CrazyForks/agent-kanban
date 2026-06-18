@@ -15,6 +15,8 @@ describe("enum completeness", () => {
       "cancelled",
       "rejected",
       "review_requested",
+      "dispatched",
+      "dispatch_failed",
     ];
     expect([...TASK_ACTIONS]).toEqual(migrationActions);
   });
@@ -25,12 +27,14 @@ describe("enum completeness", () => {
 
   it("TaskAction type union matches TASK_ACTIONS constant", () => {
     const actions: string[] = [...TASK_ACTIONS];
-    expect(actions).toHaveLength(11);
+    expect(actions).toHaveLength(13);
     expect(actions).toContain("assigned");
     expect(actions).toContain("released");
     expect(actions).toContain("timed_out");
     expect(actions).toContain("cancelled");
     expect(actions).toContain("rejected");
     expect(actions).toContain("review_requested");
+    expect(actions).toContain("dispatched");
+    expect(actions).toContain("dispatch_failed");
   });
 });

@@ -76,9 +76,11 @@ export type TaskActionType =
   | "timed_out"
   | "cancelled"
   | "rejected"
-  | "review_requested";
+  | "review_requested"
+  | "dispatched"
+  | "dispatch_failed";
 
-export type ActorType = "user" | "machine" | "agent:worker" | "agent:leader";
+export type ActorType = "user" | "machine" | "agent:worker" | "agent:leader" | "system";
 
 export interface TaskAction {
   id: string;

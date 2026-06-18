@@ -22,6 +22,8 @@ export const TASK_ACTIONS = [
   "cancelled",
   "rejected",
   "review_requested",
+  "dispatched",
+  "dispatch_failed",
 ] as const;
 
 export const AGENT_STATUSES = ["online", "offline"] as const;

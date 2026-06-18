@@ -19,7 +19,7 @@ vi.mock("../src/paths.js", async () => {
 // Kept as a plain string (not derived from the import) because vi.mock factories
 // are hoisted and cannot safely call vi.importActual on a module that itself
 // imports the module being mocked (node:child_process), causing a circular dep.
-const PROBE_VERSION = "0.3.2";
+const PROBE_VERSION = "0.3.4";
 
 vi.mock("node:child_process", async () => {
   const fs = await import("node:fs");
