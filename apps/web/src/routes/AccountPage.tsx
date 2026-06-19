@@ -245,9 +245,15 @@ export function AccountPage() {
                   </p>
                 )}
               </div>
-              <Button variant="outline" size="sm" onClick={handleDisconnectAma} disabled={amaConnecting} className="shrink-0">
-                {amaConnecting ? "Working..." : "Disconnect"}
-              </Button>
+              <div className="flex shrink-0 gap-2">
+                <Button variant="outline" size="sm" onClick={handleConnectAma} disabled={amaConnecting}>
+                  <RefreshCw className="size-3.5" />
+                  {amaConnecting ? "Working..." : "Reconnect"}
+                </Button>
+                <Button variant="outline" size="sm" onClick={handleDisconnectAma} disabled={amaConnecting}>
+                  Disconnect
+                </Button>
+              </div>
             </div>
           ) : (
             <div className="flex items-start justify-between gap-4">
