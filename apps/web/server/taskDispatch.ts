@@ -232,7 +232,12 @@ async function buildAmaAgentInput(
     model: runtimeProfile.model,
     skills: akAgent.skills ?? [],
     subagents: subagents.flatMap((subagent) => (subagent ? [amaSubagentProfile(subagent)] : [])),
-    capabilityTags: amaAgentCapabilityTags(akAgent.role, akAgent.skills),
+    // The agent's skills go to AMA's `skills` field above (validated as
+    // <source>@<skill>). `capabilityTags` is AMA's SEPARATE handoff-routing slug
+    // space (stable identifiers, no @/:) — AK hands off by role, not capability,
+    // so it stays empty. Putting skills here is what produced the "Capability tag
+    // must be a stable identifier" 400.
+    capabilityTags: [],
     handoffPolicy: amaAgentHandoffPolicy(akAgent.handoff_to),
     metadata: { runtime: runtimeProfile.runtime },
     memoryPolicy: amaAgentMemoryPolicy(options.memoryEnabled === true),
@@ -297,10 +302,6 @@ function amaSubagentProfile(subagent: NonNullable<Awaited<ReturnType<typeof getS
     modelPreferences: subagent.models ?? [],
     skills: subagent.skills ?? [],
   };
-}
-
-function amaAgentCapabilityTags(role: string | null | undefined, skills: string[] | null | undefined) {
-  return [...new Set([role, ...(skills ?? []).map((skill) => `skill:${skill}`)].filter((value): value is string => Boolean(value)))];
 }
 
 function amaAgentHandoffPolicy(handoffTo: string[] | null | undefined) {
