@@ -5,7 +5,9 @@ import { AddMachineSteps } from "../components/AddMachineSteps";
 import { Header } from "../components/Header";
 import { MachineRuntimeBadges } from "../components/MachineRuntimes";
 import { formatRelative } from "../components/TaskDetailFields";
+import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import { Input } from "../components/ui/input";
 import { useMachines } from "../hooks/useMachines";
 import { api } from "../lib/api";
 import { authClient } from "../lib/auth-client";
@@ -15,7 +17,7 @@ const statusDotColors: Record<string, string> = {
   offline: "bg-content-tertiary",
 };
 
-type DialogStep = "choose" | "waiting";
+type DialogStep = "choose" | "cloud" | "waiting";
 
 function randomName() {
   const adj = ["swift", "quiet", "bright", "sharp", "bold", "calm", "keen", "warm"];
@@ -32,6 +34,7 @@ export function MachinesPage() {
   const [createdKeyId, setCreatedKeyId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [creatingCloud, setCreatingCloud] = useState(false);
+  const [cloudName, setCloudName] = useState("");
 
   async function handleChooseLocal() {
     const name = randomName();
@@ -42,10 +45,17 @@ export function MachinesPage() {
     setDialogStep("waiting");
   }
 
-  async function handleChooseCloud() {
+  function handleChooseCloud() {
+    setCloudName("");
+    setDialogStep("cloud");
+  }
+
+  async function handleCreateCloud() {
+    const name = cloudName.trim();
+    if (!name) return;
     setCreatingCloud(true);
     try {
-      await api.machines.createCloud({ name: randomName() });
+      await api.machines.createCloud({ name });
       toast.success("Cloud sandbox added");
       resetDialog();
       refresh();
@@ -75,6 +85,7 @@ export function MachinesPage() {
     setCreatedKey(null);
     setCreatedKeyId(null);
     setConnected(false);
+    setCloudName("");
   }
 
   return (
@@ -218,6 +229,34 @@ export function MachinesPage() {
                   <div className="text-[11px] text-content-tertiary">{creatingCloud ? "Creating..." : "Run on an AMA-managed sandbox"}</div>
                 </div>
               </button>
+            </div>
+          )}
+
+          {dialogStep === "cloud" && (
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <label htmlFor="cloud-sandbox-name" className="text-xs text-content-secondary">
+                  Sandbox name
+                </label>
+                <Input
+                  id="cloud-sandbox-name"
+                  autoFocus
+                  value={cloudName}
+                  onChange={(e) => setCloudName(e.target.value)}
+                  placeholder="e.g. my-sandbox"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleCreateCloud();
+                  }}
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" size="sm" onClick={() => setDialogStep("choose")} disabled={creatingCloud}>
+                  Back
+                </Button>
+                <Button size="sm" onClick={handleCreateCloud} disabled={!cloudName.trim() || creatingCloud}>
+                  {creatingCloud ? "Creating..." : "Add sandbox"}
+                </Button>
+              </div>
             </div>
           )}
 
