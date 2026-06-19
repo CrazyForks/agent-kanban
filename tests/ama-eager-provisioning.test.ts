@@ -14,7 +14,8 @@
 
 import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { linkAmaAccount, setupMiniflare, signUpVerifiedUser } from "./helpers/db";
+import { hasAmaResources } from "../apps/web/server/betterAuth";
+import { addCloudSandboxMachine, createTestAgent, linkAmaAccount, seedUser, setupMiniflare, signUpVerifiedUser } from "./helpers/db";
 
 const AMA_ENV = {
   AMA_ORIGIN: "https://ama.test",
@@ -285,5 +286,22 @@ describe("add-cloud-sandbox-creates-cloud-env", () => {
 
     const res = await apiRequest(env, "POST", "/api/machines/cloud", { name: "Sandbox" }, token);
     expect(res.status).toBe(403);
+  });
+});
+
+describe("disconnect guard (hasAmaResources)", () => {
+  it("ignores builtin agents but counts user agents and machines", async () => {
+    // Builtin/seed agents have no AMA agent, so they must not block disconnect.
+    await createTestAgent(db, "guard-builtin", { name: "Soul", username: "soul", runtime: "claude" }, true);
+    expect(await hasAmaResources(db, "guard-builtin")).toBe(false);
+
+    // A user-created (non-builtin) agent is an AMA-backed resource.
+    await createTestAgent(db, "guard-agent", { name: "Worker", username: "worker", runtime: "claude" }, false);
+    expect(await hasAmaResources(db, "guard-agent")).toBe(true);
+
+    // A machine (cloud sandbox here) is an AMA-backed resource.
+    await seedUser(db, "guard-machine", "guard-machine@test.com");
+    await addCloudSandboxMachine(db, "guard-machine", ["ama"], "env-guard");
+    expect(await hasAmaResources(db, "guard-machine")).toBe(true);
   });
 });

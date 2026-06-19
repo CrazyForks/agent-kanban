@@ -1,11 +1,24 @@
 import { agentAuth } from "@better-auth/agent-auth";
 import { apiKey } from "@better-auth/api-key";
 import { type BetterAuthPlugin, betterAuth } from "better-auth";
+import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { admin, bearer, genericOAuth } from "better-auth/plugins";
 import { Kysely } from "kysely";
 import { D1Dialect } from "kysely-d1";
+import type { D1 } from "./db";
 import { sendVerificationEmail } from "./emailService";
 import type { Env } from "./types";
+
+// AMA can only be unlinked once the user has no AMA-backed resources left: any
+// non-builtin agent or any machine. Builtin agents (auto-seeded, no AMA agent)
+// don't count; the project/vault are auto-provisioned containers, not user
+// resources. The user clears their agents/machines first, then disconnects.
+export async function hasAmaResources(db: D1, ownerId: string): Promise<boolean> {
+  const agent = await db.prepare("SELECT 1 FROM agents WHERE owner_id = ? AND builtin = 0 LIMIT 1").bind(ownerId).first();
+  if (agent) return true;
+  const machine = await db.prepare("SELECT 1 FROM machines WHERE owner_id = ? LIMIT 1").bind(ownerId).first();
+  return Boolean(machine);
+}
 
 // AMA OIDC discovery url. Explicit AMA_OIDC_DISCOVERY_URL wins; otherwise it is
 // derived from the client-credentials token url. Returns undefined in
@@ -61,6 +74,19 @@ export function createAuth(env: Env) {
         trustedProviders: ["ama"],
         allowDifferentEmails: true,
       },
+    },
+    // Block disconnecting AMA while AMA-backed resources still exist, so we never
+    // leave dangling references. The user deletes their agents/machines first.
+    hooks: {
+      before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== "/unlink-account") return;
+        if ((ctx.body as { providerId?: string } | undefined)?.providerId !== "ama") return;
+        const session = await getSessionFromCtx(ctx);
+        const ownerId = session?.user?.id;
+        if (ownerId && (await hasAmaResources(env.DB, ownerId))) {
+          throw new APIError("BAD_REQUEST", { message: "Remove your agents and machines before disconnecting AMA" });
+        }
+      }),
     },
     emailAndPassword: {
       enabled: true,
