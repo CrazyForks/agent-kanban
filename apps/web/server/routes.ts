@@ -49,7 +49,7 @@ import {
   updateAmaScheduledAgentTrigger,
 } from "./amaRuntime";
 import { authMiddleware } from "./auth";
-import { createAuth } from "./betterAuth";
+import { createAuth, hasAmaResources } from "./betterAuth";
 import {
   type BoardMaintainer,
   createBoardMaintainer,
@@ -559,9 +559,26 @@ api.onError((err, c) => {
 });
 
 // Better Auth handler — must be before auth middleware
-api.on(["GET", "POST"], "/api/auth/**", async (c) => {
+api.on(["GET", "POST"], "/api/auth/*", async (c) => {
   try {
     const auth = createAuth(c.env);
+    // Block disconnecting AMA while AMA-backed resources still exist (any
+    // non-builtin agent or machine), so we never leave dangling references. The
+    // user deletes their agents/machines first. Done here, not via a BetterAuth
+    // hook, to avoid a second better-auth instance under vite's dev-source.
+    if (c.req.method === "POST" && c.req.path === "/api/auth/unlink-account") {
+      const body = (await c.req.raw
+        .clone()
+        .json()
+        .catch(() => ({}))) as { providerId?: string };
+      if (body.providerId === "ama") {
+        const session = await auth.api.getSession({ headers: c.req.raw.headers });
+        const ownerId = session?.user?.id;
+        if (ownerId && (await hasAmaResources(c.env.DB, ownerId))) {
+          return c.json({ error: { code: "HAS_RESOURCES", message: "Remove your agents and machines before disconnecting AMA" } }, 400);
+        }
+      }
+    }
     return await auth.handler(c.req.raw);
   } catch (err: any) {
     logger.error(`better-auth error: ${err.message} ${err.stack}`);

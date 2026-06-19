@@ -1,7 +1,6 @@
 import { agentAuth } from "@better-auth/agent-auth";
 import { apiKey } from "@better-auth/api-key";
 import { type BetterAuthPlugin, betterAuth } from "better-auth";
-import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { admin, bearer, genericOAuth } from "better-auth/plugins";
 import { Kysely } from "kysely";
 import { D1Dialect } from "kysely-d1";
@@ -74,19 +73,6 @@ export function createAuth(env: Env) {
         trustedProviders: ["ama"],
         allowDifferentEmails: true,
       },
-    },
-    // Block disconnecting AMA while AMA-backed resources still exist, so we never
-    // leave dangling references. The user deletes their agents/machines first.
-    hooks: {
-      before: createAuthMiddleware(async (ctx) => {
-        if (ctx.path !== "/unlink-account") return;
-        if ((ctx.body as { providerId?: string } | undefined)?.providerId !== "ama") return;
-        const session = await getSessionFromCtx(ctx);
-        const ownerId = session?.user?.id;
-        if (ownerId && (await hasAmaResources(env.DB, ownerId))) {
-          throw new APIError("BAD_REQUEST", { message: "Remove your agents and machines before disconnecting AMA" });
-        }
-      }),
     },
     emailAndPassword: {
       enabled: true,
