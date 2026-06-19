@@ -365,13 +365,9 @@ describe("routes", () => {
           { status: 201 },
         );
       }
-      if (
-        url === "https://ama.test/api/v1/triggers/sched_maintainer" &&
-        init?.method === "PATCH" &&
-        JSON.parse(String(init?.body)).archived === true
-      ) {
+      if (url === "https://ama.test/api/v1/triggers/sched_maintainer" && init?.method === "DELETE") {
         archiveRequests.push(url);
-        return new Response(JSON.stringify({ id: "sched_maintainer", enabled: true, archivedAt: "2026-06-15T00:00:00.000Z" }), { status: 200 });
+        return new Response(null, { status: 204 });
       }
       if (url === "https://ama.test/api/v1/triggers/sched_maintainer" && init?.method === "PATCH") {
         const body = JSON.parse(String(init?.body)) as Record<string, any>;
@@ -524,8 +520,12 @@ describe("routes", () => {
 
       const archiveRes = await apiRequest("DELETE", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`, undefined, userToken);
       expect(archiveRes.status).toBe(200);
-      await expect(archiveRes.json()).resolves.toEqual(expect.objectContaining({ id: maintainer.id, status: "archived" }));
+      await expect(archiveRes.json()).resolves.toEqual({ ok: true });
       expect(archiveRequests).toEqual(["https://ama.test/api/v1/triggers/sched_maintainer"]);
+      // The maintainer row is hard-deleted.
+      const goneRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers`, undefined, userToken);
+      const remaining = (await goneRes.json()) as Array<{ id: string }>;
+      expect(remaining.find((m) => m.id === maintainer.id)).toBeUndefined();
     } finally {
       Object.assign(env, previousAma);
       vi.unstubAllGlobals();
@@ -813,9 +813,9 @@ describe("routes", () => {
           { status: 201 },
         );
       }
-      if (url === "https://ama.test/api/v1/triggers/sched_delete" && init?.method === "PATCH" && JSON.parse(String(init?.body)).archived === true) {
+      if (url === "https://ama.test/api/v1/triggers/sched_delete" && init?.method === "DELETE") {
         capturedDeleteHeaders.push({ ...(init?.headers as Record<string, string>) });
-        return new Response(JSON.stringify({ id: "sched_delete", enabled: true, archivedAt: "2026-06-15T00:00:00.000Z" }), { status: 200 });
+        return new Response(null, { status: 204 });
       }
       if (url.startsWith("https://ama.test/api/v1/triggers/sched_delete/runs?")) {
         return new Response(JSON.stringify({ data: [], pagination: { limit: 20, hasMore: false } }), { status: 200 });
@@ -841,8 +841,7 @@ describe("routes", () => {
 
       const archiveRes = await apiRequest("DELETE", `/api/boards/${deleteBoard.id}/maintainers/${maintainer.id}`, undefined, deleteToken);
       expect(archiveRes.status).toBe(200);
-      const archived = (await archiveRes.json()) as any;
-      expect(archived.status).toBe("archived");
+      await expect(archiveRes.json()).resolves.toEqual({ ok: true });
 
       expect(capturedDeleteHeaders).toHaveLength(1);
       expect(capturedDeleteHeaders[0]["x-ama-project-id"]).toBe(amaProjectId);

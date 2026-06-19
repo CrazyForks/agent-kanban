@@ -40,9 +40,9 @@ import {
   amaEnvironmentExists,
   archiveAmaAgent,
   archiveAmaEnvironment,
-  archiveAmaScheduledAgentTrigger,
   createAmaEnvironment,
   createAmaScheduledAgentTrigger,
+  deleteAmaScheduledAgentTrigger,
   getAmaSessionRuntimeSnapshot,
   isAmaTaskDispatchConfigured,
   listAmaRunners,
@@ -55,6 +55,7 @@ import { createAuth, hasAmaResources } from "./betterAuth";
 import {
   type BoardMaintainer,
   createBoardMaintainer,
+  deleteBoardMaintainer,
   getBoardMaintainer,
   getOwnedBoard,
   listBoardMaintainers,
@@ -1736,10 +1737,11 @@ api.delete("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
   if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
   const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
-  await archiveAmaScheduledAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_schedule_id);
-  const updated = await updateBoardMaintainer(c.env.DB, ownerId, boardId, maintainer.id, { status: "archived" });
-  if (!updated) throw new HTTPException(404, { message: "Board maintainer not found" });
-  return c.json(await publicBoardMaintainerWithAmaStatus(c.env.DB, c.env, ownerId, updated));
+  // Hard delete: the AMA trigger (and its runs) and the AK maintainer row are
+  // both removed. Pause/resume covers "stop but keep"; delete is permanent.
+  await deleteAmaScheduledAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_schedule_id);
+  await deleteBoardMaintainer(c.env.DB, ownerId, boardId, maintainer.id);
+  return c.json({ ok: true });
 });
 
 api.get("/api/boards/:id", async (c) => {

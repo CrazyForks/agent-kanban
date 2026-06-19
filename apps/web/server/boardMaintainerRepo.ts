@@ -104,3 +104,11 @@ export async function updateBoardMaintainer(
     .run();
   return await getBoardMaintainer(db, ownerId, boardId, maintainerId);
 }
+
+export async function deleteBoardMaintainer(db: D1, ownerId: string, boardId: string, maintainerId: string): Promise<boolean> {
+  const result = await db
+    .prepare("DELETE FROM board_maintainers WHERE owner_id = ? AND board_id = ? AND id = ?")
+    .bind(ownerId, boardId, maintainerId)
+    .run();
+  return (result.meta?.changes ?? 0) > 0;
+}

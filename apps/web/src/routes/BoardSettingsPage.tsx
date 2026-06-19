@@ -216,12 +216,13 @@ function BoardMaintainersSection({ boardId }: { boardId: string }) {
     }
   }
 
-  async function archive(maintainer: BoardMaintainer) {
+  async function remove(maintainer: BoardMaintainer) {
+    if (!window.confirm(`Delete maintainer "${maintainer.name}"? This permanently removes it and its schedule.`)) return;
     try {
       await deleteMaintainer.mutateAsync(maintainer.id);
-      toast.success("Maintainer archived");
+      toast.success("Maintainer deleted");
     } catch {
-      toast.error("Failed to archive maintainer");
+      toast.error("Failed to delete maintainer");
     }
   }
 
@@ -270,8 +271,8 @@ function BoardMaintainersSection({ boardId }: { boardId: string }) {
                   <Button variant="outline" size="xs" onClick={() => toggleStatus(maintainer)} disabled={updateMaintainer.isPending}>
                     {maintainer.status === "active" ? "Pause" : "Resume"}
                   </Button>
-                  <Button variant="ghost" size="xs" onClick={() => archive(maintainer)} disabled={deleteMaintainer.isPending}>
-                    Archive
+                  <Button variant="destructive" size="xs" onClick={() => remove(maintainer)} disabled={deleteMaintainer.isPending}>
+                    Delete
                   </Button>
                 </div>
               </div>

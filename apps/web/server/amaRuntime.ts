@@ -833,9 +833,9 @@ export async function updateAmaScheduledAgentTrigger(
   return toAmaScheduledTrigger(trigger);
 }
 
-export async function archiveAmaScheduledAgentTrigger(env: Env, ownerId: string, projectId: string, scheduleId: string): Promise<void> {
+export async function deleteAmaScheduledAgentTrigger(env: Env, ownerId: string, projectId: string, scheduleId: string): Promise<void> {
   const client = await createAmaClient(env, ownerId, projectId);
-  await client.request("updateTrigger", { path: { triggerId: scheduleId }, body: { archived: true } });
+  await client.request("deleteTrigger", { path: { triggerId: scheduleId } });
 }
 
 // Resolves the AMA access token for the linked AMA account of the AK user
