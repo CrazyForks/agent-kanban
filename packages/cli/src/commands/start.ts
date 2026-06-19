@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   closeSync,
   existsSync,
@@ -28,6 +28,12 @@ import { getVersion } from "../version.js";
 
 const MAX_LOG_ARCHIVES = 5;
 const DEFAULT_MAX_CONCURRENT = 5;
+// Where ama-runner persists the token from its device login. AK pins this so the
+// login store is deterministic, kept under AK's own state, and isolated from a
+// standalone ama-runner install that may target a different origin. A distinct
+// filename keeps it clear of the pre-federation-drop ama-runner-config.json.
+const AMA_RUNNER_CONFIG_FILE = join(STATE_DIR, "ama-runner-login.json");
+
 interface DaemonState {
   providers: string[];
   maxConcurrent: number;
@@ -123,8 +129,8 @@ function amaRunnerArgs(opts: Record<string, unknown>): string[] {
   const add = (flag: string, value: unknown) => {
     if (typeof value === "string" && value.length > 0) args.push(flag, value);
   };
-  // The spawned ama-runner performs its own device login against the AMA API
-  // server; AK only points it at the origin and the project/environment to join.
+  // AK pre-authenticates the runner via ensureRunnerLogin before spawn; these
+  // args only point run mode at the origin and the project/environment to join.
   add("--api-server", opts.amaOrigin);
   add("--project-id", opts.amaProjectId);
   add("--environment-id", opts.amaEnvironmentId);
@@ -134,6 +140,48 @@ function amaRunnerArgs(opts: Record<string, unknown>): string[] {
   // behalf instead of exposing a runner flag.
   args.push("--allow-unsafe-process");
   return args;
+}
+
+interface SavedRunnerLogin {
+  apiServer?: string;
+  accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: string;
+}
+
+// Mirror ama-runner's own token-validity rules: a saved login is usable when it
+// targets this origin and can still produce a token (refreshable, or an
+// unexpired access token). Anything else means the runner would exit demanding a
+// fresh login, so AK re-runs the device flow instead.
+function hasValidRunnerLogin(origin: string): boolean {
+  if (!existsSync(AMA_RUNNER_CONFIG_FILE)) return false;
+  let saved: SavedRunnerLogin;
+  try {
+    saved = JSON.parse(readFileSync(AMA_RUNNER_CONFIG_FILE, "utf-8"));
+  } catch {
+    return false;
+  }
+  const stripTrailingSlash = (value: string) => value.replace(/\/$/, "");
+  if (stripTrailingSlash(saved.apiServer ?? "") !== stripTrailingSlash(origin)) return false;
+  if (saved.refreshToken) return true;
+  if (!saved.accessToken) return false;
+  if (saved.expiresAt) {
+    const expiresAt = Date.parse(saved.expiresAt);
+    if (Number.isNaN(expiresAt) || expiresAt <= Date.now()) return false;
+  }
+  return true;
+}
+
+// ama-runner authenticates with AMA via its own OAuth device login, a separate
+// interactive step from the polling run mode. AK drives it once, foreground, so
+// the user can authorize; the saved refresh token keeps later starts silent.
+function ensureRunnerLogin(runnerBin: string, origin: string, env: NodeJS.ProcessEnv): void {
+  if (hasValidRunnerLogin(origin)) return;
+  mkdirSync(STATE_DIR, { recursive: true });
+  console.log(`Authenticating ama-runner with AMA (${maskApiUrl(origin)})…`);
+  const result = spawnSync(runnerBin, ["login", "--api-server", origin], { stdio: "inherit", env });
+  if (result.error) throw new Error(`Failed to launch ama-runner login: ${result.error.message}`);
+  if (result.status !== 0) throw new Error(`ama-runner device login did not complete (exit status ${result.status}); cannot start the machine runner`);
 }
 
 function machineRuntimes(): MachineRuntime[] {
@@ -181,12 +229,16 @@ async function startAmaRunner(opts: Record<string, unknown>) {
   rotateLogs();
 
   const logFile = join(LOGS_DIR, "daemon.log");
-  const logFd = openSync(logFile, "a");
   await applyAmaRunnerOnboarding(opts);
   const runner = await resolveAmaRunnerBinary(typeof opts.amaRunnerVersion === "string" ? opts.amaRunnerVersion : null);
-  const args = amaRunnerArgs(opts);
   const env = { ...process.env };
   delete env.AMA_TOKEN;
+  env.AMA_RUNNER_CONFIG = AMA_RUNNER_CONFIG_FILE;
+  // Authenticate before opening the daemon log: login is interactive and writes
+  // to the terminal, while the detached runner's output belongs in the log file.
+  ensureRunnerLogin(runner.path, opts.amaOrigin as string, env);
+  const args = amaRunnerArgs(opts);
+  const logFd = openSync(logFile, "a");
   const child = spawn(runner.path, args, { detached: true, stdio: ["ignore", logFd, logFd], env });
   let pid: number;
   try {
