@@ -12,8 +12,9 @@ export default defineConfig({
   server: {
     port: 6265,
     // Cloud smoke runs expose the dev server through a cloudflared quick
-    // tunnel so sandbox-hosted agents can call the AK API.
-    allowedHosts: [".trycloudflare.com"],
+    // tunnel so sandbox-hosted agents can call the AK API. A named tunnel
+    // (e.g. bodev.agent-kanban.dev) gives a stable dev origin.
+    allowedHosts: [".trycloudflare.com", ".agent-kanban.dev"],
   },
   define: {
     __APP_VERSION__: JSON.stringify(gitSha),

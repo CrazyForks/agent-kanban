@@ -1,5 +1,14 @@
 import type { Task } from "@agent-kanban/shared";
 import type { D1 } from "./db";
+import {
+  addInstallationRepositories,
+  backfillInstallationOwner,
+  deleteInstallation,
+  removeInstallationRepositories,
+  replaceInstallationRepositories,
+  setInstallationSuspended,
+  upsertInstallation,
+} from "./githubInstallations";
 import { createLogger } from "./logger";
 import { releaseTaskRuntimeBinding } from "./taskDispatch";
 import { cancelTask, completeTask, getTask } from "./taskRepo";
@@ -76,4 +85,114 @@ export async function handleGithubPullRequestEvent(
     }
   }
   return { handled: true, tasks: transitioned };
+}
+
+type InstallationPayload = {
+  id?: number;
+  account?: { login?: string; id?: number; type?: string };
+  repository_selection?: string;
+  suspended_at?: string | null;
+};
+
+type WebhookRepo = { id?: number; full_name?: string };
+
+function toRepoInputs(repos: WebhookRepo[] | undefined): { fullName: string; repoId: number | null }[] {
+  return (repos ?? [])
+    .filter((repo): repo is { id?: number; full_name: string } => Boolean(repo.full_name))
+    .map((repo) => ({ fullName: repo.full_name, repoId: repo.id ?? null }));
+}
+
+// installation events: keep the installation row + its selected-repo snapshot in
+// sync with GitHub. created/uninstalled/suspended drive App coverage for the
+// repo read model. No GitHub API calls — the payload is self-sufficient.
+export async function handleGithubInstallationEvent(
+  db: D1,
+  payload: { action?: string; installation?: InstallationPayload; repositories?: WebhookRepo[] },
+): Promise<{ handled: boolean; action: string }> {
+  const installation = payload.installation;
+  const installationId = installation?.id;
+  const action = payload.action ?? "";
+  if (!installationId) return { handled: false, action };
+
+  if (action === "deleted") {
+    await deleteInstallation(db, installationId);
+    return { handled: true, action };
+  }
+  if (action === "suspend") {
+    // GitHub always sends suspended_at on a suspend event; trust it rather than inventing one.
+    await setInstallationSuspended(db, installationId, installation?.suspended_at ?? null);
+    return { handled: true, action };
+  }
+  if (action === "unsuspend") {
+    await setInstallationSuspended(db, installationId, null);
+    return { handled: true, action };
+  }
+
+  // created / new_permissions_accepted / etc: upsert the row and snapshot repos.
+  const account = installation?.account;
+  if (!account?.login || account.id === undefined || !account.type || !installation?.repository_selection) {
+    logger.warn(`installation ${action} for ${installationId} missing account/selection; skipping`);
+    return { handled: false, action };
+  }
+  await upsertInstallation(db, {
+    installationId,
+    accountLogin: account.login,
+    accountId: account.id,
+    accountType: account.type,
+    repositorySelection: installation.repository_selection,
+    suspendedAt: installation.suspended_at ?? null,
+  });
+  await backfillInstallationOwner(db, installationId, account.id);
+  if (installation.repository_selection === "selected") {
+    await replaceInstallationRepositories(db, installationId, toRepoInputs(payload.repositories));
+  } else {
+    await replaceInstallationRepositories(db, installationId, []);
+  }
+  return { handled: true, action };
+}
+
+// installation_repositories events: a repo was added to / removed from a
+// 'selected' installation. Flips per-repo App coverage on the next read.
+export async function handleGithubInstallationRepositoriesEvent(
+  db: D1,
+  payload: {
+    action?: string;
+    installation?: InstallationPayload;
+    repository_selection?: string;
+    repositories_added?: WebhookRepo[];
+    repositories_removed?: WebhookRepo[];
+  },
+): Promise<{ handled: boolean; action: string }> {
+  const installation = payload.installation;
+  const installationId = installation?.id;
+  const action = payload.action ?? "";
+  if (!installationId) return { handled: false, action };
+
+  const account = installation?.account;
+  const selection = payload.repository_selection ?? installation?.repository_selection;
+  if (account?.login && account.id !== undefined && account.type && selection) {
+    await upsertInstallation(db, {
+      installationId,
+      accountLogin: account.login,
+      accountId: account.id,
+      accountType: account.type,
+      repositorySelection: selection,
+      suspendedAt: installation?.suspended_at ?? null,
+    });
+    await backfillInstallationOwner(db, installationId, account.id);
+  }
+
+  // 'all' covers everything by account login; the selected-repo rows are moot.
+  if (selection === "all") {
+    await replaceInstallationRepositories(db, installationId, []);
+    return { handled: true, action };
+  }
+
+  await addInstallationRepositories(db, installationId, toRepoInputs(payload.repositories_added));
+  await removeInstallationRepositories(
+    db,
+    installationId,
+    (payload.repositories_removed ?? []).map((repo) => repo.full_name).filter((name): name is string => Boolean(name)),
+  );
+  return { handled: true, action };
 }

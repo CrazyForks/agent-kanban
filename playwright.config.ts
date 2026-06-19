@@ -22,7 +22,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: `pnpm dev`,
+    command: `pnpm --filter @agent-kanban/web db:migrate && pnpm dev`,
     url: baseURL,
     reuseExistingServer: !process.env.CI,
   },

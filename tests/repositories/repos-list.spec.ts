@@ -14,6 +14,7 @@ test.describe("Repositories Page", () => {
 
     // Add a repository first so we have something to list
     await page.getByRole("button", { name: "Add Repository" }).click();
+    await page.getByRole("tab", { name: "Manual" }).click();
     await page.getByRole("textbox", { name: "my-repo" }).fill("list-repo");
     await page.getByRole("textbox", { name: "https://github.com/user/repo." }).fill("https://github.com/user/list-repo.git");
     await page.getByRole("dialog").getByRole("button", { name: "Add Repository" }).click();

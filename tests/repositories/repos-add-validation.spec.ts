@@ -15,6 +15,9 @@ test.describe("Repositories Page", () => {
 
     await expect(page.getByRole("heading", { name: "Add Repository" })).toBeVisible();
 
+    // Switch to the 'Manual' tab to reveal the form fields and submit button
+    await page.getByRole("tab", { name: "Manual" }).click();
+
     const submitButton = page.getByRole("dialog").getByRole("button", { name: "Add Repository" });
     const nameInput = page.getByRole("textbox", { name: "my-repo" });
     const urlInput = page.getByRole("textbox", { name: "https://github.com/user/repo." });

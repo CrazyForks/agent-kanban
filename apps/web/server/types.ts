@@ -28,8 +28,8 @@ export interface Env {
   GITHUB_APP_ID?: string;
   // base64 of the App's PKCS#8 PEM private key
   GITHUB_APP_PRIVATE_KEY?: string;
-  // interim server-level fallback push token for cloud sessions
-  GITHUB_AGENT_TOKEN?: string;
+  // public App slug, used to build the install URL github.com/apps/<slug>/installations/new
+  GITHUB_APP_SLUG?: string;
   MIN_CLI_VERSION?: string;
 }
 

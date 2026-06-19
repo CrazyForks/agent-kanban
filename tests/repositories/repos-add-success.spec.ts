@@ -16,8 +16,9 @@ test.describe("Repositories Page", () => {
     // expect: Dialog is open
     await expect(page.getByRole("heading", { name: "Add Repository" })).toBeVisible();
 
-    // 2. Type 'test-repo' in Name and 'https://github.com/user/test-repo.git' in Clone URL,
-    //    then click 'Add Repository'
+    // 2. Switch to the 'Manual' tab, then type 'test-repo' in Name and
+    //    'https://github.com/user/test-repo.git' in Clone URL, then click 'Add Repository'
+    await page.getByRole("tab", { name: "Manual" }).click();
     await page.getByRole("textbox", { name: "my-repo" }).fill("test-repo");
     await page.getByRole("textbox", { name: "https://github.com/user/repo." }).fill("https://github.com/user/test-repo.git");
     await page.getByRole("dialog").getByRole("button", { name: "Add Repository" }).click();

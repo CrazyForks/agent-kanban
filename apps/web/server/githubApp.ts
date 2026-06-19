@@ -1,3 +1,5 @@
+import type { D1 } from "./db";
+import { replaceInstallationRepositories, upsertInstallation } from "./githubInstallations";
 import type { Env } from "./types";
 
 const GITHUB_API = "https://api.github.com";
@@ -43,6 +45,107 @@ export async function mintGithubInstallationToken(env: Env, owner: string, repo:
   }
   const token = (await tokenRes.json()) as { token: string; expires_at: string };
   return { token: token.token, expiresAt: token.expires_at };
+}
+
+export interface GithubInstallationDetails {
+  id: number;
+  account: { login: string; id: number; type: "User" | "Organization" };
+  repositorySelection: "all" | "selected";
+  suspendedAt: string | null;
+}
+
+// Reads an installation's account + repo selection. Used by the setup callback
+// to record the installation under the logged-in owner.
+export async function getInstallation(env: Env, installationId: number): Promise<GithubInstallationDetails> {
+  const jwt = await githubAppJwt(env);
+  const res = await fetch(`${GITHUB_API}/app/installations/${installationId}`, {
+    headers: { authorization: `Bearer ${jwt}`, "user-agent": USER_AGENT, accept: "application/vnd.github+json" },
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`GitHub get installation ${installationId} failed (HTTP ${res.status})${detail ? `: ${detail}` : ""}`);
+  }
+  const data = (await res.json()) as {
+    id: number;
+    account: { login: string; id: number; type: string };
+    repository_selection: string;
+    suspended_at: string | null;
+  };
+  return {
+    id: data.id,
+    account: { login: data.account.login, id: data.account.id, type: data.account.type as "User" | "Organization" },
+    repositorySelection: data.repository_selection as "all" | "selected",
+    suspendedAt: data.suspended_at,
+  };
+}
+
+export interface InstallationRepository {
+  id: number;
+  name: string;
+  full_name: string;
+  clone_url: string;
+  html_url: string;
+  private: boolean;
+}
+
+// Lists every repo the installation can access. Unlike mintGithubInstallationToken
+// (repo-scoped), this mints an installation-wide token so /installation/repositories
+// returns the full set the owner can import.
+export async function listInstallationRepositories(env: Env, installationId: number): Promise<InstallationRepository[]> {
+  const token = await mintInstallationWideToken(env, installationId);
+  const repos: InstallationRepository[] = [];
+  for (let page = 1; ; page++) {
+    const res = await fetch(`${GITHUB_API}/installation/repositories?per_page=100&page=${page}`, {
+      headers: { authorization: `Bearer ${token}`, "user-agent": USER_AGENT, accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      throw new Error(`GitHub list installation repositories failed (HTTP ${res.status})${detail ? `: ${detail}` : ""}`);
+    }
+    const data = (await res.json()) as { repositories: InstallationRepository[] };
+    repos.push(...data.repositories);
+    // A short page (fewer than per_page) is the last page — the canonical
+    // GitHub pagination terminator, and robust without relying on total_count.
+    if (data.repositories.length < 100) break;
+  }
+  return repos;
+}
+
+// Records an installation under the logged-in owner (authoritative source of
+// the owner_id mapping) and snapshots its selected repos. Called from the App's
+// Setup URL callback after the user installs/configures the App.
+export async function recordInstallationFromSetup(db: D1, env: Env, ownerId: string, installationId: number): Promise<GithubInstallationDetails> {
+  const details = await getInstallation(env, installationId);
+  await upsertInstallation(db, {
+    installationId: details.id,
+    ownerId,
+    accountLogin: details.account.login,
+    accountId: details.account.id,
+    accountType: details.account.type,
+    repositorySelection: details.repositorySelection,
+    suspendedAt: details.suspendedAt,
+  });
+  const repos = details.repositorySelection === "selected" ? await listInstallationRepositories(env, installationId) : [];
+  await replaceInstallationRepositories(
+    db,
+    installationId,
+    repos.map((repo) => ({ fullName: repo.full_name, repoId: repo.id })),
+  );
+  return details;
+}
+
+async function mintInstallationWideToken(env: Env, installationId: number): Promise<string> {
+  const jwt = await githubAppJwt(env);
+  const res = await fetch(`${GITHUB_API}/app/installations/${installationId}/access_tokens`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${jwt}`, "user-agent": USER_AGENT, accept: "application/vnd.github+json" },
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`GitHub App installation-wide token request failed (HTTP ${res.status})${detail ? `: ${detail}` : ""}`);
+  }
+  const data = (await res.json()) as { token: string };
+  return data.token;
 }
 
 async function githubAppJwt(env: Env): Promise<string> {

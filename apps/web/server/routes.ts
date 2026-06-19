@@ -4,6 +4,7 @@ import {
   type CreateAgentInput,
   type CreateSubagentInput,
   findInvalidSkillRef,
+  type InstallableRepo,
   isBoardType,
   isValidAgentRole,
   isValidUsername,
@@ -76,8 +77,15 @@ import {
 import { createBoardSSEResponse, createPublicBoardSSEResponse } from "./boardSSE";
 import { cliVersionMiddleware } from "./cliVersion";
 import type { D1 } from "./db";
+import { isGithubAppConfigured, listInstallationRepositories, recordInstallationFromSetup } from "./githubApp";
+import { getInstallationsForOwner, repoAppStatus, repoAppStatusBatch } from "./githubInstallations";
 import { addAgentEmail, getGithubToken, removeAgentEmail, syncGpgKey } from "./githubService";
-import { handleGithubPullRequestEvent, verifyGithubSignature } from "./githubWebhook";
+import {
+  handleGithubInstallationEvent,
+  handleGithubInstallationRepositoriesEvent,
+  handleGithubPullRequestEvent,
+  verifyGithubSignature,
+} from "./githubWebhook";
 import { getArmoredPrivateKey, getRootKeyInfo, getRootPublicKey, getSubkeyIds } from "./gpgKeyRepo";
 import { createLogger } from "./logger";
 import {
@@ -99,7 +107,7 @@ import { createMessage, listMessages } from "./messageRepo";
 import { metricsMiddleware } from "./metrics";
 import { getMachineMetrics } from "./metricsRepo";
 import { listRuntimeModels } from "./modelCatalog";
-import { createRepository, deleteRepository, getRepository, listRepositories } from "./repositoryRepo";
+import { createRepository, deleteRepository, getRepository, listRepositories, normalizeGitUrl } from "./repositoryRepo";
 import { createSSEResponse } from "./sse";
 import { getSystemStats } from "./statsRepo";
 import { createSubagent, deleteSubagent, getSubagent, listSubagents, updateSubagent } from "./subagentRepo";
@@ -608,9 +616,17 @@ api.post("/api/webhooks/github-app", async (c) => {
     throw new HTTPException(401, { message: "Invalid webhook signature" });
   }
   const event = c.req.header("x-github-event");
-  if (event !== "pull_request") return c.json({ ok: true, handled: false });
-  const result = await handleGithubPullRequestEvent(c.env.DB, c.env, JSON.parse(body));
-  return c.json({ ok: true, ...result });
+  const payload = JSON.parse(body);
+  if (event === "pull_request") {
+    return c.json({ ok: true, ...(await handleGithubPullRequestEvent(c.env.DB, c.env, payload)) });
+  }
+  if (event === "installation") {
+    return c.json({ ok: true, ...(await handleGithubInstallationEvent(c.env.DB, payload)) });
+  }
+  if (event === "installation_repositories") {
+    return c.json({ ok: true, ...(await handleGithubInstallationRepositoriesEvent(c.env.DB, payload)) });
+  }
+  return c.json({ ok: true, handled: false });
 });
 
 // ─── Public Share Routes (no auth required) ───
@@ -1825,27 +1841,97 @@ api.get("/api/admin/machines", async (c) => {
 
 // ─── Repositories ───
 
+// App config + this owner's install status, so the UI can show the slug-based
+// install link and reflect whether the owner has already connected the App.
+api.get("/api/github-app/config", async (c) => {
+  const slug = c.env.GITHUB_APP_SLUG ?? null;
+  const active = (await getInstallationsForOwner(c.env.DB, c.get("ownerId"))).filter((i) => i.suspendedAt === null);
+  return c.json({
+    configured: isGithubAppConfigured(c.env),
+    slug,
+    install_url: slug ? `https://github.com/apps/${slug}/installations/new` : null,
+    installed: active.length > 0,
+    accounts: active.map((i) => i.accountLogin),
+  });
+});
+
+// GitHub App "Setup URL" callback. After the user installs/configures the App,
+// GitHub redirects here with installation_id; the logged-in user is the
+// authoritative owner of that installation.
+api.get("/api/github-app/setup", async (c) => {
+  if (!isGithubAppConfigured(c.env)) throw new HTTPException(503, { message: "GitHub App is not configured" });
+  const installationId = Number(c.req.query("installation_id"));
+  if (!Number.isInteger(installationId) || installationId <= 0) {
+    throw new HTTPException(400, { message: "installation_id is required" });
+  }
+  await recordInstallationFromSetup(c.env.DB, c.env, c.get("ownerId"), installationId);
+  return c.redirect("/repositories?app_installed=1");
+});
+
+// Browse the repos the owner's installation(s) can access, for import. Live
+// list from GitHub (authoritative); the per-repo badge on the list uses the
+// stored tables instead and never calls GitHub.
+api.get("/api/github-app/repositories", async (c) => {
+  const ownerId = c.get("ownerId");
+  const installs = (await getInstallationsForOwner(c.env.DB, ownerId)).filter((i) => i.suspendedAt === null);
+  if (installs.length === 0) return c.json({ installed: false, repositories: [] });
+
+  const existingUrls = new Set((await listRepositories(c.env.DB, ownerId)).map((r) => r.url));
+  const lists = await Promise.all(installs.map((install) => listInstallationRepositories(c.env, install.installationId)));
+  const seen = new Set<string>();
+  const repositories: InstallableRepo[] = [];
+  for (const repo of lists.flat()) {
+    const key = repo.full_name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    repositories.push({
+      full_name: repo.full_name,
+      name: repo.name,
+      clone_url: repo.clone_url,
+      private: repo.private,
+      already_added: existingUrls.has(normalizeGitUrl(repo.clone_url)),
+    });
+  }
+  repositories.sort((a, b) => a.full_name.localeCompare(b.full_name));
+  return c.json({ installed: true, repositories });
+});
+
 api.post("/api/repositories", async (c) => {
   const body = await c.req.json<{ name: string; url: string }>();
   if (!body.name || !body.url) {
     throw new HTTPException(400, { message: "name and url are required" });
   }
-  const repository = await createRepository(c.env.DB, c.get("ownerId"), body);
-  return c.json(repository, 201);
+  const ownerId = c.get("ownerId");
+  // Soft on App coverage: any URL can be registered; the response carries the
+  // App status so the UI can prompt installation. The PAT fallback still pushes.
+  const repository = await createRepository(c.env.DB, ownerId, body);
+  const app_status = await repoAppStatus(c.env.DB, ownerId, repository.full_name);
+  return c.json({ ...repository, app_status }, 201);
 });
 
 api.get("/api/repositories", async (c) => {
+  const ownerId = c.get("ownerId");
   const { url } = c.req.query();
-  const repositories = await listRepositories(c.env.DB, c.get("ownerId"), { url });
-  return c.json(repositories);
+  const repositories = await listRepositories(c.env.DB, ownerId, { url });
+  const statuses = await repoAppStatusBatch(
+    c.env.DB,
+    ownerId,
+    repositories.map((r) => r.full_name),
+  );
+  return c.json(repositories.map((r) => ({ ...r, app_status: statuses.get(r.full_name) })));
 });
 
 api.get("/api/repositories/:id", async (c) => {
-  const repo = await getRepository(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  const ownerId = c.get("ownerId");
+  const repo = await getRepository(c.env.DB, c.req.param("id"), ownerId);
   if (!repo) throw new HTTPException(404, { message: "Repository not found" });
-  return c.json(repo);
+  const app_status = await repoAppStatus(c.env.DB, ownerId, repo.full_name);
+  return c.json({ ...repo, app_status });
 });
 
+// Unlink only: removes the AK repo row. Never uninstalls the App or removes the
+// repo from the GitHub installation — that is the user's choice on GitHub, and
+// the installation may cover repos used elsewhere.
 api.delete("/api/repositories/:id", async (c) => {
   const ownerId = c.get("ownerId");
   const repo = await c.env.DB.prepare("SELECT owner_id FROM repositories WHERE id = ?").bind(c.req.param("id")).first<{ owner_id: string }>();

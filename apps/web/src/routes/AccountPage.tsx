@@ -7,6 +7,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Skeleton } from "../components/ui/skeleton";
+import { useGithubAppConfig } from "../hooks/useGithubApp";
 import { api } from "../lib/api";
 import { accountAuthClient, type LinkedAccount, type SessionEntry, useSession } from "../lib/auth-client";
 import { cn } from "../lib/utils";
@@ -19,6 +20,7 @@ export function AccountPage() {
   const { data: session } = useSession();
   const user = session?.user as { email?: string | null; emailVerified?: boolean; createdAt?: Date | string | null } | undefined;
   const currentToken = (session?.session as { token?: string } | undefined)?.token;
+  const githubAppConfig = useGithubAppConfig();
 
   const [accounts, setAccounts] = useState<LinkedAccount[] | null>(null);
   const [accountsLoading, setAccountsLoading] = useState(true);
@@ -220,6 +222,35 @@ export function AccountPage() {
             </div>
           )}
         </div>
+
+        {/* GitHub App — distinct from the OAuth connection above: OAuth handles
+            identity/GPG sync, the App grants repo push/PR + delivers PR webhooks. */}
+        {githubAppConfig?.configured && githubAppConfig.install_url && (
+          <div className="max-w-2xl rounded-lg border border-border bg-surface-secondary p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-0.5">
+                <p className="text-sm font-medium text-content-primary">GitHub App</p>
+                {githubAppConfig.installed ? (
+                  <p className="text-xs text-content-tertiary">
+                    Connected{githubAppConfig.accounts[0] ? ` to ${githubAppConfig.accounts.map((a) => `@${a}`).join(", ")}` : ""}. Agent push/PR and
+                    PR status sync are enabled.
+                  </p>
+                ) : (
+                  <p className="text-xs text-content-tertiary">Install the app on your repositories to enable agent push/PR and PR status sync.</p>
+                )}
+              </div>
+              <a
+                href={githubAppConfig.install_url}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-1.5 border border-border text-content-secondary font-medium text-xs px-3 py-1.5 rounded-md hover:border-accent/30 hover:text-content-primary transition-colors shrink-0"
+              >
+                <Github className="size-3.5" />
+                {githubAppConfig.installed ? "Manage" : "Install App"}
+              </a>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* AMA connection */}

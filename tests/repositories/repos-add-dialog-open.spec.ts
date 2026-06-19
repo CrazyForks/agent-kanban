@@ -16,6 +16,9 @@ test.describe("Repositories Page", () => {
     // expect: A modal dialog appears with the title 'Add Repository'
     await expect(page.getByRole("heading", { name: "Add Repository" })).toBeVisible();
 
+    // Switch to the 'Manual' tab to reveal the name/url fields and submit button
+    await page.getByRole("tab", { name: "Manual" }).click();
+
     // expect: A 'Name' input field is present with placeholder 'my-repo'
     await expect(page.getByRole("textbox", { name: "my-repo" })).toBeVisible();
 

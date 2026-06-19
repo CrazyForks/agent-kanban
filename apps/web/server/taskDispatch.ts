@@ -9,14 +9,7 @@ import {
   setAmaAgentSessionSecretCredential,
   setAmaAgentSessionUsageTotals,
 } from "./agentSessionRepo";
-import {
-  ensureAmaOwnerIntegration,
-  getAmaProjectId,
-  requireAmaProjectId,
-  resolveAmaProjectId,
-  resolveAmaSessionSecretVaultId,
-  upsertAmaOwnerIntegration,
-} from "./amaOwnerIntegrationRepo";
+import { getAmaProjectId, requireAmaProjectId, resolveAmaProjectId, resolveAmaSessionSecretVaultId } from "./amaOwnerIntegrationRepo";
 import {
   type AmaAgent,
   type AmaRunner,
@@ -132,7 +125,7 @@ export async function dispatchTaskToAma(
   // self-contained step-by-step prompt regardless of the agent's runtime.
   const cloudDispatch = Boolean(cloudCandidate);
   const resourceRefs = await taskResourceRefs(db, task);
-  const githubTokenSecret = await githubTokenSecretRef(db, env, ownerId, amaProjectId, vaultId, sessionIdentity.sessionId, resourceRefs);
+  const githubTokenSecret = await githubTokenSecretRef(env, ownerId, amaProjectId, vaultId, sessionIdentity.sessionId, resourceRefs);
   let secret: Awaited<ReturnType<typeof createAmaSessionSecret>> | null = null;
   let dispatch: Awaited<ReturnType<typeof createAmaTaskSession>> | null = null;
   try {
@@ -832,12 +825,12 @@ function cloudTaskInitialPrompt(task: Task, resourceRefs: { owner: string; repo:
   return prompt.join("\n");
 }
 
-// The GitHub credential sessions push with. Preferred source: a
-// repository-scoped ~1h GitHub App installation token minted per session and
-// revoked at binding teardown. Fallback: the server-level GITHUB_AGENT_TOKEN
-// stored once per owner in the AMA vault.
+// The GitHub credential sessions push with: a repository-scoped ~1h GitHub App
+// installation token minted per session and revoked at binding teardown. No
+// fallback — a task with no repo gets no token; if the App is configured but not
+// installed on the repo, minting throws and dispatch fails loudly rather than
+// pushing with a shared long-lived credential.
 async function githubTokenSecretRef(
-  db: D1,
   env: Env,
   ownerId: string,
   projectId: string,
@@ -846,55 +839,14 @@ async function githubTokenSecretRef(
   resourceRefs: { owner: string; repo: string }[],
 ): Promise<{ name: string; credentialId: string; versionId?: string | null } | null> {
   const repo = resourceRefs[0];
-  if (repo && isGithubAppConfigured(env)) {
-    try {
-      const minted = await mintGithubInstallationToken(env, repo.owner, repo.repo);
-      const secret = await createAmaSessionSecret(env, ownerId, {
-        projectId,
-        vaultId,
-        name: `GH_TOKEN_${akSessionId.replaceAll(/[^A-Za-z0-9_]/g, "_")}`,
-        secretValue: minted.token,
-        metadata: { purpose: "github-installation-token", repository: `${repo.owner}/${repo.repo}`, expiresAt: minted.expiresAt },
-      });
-      return { name: "GH_TOKEN", credentialId: secret.credentialId, versionId: secret.activeVersionId };
-    } catch (error) {
-      logger.warn(`GitHub App token minting failed for ${repo.owner}/${repo.repo}, falling back: ${error}`);
-    }
-  }
-  return await ownerGithubTokenSecretRef(db, env, ownerId, projectId, vaultId);
-}
-
-async function ownerGithubTokenSecretRef(
-  db: D1,
-  env: Env,
-  ownerId: string,
-  projectId: string,
-  vaultId: string,
-): Promise<{ name: string; credentialId: string; versionId?: string | null } | null> {
-  if (!env.GITHUB_AGENT_TOKEN) return null;
-  const integration = await ensureAmaOwnerIntegration(db, env, ownerId);
-  const existingCredentialId = integration.metadata.githubTokenSecretCredentialId;
-  const existingVersionId = integration.metadata.githubTokenSecretVersionId;
-  if (typeof existingCredentialId === "string" && existingCredentialId) {
-    return {
-      name: "GH_TOKEN",
-      credentialId: existingCredentialId,
-      versionId: typeof existingVersionId === "string" ? existingVersionId : null,
-    };
-  }
+  if (!repo || !isGithubAppConfigured(env)) return null;
+  const minted = await mintGithubInstallationToken(env, repo.owner, repo.repo);
   const secret = await createAmaSessionSecret(env, ownerId, {
     projectId,
     vaultId,
-    name: "GH_AGENT_TOKEN",
-    secretValue: env.GITHUB_AGENT_TOKEN,
-    metadata: { purpose: "github-agent-token" },
-  });
-  await upsertAmaOwnerIntegration(db, {
-    ownerId,
-    amaProjectId: integration.amaProjectId,
-    externalTenantId: integration.externalTenantId,
-    sessionSecretVaultId: integration.sessionSecretVaultId,
-    metadata: { ...integration.metadata, githubTokenSecretCredentialId: secret.credentialId, githubTokenSecretVersionId: secret.activeVersionId },
+    name: `GH_TOKEN_${akSessionId.replaceAll(/[^A-Za-z0-9_]/g, "_")}`,
+    secretValue: minted.token,
+    metadata: { purpose: "github-installation-token", repository: `${repo.owner}/${repo.repo}`, expiresAt: minted.expiresAt },
   });
   return { name: "GH_TOKEN", credentialId: secret.credentialId, versionId: secret.activeVersionId };
 }

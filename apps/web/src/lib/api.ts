@@ -1,4 +1,4 @@
-import type { AgentRuntime, CreateSubagentInput } from "@agent-kanban/shared";
+import type { AgentRuntime, CreateSubagentInput, GithubAppConfig, InstallableRepo, Repository } from "@agent-kanban/shared";
 import { getAuthToken, refreshAuthToken } from "./auth-client";
 
 const API_BASE = "/api";
@@ -142,9 +142,13 @@ export const api = {
       }) as Promise<any>,
   },
   repositories: {
-    list: () => request<any[]>("GET", "/repositories"),
-    create: (input: { name: string; url: string }) => request<any>("POST", "/repositories", input),
+    list: () => request<Repository[]>("GET", "/repositories"),
+    create: (input: { name: string; url: string }) => request<Repository>("POST", "/repositories", input),
     delete: (id: string) => request<void>("DELETE", `/repositories/${id}`),
+  },
+  githubApp: {
+    config: () => request<GithubAppConfig>("GET", "/github-app/config"),
+    installableRepos: () => request<{ installed: boolean; repositories: InstallableRepo[] }>("GET", "/github-app/repositories"),
   },
   admin: {
     getStats: () => request<any>("GET", "/admin/stats"),

@@ -1737,158 +1737,226 @@ describe("githubRepoRef", () => {
   });
 });
 
-// ─── 8b. ownerGithubTokenSecretRef — GITHUB_AGENT_TOKEN paths ────────────────
+// ─── 8b. githubTokenSecretRef — GitHub App installation token paths ──────────
 
-describe("dispatchTaskToAma with GITHUB_AGENT_TOKEN (ownerGithubTokenSecretRef)", () => {
-  it("creates a new GH_TOKEN vault credential when GITHUB_AGENT_TOKEN is set and no cached credential exists", async () => {
+// Pre-computed throwaway RSA-2048 PKCS#8 private key (PEM) for test JWT signing.
+// Copied from github-installations.test.ts to avoid calling crypto.subtle.generateKey.
+const ghAppPrivateKey =
+  "-----BEGIN PRIVATE KEY-----\n" +
+  "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDeWh/EeP4jqpGO\n" +
+  "kRUr2VgNWqS1Q4XRir9JfCHxgWuKoodrTa6dSJtBbFEoLYjHA2CRpr+xTs6OsTAO\n" +
+  "9IKJSoZBkzyyMItkY7MOzGCU1diPmtNqvV+W1Q9EmrJQ/w7VekIv9CeGWcBe3YOY\n" +
+  "8bJ8ZP7atroxo/gFAP5NYXaYygMSVPYgAUeC/VHGwYbB1hnYJBUV4qhy9fgTGnmD\n" +
+  "AXPg0/EnAJL5BXdSxa2B+PtytFOBl2709f+e/BhxsVMY5NPikQczhghraA/6/4o4\n" +
+  "lv+ZEFr7qVoFqthFxPUMVA4iOS/QEPpBIDjh6Db1Yvkbe5h/Bol2yHhJrGmjE+AP\n" +
+  "BcMwUmoFAgMBAAECggEANoF2uJmlSNZy7HUVsMRMYKen6RRGjT17Ezc19ebxFxCs\n" +
+  "7AmkpIMsJd84zMXOueRSy5mJ85u7KED4pC3dguytGQ2QCyk5vk/vUJEamtmKBvff\n" +
+  "3BJUiJutbLaUQCUp/HxGFc2+06EUNl0MOZWEGJjEXZZ98ZW9gnKCJDNgWGdq1dbf\n" +
+  "beny1KbMd7Lmtkp+fVCC/r/EOhkRrc/ltgYRrcGyG6KdvWBidI/ugAF3qgN9Kc1p\n" +
+  "9TkvbmISN14xgLtxeYZbW9jG9uMcxEi4Yo1xD6eZkLJzf6Ca0cYi98DpTx4JBKy6\n" +
+  "EiXtTXHHiLXLxO02Y9VrcgYxiPUeXqnT2eyxNpsxYQKBgQDwuJbXB/VVkuHy9jIn\n" +
+  "JohuCvjWJxrShpsxDhBHCcbG8rsFL0KfvfZZ+k2hO0SZyNN51g4cSXGcvi+9PXTp\n" +
+  "7AotmPc4h5eQx0lYNKteiDD5Agl3GTa7h8H0kyHAL1bZt2xN6Ui0xArhDHWIQwJG\n" +
+  "YRU5T4uw2KkZJDQUFu/u68rTpQKBgQDsdw/aVttNLjDMrSpX7Iwx0Qd8IT/Cit/l\n" +
+  "i6IRCEC2epTVIh9tXwwDiH+csJR2/kLEp/sC9ceJYN5fgALInZF39GfAGYOjzWnA\n" +
+  "ng37tfDbHsv0oE5zYgH0SfN70jxa46zjRetCplKiMeeUvl9lvX2zOuk0+fGuXUGS\n" +
+  "4saFuy/u4QKBgQDG8ZdgQaiFv63TUZtjddodMB41Rv5I7YxG/3t+alsIw0TDZSqn\n" +
+  "wKRf+pi73rK0ciAsujbRM/WceCYWPTtptHU4+Amhg5ZExh8csfLLXr0ynndaIdF1\n" +
+  "LR6j1hF3tugNaSUuQtWe58Kh+d0M72xq5ANZaR9m2bjvGVedHtPO3rqzLQKBgHcl\n" +
+  "ruk3Jp0HDzOydUmEOUfIqVrUbgoaa6J/7xNh8yl/LosN/IPhhm4pUxOircwfZYkt\n" +
+  "kv701KvWEXZRTBXFv0yP688RjBD3KbgSa71O+aOPKvmB5MWitpVexb64Og0Z9z01\n" +
+  "N8uHfs+XEbcTDYJ4LmQm5Ob6odpXxvi6J4muvgJBAoGADJHDSJsj1jXzV9LqZQIA\n" +
+  "b3mePaxUJa6jQlGQTKr1baOJtKFXZXvSP4zvKb/LiVtjyj1vqktn0D2FrCyYsXON\n" +
+  "HamHhIsBF3eNRT4VUSqyGh3UyCKuLinmpQtX5W9CPWAkqYaMvhUCZqLA9FMc+nv4\n" +
+  "8or33ehPHwLc5KQfnNaXXXY=\n" +
+  "-----END PRIVATE KEY-----\n";
+
+describe("dispatchTaskToAma — githubTokenSecretRef (GitHub App installation token)", () => {
+  // Helper to build a task with a repository linked to github.com/saltbo/agent-kanban.
+  async function makeRepoTask(ownerId: string, envId: string) {
     const { createBoard } = await import("../apps/web/server/boardRepo");
     const { createTask } = await import("../apps/web/server/taskRepo");
-    const { dispatchTaskToAma } = await import("../apps/web/server/taskDispatch");
 
-    const ghTokenOwner = `gh-token-owner-${randomUUID()}`;
-    await seedUser(db, ghTokenOwner, `${ghTokenOwner}@test.local`);
-    await configureAmaIntegration(ghTokenOwner);
-    await configureAmaEnvironment(ghTokenOwner, "claude", "env_gh_token");
+    const repoId = `repo-ghapp-${randomUUID()}`;
+    await db
+      .prepare("INSERT INTO repositories (id, owner_id, name, url, created_at) VALUES (?, ?, ?, ?, ?)")
+      .bind(repoId, ownerId, "agent-kanban", "https://github.com/saltbo/agent-kanban", new Date().toISOString())
+      .run();
 
-    const board = await createBoard(db, ghTokenOwner, `gh-token-board-${randomUUID()}`, "ops");
-    const agent = await createTestAgent(db, ghTokenOwner, {
-      name: "GhTokenAgent",
-      username: `gh-token-agent-${randomUUID()}`,
+    const board = await createBoard(db, ownerId, `ghapp-board-${randomUUID()}`, "dev");
+    const agent = await createTestAgent(db, ownerId, {
+      name: `GhAppAgent-${randomUUID()}`,
+      username: `ghapp-agent-${randomUUID()}`,
       runtime: "claude",
     });
-    const task = await createTask(db, ghTokenOwner, {
-      title: "GH token task",
+    const task = await createTask(db, ownerId, {
+      title: "GH App token task",
       board_id: board.id,
       assigned_to: agent.id,
-      skipRuntimeAvailability: true,
+      repository_id: repoId,
     });
+    return task;
+  }
 
-    // Track how many vault credentials are created (should be 2: session key + GH_TOKEN)
+  // Builds a fetch mock that handles all AMA infrastructure calls and tracks
+  // vault-credential creation calls and session-request bodies. Callers supply
+  // a githubHandler that is given priority for https://api.github.com/* URLs;
+  // return a Response to handle the call, or null to fall through to the default
+  // AMA infrastructure handlers (which will throw for unexpected URLs).
+  function makeBaseFetchMock(projectId: string, vaultId: string, envId: string, githubHandler: (url: string, init?: RequestInit) => Response | null) {
     const vaultCredCalls: string[] = [];
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    let capturedSessionBody: Record<string, any> | null = null;
+    const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      // GitHub API: let the caller decide
+      if (url.startsWith("https://api.github.com/")) {
+        const res = githubHandler(url, init);
+        if (res !== null) return res;
+      }
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/v1/projects/project_123")
-        return new Response(JSON.stringify({ id: "project_123", name: "Workspace" }), { status: 200 });
-      if (url === "https://ama.test/api/v1/runners?environmentId=env_gh_token&limit=100") return activeRunnerResponse("env_gh_token", "claude-code");
+      if (url === `https://ama.test/api/v1/projects/${projectId}`)
+        return new Response(JSON.stringify({ id: projectId, name: "Workspace" }), { status: 200 });
+      if (url === `https://ama.test/api/v1/runners?environmentId=${envId}&limit=100`) return activeRunnerResponse(envId, "claude-code");
       if (url === "https://ama.test/api/v1/providers?limit=100")
         return new Response(JSON.stringify({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }), { status: 200 });
-      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
+      if (url === `https://ama.test/api/v1/vaults/${vaultId}/credentials`) {
         vaultCredCalls.push(url);
-        const credCount = vaultCredCalls.length;
-        return new Response(JSON.stringify({ id: `vaultcred_gh_${credCount}`, activeVersionId: `vaultver_gh_${credCount}` }), { status: 201 });
+        const n = vaultCredCalls.length;
+        return new Response(JSON.stringify({ id: `vaultcred_ghapp_${n}`, activeVersionId: `vaultver_ghapp_${n}` }), { status: 201 });
       }
       if (url === "https://ama.test/api/v1/agents")
         return new Response(
-          JSON.stringify({ id: "ama_agent_gh", projectId: "project_123", name: "gh", providerId: "provider_claude", model: null }),
+          JSON.stringify({ id: `ama_agent_ghapp_${randomUUID()}`, projectId, name: "ghapp", providerId: "provider_claude", model: null }),
           { status: 201 },
         );
       if (url === "https://ama.test/api/v1/sessions") {
-        const body = JSON.parse(String(init?.body)) as Record<string, any>;
-        return new Response(
-          JSON.stringify({ id: "session_gh_1", agentId: body.agentId, environmentId: "env_gh_token", state: "pending", stateReason: null }),
-          { status: 201 },
-        );
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    // Set GITHUB_AGENT_TOKEN in env — this activates ownerGithubTokenSecretRef
-    const env = makeEnv({ GITHUB_AGENT_TOKEN: "ghp_test_token_value" });
-    await dispatchTaskToAma(db, env, ghTokenOwner, task, { apiOrigin: "https://ak.test" });
-
-    // Two vault credential calls: one for session key, one for GH_TOKEN
-    expect(vaultCredCalls.length).toBeGreaterThanOrEqual(2);
-    // Verify GH_TOKEN credential id was persisted to the owner integration metadata
-    const row = await db.prepare("SELECT metadata FROM ama_owner_integrations WHERE owner_id = ?").bind(ghTokenOwner).first<{ metadata: string }>();
-    const meta = JSON.parse(row!.metadata ?? "{}") as Record<string, unknown>;
-    expect(typeof meta.githubTokenSecretCredentialId).toBe("string");
-  });
-
-  it("reuses the cached GH_TOKEN credential when one already exists in integration metadata", async () => {
-    const { createBoard } = await import("../apps/web/server/boardRepo");
-    const { createTask } = await import("../apps/web/server/taskRepo");
-    const { dispatchTaskToAma } = await import("../apps/web/server/taskDispatch");
-
-    const cachedGhOwner = `cached-gh-owner-${randomUUID()}`;
-    await seedUser(db, cachedGhOwner, `${cachedGhOwner}@test.local`);
-    // Seed integration with a pre-existing GH_TOKEN credential in metadata
-    const cachedCredId = "cred_gh_cached_existing";
-    const cachedVersionId = "ver_gh_cached_existing";
-    await db
-      .prepare(
-        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        cachedGhOwner,
-        "project_cached_gh",
-        cachedGhOwner,
-        "vault_cached_gh",
-        JSON.stringify({ githubTokenSecretCredentialId: cachedCredId, githubTokenSecretVersionId: cachedVersionId }),
-      )
-      .run();
-    await configureAmaEnvironment(cachedGhOwner, "claude", "env_cached_gh");
-
-    const board = await createBoard(db, cachedGhOwner, `cached-gh-board-${randomUUID()}`, "ops");
-    const agent = await createTestAgent(db, cachedGhOwner, {
-      name: "CachedGhAgent",
-      username: `cached-gh-agent-${randomUUID()}`,
-      runtime: "claude",
-    });
-    const task = await createTask(db, cachedGhOwner, {
-      title: "Cached GH task",
-      board_id: board.id,
-      assigned_to: agent.id,
-      skipRuntimeAvailability: true,
-    });
-
-    // Count vault credential creations — should be only 1 (session key), NOT the GH_TOKEN
-    const vaultCredCalls: string[] = [];
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/v1/projects/project_cached_gh")
-        return new Response(JSON.stringify({ id: "project_cached_gh", name: "Workspace" }), { status: 200 });
-      if (url === "https://ama.test/api/v1/runners?environmentId=env_cached_gh&limit=100")
-        return activeRunnerResponse("env_cached_gh", "claude-code");
-      if (url === "https://ama.test/api/v1/providers?limit=100")
-        return new Response(JSON.stringify({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }), { status: 200 });
-      if (url === "https://ama.test/api/v1/vaults/vault_cached_gh/credentials") {
-        vaultCredCalls.push(url);
-        return new Response(JSON.stringify({ id: "vaultcred_session_cached", activeVersionId: "vaultver_session_cached" }), { status: 201 });
-      }
-      if (url === "https://ama.test/api/v1/agents")
+        capturedSessionBody = JSON.parse(String(init?.body)) as Record<string, any>;
         return new Response(
           JSON.stringify({
-            id: "ama_agent_cached_gh",
-            projectId: "project_cached_gh",
-            name: "cached_gh",
-            providerId: "provider_claude",
-            model: null,
+            id: `session_ghapp_${randomUUID()}`,
+            agentId: capturedSessionBody.agentId,
+            environmentId: envId,
+            state: "pending",
+            stateReason: null,
           }),
           { status: 201 },
         );
-      if (url === "https://ama.test/api/v1/sessions") {
-        const body = JSON.parse(String(init?.body)) as Record<string, any>;
-        return new Response(
-          JSON.stringify({ id: "session_cached_gh_1", agentId: body.agentId, environmentId: "env_cached_gh", state: "pending", stateReason: null }),
-          { status: 201 },
-        );
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
+    return {
+      mock,
+      vaultCredCalls,
+      getSessionBody: () => capturedSessionBody,
+    };
+  }
+
+  it("mints a GH_TOKEN installation-token secret when GitHub App is configured and repo is installed", async () => {
+    const { dispatchTaskToAma } = await import("../apps/web/server/taskDispatch");
+
+    const ownerId = `ghapp-installed-owner-${randomUUID()}`;
+    await seedUser(db, ownerId, `${ownerId}@test.local`);
+    await configureAmaIntegration(ownerId, "project_ghapp", "vault_ghapp");
+    await configureAmaEnvironment(ownerId, "claude", "env_ghapp");
+
+    const task = await makeRepoTask(ownerId, "env_ghapp");
+
+    const {
+      mock: fetchMock,
+      vaultCredCalls,
+      getSessionBody,
+    } = makeBaseFetchMock("project_ghapp", "vault_ghapp", "env_ghapp", (url) => {
+      // GET /repos/:owner/:repo/installation → returns installation id 42
+      if (url === "https://api.github.com/repos/saltbo/agent-kanban/installation") return new Response(JSON.stringify({ id: 42 }), { status: 200 });
+      // POST /app/installations/42/access_tokens → returns a token
+      if (url === "https://api.github.com/app/installations/42/access_tokens")
+        return new Response(JSON.stringify({ token: "ghs_minted_token", expires_at: new Date(Date.now() + 3_600_000).toISOString() }), {
+          status: 201,
+        });
+      return null;
+    });
     vi.stubGlobal("fetch", fetchMock);
 
-    const env = makeEnv({ GITHUB_AGENT_TOKEN: "ghp_test_token_cached" });
-    await dispatchTaskToAma(db, env, cachedGhOwner, task, { apiOrigin: "https://ak.test" });
+    const env = makeEnv({ GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: ghAppPrivateKey });
+    await dispatchTaskToAma(db, env, ownerId, task, { apiOrigin: "https://ak.test" });
 
-    // Only 1 vault credential call (session key) — GH_TOKEN is reused from cache
+    // Two vault credential calls: GH_TOKEN installation token + session key
+    expect(vaultCredCalls.length).toBeGreaterThanOrEqual(2);
+
+    // The session body sent to AMA must have a secretEnv entry named GH_TOKEN
+    // (AMA's secretEnv uses { name, credentialRef } format, not raw values).
+    const sessionBody = getSessionBody();
+    expect(sessionBody).not.toBeNull();
+    const ghTokenEntry = (sessionBody?.secretEnv ?? []).find((s: any) => s.name === "GH_TOKEN");
+    expect(ghTokenEntry).toBeDefined();
+    expect(ghTokenEntry?.credentialRef?.credentialId).toMatch(/^vaultcred_ghapp_/);
+  });
+
+  it("propagates the error loudly when GitHub App is configured but repo is not installed (404)", async () => {
+    const { dispatchTaskToAma } = await import("../apps/web/server/taskDispatch");
+
+    const ownerId = `ghapp-not-installed-owner-${randomUUID()}`;
+    await seedUser(db, ownerId, `${ownerId}@test.local`);
+    await configureAmaIntegration(ownerId, "project_ghapp_404", "vault_ghapp_404");
+    await configureAmaEnvironment(ownerId, "claude", "env_ghapp_404");
+
+    const task = await makeRepoTask(ownerId, "env_ghapp_404");
+
+    const { mock: fetchMock } = makeBaseFetchMock("project_ghapp_404", "vault_ghapp_404", "env_ghapp_404", (url) => {
+      // GitHub App not installed on this repo — AMA calls should never be reached
+      if (url === "https://api.github.com/repos/saltbo/agent-kanban/installation")
+        return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+      return null;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const env = makeEnv({ GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: ghAppPrivateKey });
+
+    // Dispatch must throw — no silent fallback to a shared credential
+    await expect(dispatchTaskToAma(db, env, ownerId, task, { apiOrigin: "https://ak.test" })).rejects.toThrow(/not installed|HTTP 404/i);
+
+    // No AMA session should have been created (error propagates before session creation)
+    const sessionCalls = (fetchMock.mock.calls as [URL | string][]).filter(([url]) => String(url) === "https://ama.test/api/v1/sessions");
+    expect(sessionCalls).toHaveLength(0);
+  });
+
+  it("does not create a GH_TOKEN secret when GitHub App is not configured (returns null)", async () => {
+    const { dispatchTaskToAma } = await import("../apps/web/server/taskDispatch");
+
+    const ownerId = `ghapp-unconfigured-owner-${randomUUID()}`;
+    await seedUser(db, ownerId, `${ownerId}@test.local`);
+    await configureAmaIntegration(ownerId, "project_ghapp_none", "vault_ghapp_none");
+    await configureAmaEnvironment(ownerId, "claude", "env_ghapp_none");
+
+    const task = await makeRepoTask(ownerId, "env_ghapp_none");
+
+    const {
+      mock: fetchMock,
+      vaultCredCalls,
+      getSessionBody,
+    } = makeBaseFetchMock(
+      "project_ghapp_none",
+      "vault_ghapp_none",
+      "env_ghapp_none",
+      // No GitHub App configured — any api.github.com call would be a bug
+      (url) => {
+        throw new Error(`Unexpected GitHub API call: ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    // No GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY in env
+    const env = makeEnv();
+    await dispatchTaskToAma(db, env, ownerId, task, { apiOrigin: "https://ak.test" });
+
+    // Only one vault credential call — the session key; no GH_TOKEN was minted
     expect(vaultCredCalls).toHaveLength(1);
-    // Verify the session was created with the cached credential in runtimeSecretEnv
-    const sessionCalls = (fetchMock.mock.calls as [URL | string][]).filter(([url]) => String(url).includes("/sessions"));
-    expect(sessionCalls.length).toBeGreaterThan(0);
+
+    // The session's secretEnv must only contain AK_AGENT_KEY, not GH_TOKEN
+    const sessionBody = getSessionBody();
+    expect(sessionBody).not.toBeNull();
+    const ghTokenEntry = (sessionBody?.secretEnv ?? []).find((s: any) => s.name === "GH_TOKEN");
+    expect(ghTokenEntry).toBeUndefined();
   });
 });
 
