@@ -38,6 +38,8 @@ import {
 import {
   type AmaRunner,
   amaEnvironmentExists,
+  archiveAmaAgent,
+  archiveAmaEnvironment,
   archiveAmaScheduledAgentTrigger,
   createAmaEnvironment,
   createAmaScheduledAgentTrigger,
@@ -889,8 +891,18 @@ api.post("/api/machines/cloud", async (c) => {
 
 api.delete("/api/machines/:id", async (c) => {
   markLegacyRuntimeSurface(c);
+  const ownerId = c.get("ownerId");
   const machineId = c.req.param("id");
-  const deleted = await deleteMachine(c.env.DB, machineId, c.get("ownerId"));
+  // AMA has no hard delete; archive the machine's AMA environment (soft delete)
+  // before removing the AK row. Read the env id first since deleteMachine drops it.
+  const machine = await c.env.DB.prepare("SELECT ama_environment_id FROM machines WHERE id = ? AND owner_id = ?")
+    .bind(machineId, ownerId)
+    .first<{ ama_environment_id: string | null }>();
+  if (machine?.ama_environment_id && isAmaTaskDispatchConfigured(c.env)) {
+    const amaProjectId = await getAmaProjectId(c.env.DB, ownerId);
+    if (amaProjectId) await archiveAmaEnvironment(c.env, ownerId, amaProjectId, machine.ama_environment_id);
+  }
+  const deleted = await deleteMachine(c.env.DB, machineId, ownerId);
   if (!deleted) throw new HTTPException(404, { message: "Machine not found" });
 
   // Clean up BA data: delete agentHost (cascades to agent + agentCapabilityGrant via FK)
@@ -1079,17 +1091,29 @@ api.patch("/api/agents/:id", async (c) => {
   assertSubagentRuntime(runtime, subagents);
   await assertRegisteredSubagents(c.env.DB, ownerId, subagents, existing.id);
   const agent = await updateAgent(c.env.DB, c.req.param("id"), updates);
+  // Keep the AMA agent in sync (eager model: AK edits drive AMA). Dispatch only
+  // reads the AMA agent now, so without this its config would go stale.
+  if (agent && isAmaTaskDispatchConfigured(c.env)) {
+    await requireAmaConnected(c.env.DB, c.env, ownerId);
+    const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
+    await ensureAmaAgentForAkAgent(c.env.DB, c.env, ownerId, agent.id, amaProjectId, amaRuntimeName(agent.runtime));
+  }
   return c.json(agent);
 });
 
 api.delete("/api/agents/:id", async (c) => {
   const ownerId = c.get("ownerId");
-  const agent = await c.env.DB.prepare("SELECT id, username, builtin, version FROM agents WHERE id = ? AND owner_id = ?")
+  const agent = await c.env.DB.prepare("SELECT id, username, builtin, version, ama_agent_id FROM agents WHERE id = ? AND owner_id = ?")
     .bind(c.req.param("id"), ownerId)
-    .first<{ id: string; username: string; builtin: number; version: string }>();
+    .first<{ id: string; username: string; builtin: number; version: string; ama_agent_id: string | null }>();
   if (!agent) throw new HTTPException(404, { message: "Agent not found" });
   if (agent.builtin) throw new HTTPException(403, { message: "Built-in agents cannot be deleted" });
   if (agent.version !== "latest") throw new HTTPException(409, { message: "Agent snapshots cannot be deleted directly" });
+  // AMA has no hard delete; archive the AMA agent (soft delete, keeps history).
+  if (isAmaTaskDispatchConfigured(c.env) && agent.ama_agent_id) {
+    const amaProjectId = await getAmaProjectId(c.env.DB, ownerId);
+    if (amaProjectId) await archiveAmaAgent(c.env, ownerId, amaProjectId, agent.ama_agent_id);
+  }
   const email = agentEmail(agent.username);
   await deleteAgent(c.env.DB, agent.id);
   const remaining = await c.env.DB.prepare("SELECT 1 FROM agents WHERE username = ? LIMIT 1").bind(agent.username).first();

@@ -305,3 +305,70 @@ describe("disconnect guard (hasAmaResources)", () => {
     expect(await hasAmaResources(db, "guard-machine")).toBe(true);
   });
 });
+
+describe("delete archives the AMA resource (AMA has no hard delete)", () => {
+  async function seedIntegration(userId: string, projectId: string) {
+    await db
+      .prepare(
+        "INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata) VALUES (?, ?, ?, 'vault_x', '{}')",
+      )
+      .bind(userId, projectId, userId)
+      .run();
+  }
+
+  it("DELETE /api/agents/:id archives the AMA agent ({archived:true})", async () => {
+    const env = makeEnv();
+    const { userId, token } = await createSessionUser(env, "del-agent@test.com");
+    await linkAmaAccount(db, userId);
+    await seedIntegration(userId, "proj_del_agent");
+    const agent = await createTestAgent(db, userId, { name: "Del", username: "delagent", runtime: "claude" }, false);
+    const amaAgentId = `ama-agent-${agent.id}`; // set by createTestAgent
+
+    let archiveBody: unknown = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+        if (url === `https://ama.test/api/v1/agents/${amaAgentId}` && init?.method === "PATCH") {
+          archiveBody = JSON.parse(String(init.body));
+          return new Response(JSON.stringify({ id: amaAgentId, name: "Del", archivedAt: "2026-01-01T00:00:00.000Z" }), { status: 200 });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    const res = await apiRequest(env, "DELETE", `/api/agents/${agent.id}`, undefined, token);
+    expect(res.status).toBe(200);
+    expect(archiveBody).toEqual({ archived: true });
+    // AK row is gone.
+    expect(await db.prepare("SELECT 1 FROM agents WHERE id = ?").bind(agent.id).first()).toBeNull();
+  });
+
+  it("DELETE /api/machines/:id archives the AMA environment ({archived:true})", async () => {
+    const env = makeEnv();
+    const { userId, token } = await createSessionUser(env, "del-machine@test.com");
+    await linkAmaAccount(db, userId);
+    await seedIntegration(userId, "proj_del_machine");
+    await addCloudSandboxMachine(db, userId, ["ama"], "env_del_machine");
+    const m = await db.prepare("SELECT id FROM machines WHERE owner_id = ?").bind(userId).first<{ id: string }>();
+
+    let archiveBody: unknown = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+        if (url === "https://ama.test/api/v1/environments/env_del_machine" && init?.method === "PATCH") {
+          archiveBody = JSON.parse(String(init.body));
+          return new Response(JSON.stringify({ id: "env_del_machine", archivedAt: "2026-01-01T00:00:00.000Z" }), { status: 200 });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    const res = await apiRequest(env, "DELETE", `/api/machines/${m?.id}`, undefined, token);
+    expect(res.status).toBe(200);
+    expect(archiveBody).toEqual({ archived: true });
+  });
+});

@@ -423,6 +423,22 @@ export async function updateAmaAgentConfig(env: Env, ownerId: string, projectId:
   );
 }
 
+// AMA has no hard delete for agents/environments (they are FK-referenced by
+// sessions/runners/versions with no cascade). Deleting an AK agent/machine
+// archives the corresponding AMA resource (soft delete: hidden from active
+// lists, history preserved). Archive is the {archived:true} lifecycle PATCH.
+export async function archiveAmaAgent(env: Env, ownerId: string, projectId: string, agentId: string): Promise<void> {
+  const client = await createAmaClient(env, ownerId, projectId);
+  await withAmaErrorDetails("archive runtime agent", () => client.request("updateAgent", { path: { agentId }, body: { archived: true } }));
+}
+
+export async function archiveAmaEnvironment(env: Env, ownerId: string, projectId: string, environmentId: string): Promise<void> {
+  const client = await createAmaClient(env, ownerId, projectId);
+  await withAmaErrorDetails("archive runtime environment", () =>
+    client.request("updateEnvironment", { path: { environmentId }, body: { archived: true } }),
+  );
+}
+
 export async function readAmaEnvironment(env: Env, ownerId: string, projectId: string, environmentId: string): Promise<AmaEnvironment> {
   const client = await createAmaClient(env, ownerId, projectId);
   const environment = await client.request<AmaEnvironmentResponse>("readEnvironment", { path: { environmentId } });
