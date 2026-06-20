@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentThread, ChatToolUIs } from "@/components/chat";
 import { api } from "../lib/api";
-import { AmaRuntimeProvider } from "./RelayRuntimeProvider";
+import { AmaRuntimeProvider, RelayRuntimeProvider } from "./RelayRuntimeProvider";
 
 const PAGE_SIZE = 50;
 const LIVE_POLL_MS = 2000;
@@ -24,9 +24,49 @@ interface ChatPanelProps {
   taskId: string;
   agentId: string | null;
   taskDone: boolean;
+  /** The AMA session this task is bound to (new ak runner). Present ⇒ AMA path. */
+  amaSessionId?: string | null;
+  /** The legacy daemon relay session (old, un-upgraded ak). Absent ama ⇒ tunnel. */
+  relaySessionId?: string | null;
 }
 
-export function ChatPanel({ taskId, agentId, taskDone }: ChatPanelProps) {
+// Two clients can drive one board at once: a new ak (AMA runner) whose task is
+// bound to an AMA session, and an old, un-upgraded ak whose legacy daemon relays
+// over the tunnel. The chat renders each on its own path so neither blanks the
+// other (see the design's Backward compatibility section).
+export function ChatPanel({ taskId, agentId, taskDone, amaSessionId, relaySessionId }: ChatPanelProps) {
+  if (!agentId) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <p className="text-sm text-content-tertiary">No agent assigned. Chat is available when an agent is working on this task.</p>
+      </div>
+    );
+  }
+
+  if (amaSessionId) {
+    return <AmaSessionChat taskId={taskId} taskDone={taskDone} />;
+  }
+
+  if (relaySessionId) {
+    return (
+      <RelayRuntimeProvider sessionId={relaySessionId} taskDone={taskDone}>
+        <ChatToolUIs />
+        <AgentThread taskDone={taskDone} />
+      </RelayRuntimeProvider>
+    );
+  }
+
+  return (
+    <div className="flex-1 flex items-center justify-center px-6">
+      <p className="text-sm text-content-tertiary text-center">Chat history is not available for this task.</p>
+    </div>
+  );
+}
+
+// The AMA path: the task's events live in the AMA control plane (the Session DO
+// for cloud-loop runtimes, the runner store for self-hosted CLI runtimes), read
+// back through AK's server as a paginated snapshot and live-tailed.
+function AmaSessionChat({ taskId, taskDone }: { taskId: string; taskDone: boolean }) {
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [session, setSession] = useState<RuntimeEvent | undefined>(undefined);
   const [hasOlder, setHasOlder] = useState(false);
@@ -43,7 +83,6 @@ export function ChatPanel({ taskId, agentId, taskDone }: ChatPanelProps) {
 
   // Initial load: the most recent page (descending), displayed oldest -> newest.
   useEffect(() => {
-    if (!agentId) return;
     let cancelled = false;
     setPhase("loading");
     setEvents([]);
@@ -63,11 +102,11 @@ export function ChatPanel({ taskId, agentId, taskDone }: ChatPanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [taskId, agentId]);
+  }, [taskId]);
 
   // Live tail: poll for newer events and append them.
   useEffect(() => {
-    if (phase !== "ready" || !agentId) return;
+    if (phase !== "ready") return;
     let active = true;
     const tick = async () => {
       try {
@@ -91,7 +130,7 @@ export function ChatPanel({ taskId, agentId, taskDone }: ChatPanelProps) {
       active = false;
       clearInterval(interval);
     };
-  }, [phase, taskDone, taskId, agentId]);
+  }, [phase, taskDone, taskId]);
 
   const loadOlder = useCallback(async () => {
     const cursor = earliestSeqRef.current;
@@ -108,14 +147,6 @@ export function ChatPanel({ taskId, agentId, taskDone }: ChatPanelProps) {
       setLoadingOlder(false);
     }
   }, [taskId, hasOlder, loadingOlder]);
-
-  if (!agentId) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <p className="text-sm text-content-tertiary">No agent assigned. Chat is available when an agent is working on this task.</p>
-      </div>
-    );
-  }
 
   if (phase === "loading") {
     return (

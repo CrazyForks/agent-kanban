@@ -33,6 +33,13 @@ export function TaskChatDrawer({ open, onOpenChange, taskId, task, showOverlay =
   const currentTask = fetchedTask ?? task;
   const agentName = currentTask?.agent_name ?? "agent";
 
+  // An AMA-bound task (new ak runner) carries the ama.sessionId annotation and
+  // renders through the AMA path; an un-upgraded ak's legacy daemon has no such
+  // annotation and renders through its tunnel relay session.
+  const amaSessionId =
+    typeof currentTask?.metadata?.annotations?.["ama.sessionId"] === "string" ? (currentTask.metadata.annotations["ama.sessionId"] as string) : null;
+  const relaySessionId = currentTask?.active_session_id ?? null;
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent showCloseButton={false} showOverlay={showOverlay} className={`flex flex-col p-0 gap-0 shadow-2xl ${className ?? ""}`}>
@@ -64,6 +71,8 @@ export function TaskChatDrawer({ open, onOpenChange, taskId, task, showOverlay =
               taskId={taskId}
               agentId={currentTask?.assigned_to ?? null}
               taskDone={currentTask?.status === "done" || currentTask?.status === "cancelled"}
+              amaSessionId={amaSessionId}
+              relaySessionId={relaySessionId}
             />
           )}
         </div>
