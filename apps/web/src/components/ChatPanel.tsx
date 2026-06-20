@@ -104,31 +104,60 @@ function AmaSessionChat({ taskId, taskDone }: { taskId: string; taskDone: boolea
     };
   }, [taskId]);
 
-  // Live tail: poll for newer events and append them.
+  // Live tail: events are pushed over the AMA browser WebSocket — no poll loop.
+  // AK hands the SPA a token-bearing socket URL and the browser connects directly
+  // to the session's DO socket. A finished task has no more live events, so we do
+  // one catch-up read instead of holding a socket open.
   useEffect(() => {
     if (phase !== "ready") return;
     let active = true;
-    const tick = async () => {
-      try {
-        const data = await api.tasks.runtime(taskId, { order: "asc", cursor: latestSeqRef.current, limit: PAGE_SIZE });
-        if (!active) return;
-        setSession(data?.session ?? undefined);
-        const fresh: RuntimeEvent[] = data?.events ?? [];
-        if (fresh.length) setEvents((prev) => mergeUnique(prev, fresh, "tail"));
-      } catch {
-        // transient; retry on the next tick
-      }
-    };
+
     if (taskDone) {
-      void tick();
+      void (async () => {
+        try {
+          const data = await api.tasks.runtime(taskId, { order: "asc", cursor: latestSeqRef.current, limit: PAGE_SIZE });
+          if (!active) return;
+          setSession(data?.session ?? undefined);
+          if (data?.events?.length) setEvents((prev) => mergeUnique(prev, data.events, "tail"));
+        } catch {
+          // transient
+        }
+      })();
       return () => {
         active = false;
       };
     }
-    const interval = setInterval(tick, LIVE_POLL_MS);
+
+    let ws: WebSocket | null = null;
+    let reconnect: ReturnType<typeof setTimeout> | null = null;
+    const connect = async () => {
+      try {
+        const { url } = await api.tasks.runtimeSocket(taskId);
+        if (!active) return;
+        ws = new WebSocket(url);
+        ws.onmessage = (event) => {
+          try {
+            const frame = JSON.parse(typeof event.data === "string" ? event.data : "");
+            if (frame?.type === "event" && frame.event) {
+              setEvents((prev) => mergeUnique(prev, [frame.event as RuntimeEvent], "tail"));
+            }
+          } catch {
+            // ignore a malformed frame
+          }
+        };
+        ws.onclose = () => {
+          ws = null;
+          if (active) reconnect = setTimeout(connect, LIVE_POLL_MS);
+        };
+      } catch {
+        if (active) reconnect = setTimeout(connect, LIVE_POLL_MS);
+      }
+    };
+    void connect();
     return () => {
       active = false;
-      clearInterval(interval);
+      if (reconnect) clearTimeout(reconnect);
+      ws?.close();
     };
   }, [phase, taskDone, taskId]);
 

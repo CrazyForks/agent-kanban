@@ -57,6 +57,7 @@ export const api = {
       const suffix = qs.toString();
       return request<any>("GET", `/tasks/${id}/runtime${suffix ? `?${suffix}` : ""}`);
     },
+    runtimeSocket: (id: string) => request<{ url: string }>("GET", `/tasks/${id}/runtime/socket`),
     create: (input: Record<string, unknown>) => request<any>("POST", "/tasks", input),
     update: (id: string, body: Record<string, unknown>) => request<any>("PATCH", `/tasks/${id}`, body),
     delete: (id: string) => request<void>("DELETE", `/tasks/${id}`),

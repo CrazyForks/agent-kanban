@@ -799,6 +799,17 @@ async function createAmaClient(env: Env, ownerId: string, projectId?: string) {
   return createSdkClient({ baseUrl, accessToken, projectId });
 }
 
+// The token-bearing AMA browser-socket URL the SPA connects to directly (no AK
+// proxy/bridge): live events are pushed + history backfilled over one WebSocket,
+// replacing the chat's poll loop. The user's AMA access token rides as the
+// `access_token` query param (the AMA socket route authenticates on it).
+export async function getAmaSessionSocketUrl(env: Env, ownerId: string, sessionId: string): Promise<string> {
+  const baseUrl = requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN");
+  const accessToken = await userAmaAccessToken(env, ownerId);
+  const wsBase = baseUrl.replace(/^http(s?):\/\//i, (_match, secure) => `ws${secure}://`);
+  return `${wsBase}/api/v1/sessions/${encodeURIComponent(sessionId)}/socket?access_token=${encodeURIComponent(accessToken)}`;
+}
+
 function requireEnv(value: string | undefined, name: string): string {
   if (!value) {
     throw new Error(`${name} is required`);

@@ -46,6 +46,7 @@ import {
   createAmaScheduledAgentTrigger,
   deleteAmaScheduledAgentTrigger,
   getAmaSessionRuntimeSnapshot,
+  getAmaSessionSocketUrl,
   isAmaTaskDispatchConfigured,
   listAmaRunners,
   listAmaScheduledTriggerRuns,
@@ -1356,6 +1357,24 @@ api.get("/api/tasks/:id/runtime", async (c) => {
     session_id: sessionId,
     ...runtime,
   });
+});
+
+// The token-bearing AMA browser-socket URL the chat connects to directly: live
+// events pushed over one WebSocket, no poll loop. The token is the caller's own
+// AMA access token and the route is owner-scoped, so it only ever hands a user
+// their own session socket.
+api.get("/api/tasks/:id/runtime/socket", async (c) => {
+  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (!task) throw new HTTPException(404, { message: "Task not found" });
+  const annotations = task.metadata?.annotations;
+  const taskAnnotations =
+    annotations && typeof annotations === "object" && !Array.isArray(annotations) ? (annotations as Record<string, unknown>) : {};
+  const sessionId = taskAnnotations["ama.sessionId"];
+  if (typeof sessionId !== "string" || !sessionId) {
+    throw new HTTPException(404, { message: "Task is not bound to a session" });
+  }
+  const url = await getAmaSessionSocketUrl(c.env, c.get("ownerId"), sessionId);
+  return c.json({ url });
 });
 
 api.patch("/api/tasks/:id", async (c) => {
