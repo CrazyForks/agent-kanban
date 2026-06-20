@@ -1373,7 +1373,8 @@ api.get("/api/tasks/:id/runtime/socket", async (c) => {
   if (typeof sessionId !== "string" || !sessionId) {
     throw new HTTPException(404, { message: "Task is not bound to a session" });
   }
-  const url = await getAmaSessionSocketUrl(c.env, c.get("ownerId"), sessionId);
+  const projectId = typeof taskAnnotations["ama.projectId"] === "string" ? taskAnnotations["ama.projectId"] : undefined;
+  const url = await getAmaSessionSocketUrl(c.env, c.get("ownerId"), sessionId, projectId);
   return c.json({ url });
 });
 

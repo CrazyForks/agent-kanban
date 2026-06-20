@@ -803,11 +803,16 @@ async function createAmaClient(env: Env, ownerId: string, projectId?: string) {
 // proxy/bridge): live events are pushed + history backfilled over one WebSocket,
 // replacing the chat's poll loop. The user's AMA access token rides as the
 // `access_token` query param (the AMA socket route authenticates on it).
-export async function getAmaSessionSocketUrl(env: Env, ownerId: string, sessionId: string): Promise<string> {
+export async function getAmaSessionSocketUrl(env: Env, ownerId: string, sessionId: string, projectId?: string): Promise<string> {
   const baseUrl = requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN");
   const accessToken = await userAmaAccessToken(env, ownerId);
   const wsBase = baseUrl.replace(/^http(s?):\/\//i, (_match, secure) => `ws${secure}://`);
-  return `${wsBase}/api/v1/sessions/${encodeURIComponent(sessionId)}/socket?access_token=${encodeURIComponent(accessToken)}`;
+  // The browser connects with no request headers, so the session's project rides
+  // as a query param (the AMA socket route reads x-ama-project-id from header OR
+  // query). Without it the token resolves to the user's default project and the
+  // session — which lives in the machine's project — reads as "not found".
+  const projectParam = projectId ? `&x-ama-project-id=${encodeURIComponent(projectId)}` : "";
+  return `${wsBase}/api/v1/sessions/${encodeURIComponent(sessionId)}/socket?access_token=${encodeURIComponent(accessToken)}${projectParam}`;
 }
 
 function requireEnv(value: string | undefined, name: string): string {
