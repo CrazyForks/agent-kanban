@@ -80,7 +80,9 @@ export interface AmaSessionSecret {
 export interface AmaScheduledTriggerInput {
   projectId: string;
   agentId: string;
-  environmentId: string;
+  // Omit to leave the trigger unpinned: AMA resolves a runner-capable
+  // environment for the runtime at each dispatch instead of at creation.
+  environmentId?: string | null;
   runtime: string;
   name: string;
   promptTemplate: string;
@@ -104,7 +106,7 @@ export interface AmaScheduledTriggerUpdate {
 export interface AmaScheduledTrigger {
   id: string;
   agentId: string;
-  environmentId: string;
+  environmentId: string | null;
   name: string;
   promptTemplate: string;
   schedule: { intervalSeconds: number; windowSeconds?: number };
@@ -703,7 +705,7 @@ export async function listAmaRunners(env: Env, ownerId: string, projectId: strin
 interface AmaTriggerResponse {
   id: string;
   agentId: string;
-  environmentId: string;
+  environmentId: string | null;
   name: string;
   promptTemplate: string;
   schedule: { intervalSeconds: number; windowSeconds?: number };
@@ -796,7 +798,7 @@ export async function createAmaScheduledAgentTrigger(env: Env, ownerId: string, 
   const trigger = await client.request<AmaTriggerResponse>("createTrigger", {
     body: {
       agentId: input.agentId,
-      environmentId: input.environmentId,
+      ...(input.environmentId ? { environmentId: input.environmentId } : {}),
       runtime: input.runtime,
       name: input.name,
       promptTemplate: input.promptTemplate,

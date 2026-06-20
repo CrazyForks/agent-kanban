@@ -280,27 +280,6 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/projects/project_123") {
         return new Response(JSON.stringify({ id: "project_123", name: "Workspace" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/v1/environments/env_123") {
-        return new Response(JSON.stringify({ id: "env_123", runtime: "codex" }), { status: 200 });
-      }
-      if (url === "https://ama.test/api/v1/runners?environmentId=env_123&limit=100") {
-        return new Response(
-          JSON.stringify({
-            data: [
-              {
-                id: "runner_123",
-                environmentId: "env_123",
-                state: "active",
-                capabilities: ["runtime-provider-model:codex:*:gpt-5.3-codex"],
-                currentLoad: 0,
-                maxConcurrent: 1,
-                lastHeartbeatAt: new Date().toISOString(),
-              },
-            ],
-          }),
-          { status: 200 },
-        );
-      }
       if (url === "https://ama.test/api/v1/providers?limit=100") {
         return new Response(JSON.stringify({ data: [{ id: "provider_codex", type: "openai", status: "active" }] }), { status: 200 });
       }
@@ -338,7 +317,7 @@ describe("routes", () => {
         scheduleRequests.push(body);
         expect(body.metadata).toBeUndefined();
         expect(body.agentId).toBe("ama_agent_maintainer");
-        expect(body.environmentId).toBe("env_123");
+        expect(body.environmentId).toBeUndefined();
         expect(body.resourceRefs).toEqual([]);
         expect(body.env).toMatchObject({
           AK_WORKER: "1",
@@ -582,27 +561,6 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/projects/project_patch_test") {
         return new Response(JSON.stringify({ id: "project_patch_test", name: "Workspace" }), { status: 200 });
       }
-      if (url === "https://ama.test/api/v1/environments/env_patch_test") {
-        return new Response(JSON.stringify({ id: "env_patch_test", runtime: "codex" }), { status: 200 });
-      }
-      if (url === "https://ama.test/api/v1/runners?environmentId=env_patch_test&limit=100") {
-        return new Response(
-          JSON.stringify({
-            data: [
-              {
-                id: "runner_patch",
-                environmentId: "env_patch_test",
-                state: "active",
-                capabilities: ["runtime-provider-model:codex:*:gpt-5.3-codex"],
-                currentLoad: 0,
-                maxConcurrent: 1,
-                lastHeartbeatAt: new Date().toISOString(),
-              },
-            ],
-          }),
-          { status: 200 },
-        );
-      }
       if (url === "https://ama.test/api/v1/providers?limit=100") {
         return new Response(JSON.stringify({ data: [{ id: "provider_codex_patch", type: "openai", status: "active" }] }), { status: 200 });
       }
@@ -747,27 +705,6 @@ describe("routes", () => {
       }
       if (url === "https://ama.test/api/v1/projects/project_delete_test") {
         return new Response(JSON.stringify({ id: "project_delete_test", name: "Workspace" }), { status: 200 });
-      }
-      if (url === "https://ama.test/api/v1/environments/env_delete_test") {
-        return new Response(JSON.stringify({ id: "env_delete_test", runtime: "codex" }), { status: 200 });
-      }
-      if (url === "https://ama.test/api/v1/runners?environmentId=env_delete_test&limit=100") {
-        return new Response(
-          JSON.stringify({
-            data: [
-              {
-                id: "runner_delete",
-                environmentId: "env_delete_test",
-                state: "active",
-                capabilities: ["runtime-provider-model:codex:*:gpt-5.3-codex"],
-                currentLoad: 0,
-                maxConcurrent: 1,
-                lastHeartbeatAt: new Date().toISOString(),
-              },
-            ],
-          }),
-          { status: 200 },
-        );
       }
       if (url === "https://ama.test/api/v1/providers?limit=100") {
         return new Response(JSON.stringify({ data: [{ id: "provider_codex_delete", type: "openai", status: "active" }] }), { status: 200 });

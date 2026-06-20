@@ -319,18 +319,6 @@ export function agentGitIdentityEnv(agent: { name?: string | null; username: str
   };
 }
 
-export async function getReadyAmaMachineEnvironmentForRuntime(
-  db: D1,
-  env: Env,
-  ownerId: string,
-  projectId: string,
-  runtime: string,
-  model: string | null = null,
-): Promise<{ machineId: string; environmentId: string } | null> {
-  const candidates = await listMachineEnvironmentCandidatesForRuntime(db, ownerId, runtime);
-  return firstRunnableCandidate(env, ownerId, projectId, candidates, amaRuntimeName(runtime), model);
-}
-
 async function firstRunnableCandidate(
   env: Env,
   ownerId: string,

@@ -118,7 +118,6 @@ import {
   createAmaAgentForAkProfile,
   dispatchTaskToAma,
   ensureAmaAgentForAkAgent,
-  getReadyAmaMachineEnvironmentForRuntime,
   releaseTaskRuntimeBinding,
   sendTaskMessageToAma,
   sendTaskRejectToAma,
@@ -1648,10 +1647,9 @@ api.post("/api/boards/:id/maintainers", async (c) => {
   const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
   const maintainerAgent = await getAgent(c.env.DB, maintainerAgentId, ownerId);
   if (!maintainerAgent) throw new HTTPException(404, { message: "Agent not found" });
-  const machineRuntime = await getReadyAmaMachineEnvironmentForRuntime(c.env.DB, c.env, ownerId, amaProjectId, maintainerAgent.runtime);
-  if (!machineRuntime)
-    throw new HTTPException(409, { message: `Runtime "${maintainerAgent.runtime}" is not available on any active AMA environment` });
-  const amaEnvironmentId = machineRuntime.environmentId;
+  // The trigger is left unpinned: AMA resolves a runner-capable environment for
+  // the runtime at each dispatch, so a daily maintainer lands on whatever
+  // machine is healthy then rather than one picked at creation.
   const amaRuntime = amaRuntimeName(maintainerAgent.runtime);
   const amaAgent = await ensureAmaAgentForAkAgent(c.env.DB, c.env, ownerId, maintainerAgentId, amaProjectId, amaRuntime, {
     memoryEnabled: true,
@@ -1660,7 +1658,6 @@ api.post("/api/boards/:id/maintainers", async (c) => {
   const schedule = await createAmaScheduledAgentTrigger(c.env, ownerId, {
     projectId: amaProjectId,
     agentId: amaAgent.id,
-    environmentId: amaEnvironmentId,
     runtime: amaRuntime,
     name,
     promptTemplate: boardMaintainerPrompt(boardId, body.prompt),
