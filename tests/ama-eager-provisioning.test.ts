@@ -372,3 +372,237 @@ describe("delete archives the AMA resource (AMA has no hard delete)", () => {
     expect(archiveBody).toEqual({ archived: true });
   });
 });
+
+// ─── Backfill: pre-AMA agents get their ama_agent_id on provision ───────────
+
+describe("connect-backfills-pre-ama-agents", () => {
+  // Unique project id per describe so tests don't share state across suites.
+  const PROJECT_ID = "project_backfill";
+  const VAULT_ID = "vault_backfill";
+
+  // Seeds an ama_owner_integrations row so ensureAmaOwnerIntegration finds a
+  // live project without needing to create one.
+  async function seedIntegration(ownerId: string) {
+    await db
+      .prepare(
+        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
+         VALUES (?, ?, ?, ?, '{}')
+         ON CONFLICT(owner_id) DO NOTHING`,
+      )
+      .bind(ownerId, PROJECT_ID, ownerId, VAULT_ID)
+      .run();
+  }
+
+  // Builds a fetch mock that handles the AMA URLs needed for provision+backfill.
+  // agentResponses: array of per-agent responses — each element is either a
+  // Response to return for that agent's POST /api/v1/agents call, or null to
+  // throw an unexpected-fetch error. Calls are matched in order.
+  function makeFetchMock(agentResponses: Array<Response | "error">) {
+    let agentCallIndex = 0;
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      // ensureAmaOwnerIntegration verifies the project is live via GET.
+      if (url === `https://ama.test/api/v1/projects/${PROJECT_ID}`) {
+        return new Response(JSON.stringify({ id: PROJECT_ID, name: "Workspace" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/v1/agents" && (init as any)?.method === "POST") {
+        const resp = agentResponses[agentCallIndex++];
+        if (resp === "error") {
+          return new Response(JSON.stringify({ error: "internal server error" }), { status: 500 });
+        }
+        return resp;
+      }
+      throw new Error(`Unexpected fetch: ${url} (${(init as any)?.method ?? "GET"})`);
+    });
+  }
+
+  it("backfills a pre-AMA agent: sets ama_agent_id and returns agents_backfilled=1", async () => {
+    const env = makeEnv();
+    const { userId, token } = await createSessionUser(env, "backfill-agent@test.com");
+    await linkAmaAccount(db, userId);
+    await seedIntegration(userId);
+
+    // Create an agent via the helper (which sets ama_agent_id), then clear it
+    // to simulate a pre-AMA agent.
+    const agent = await createTestAgent(db, userId, { name: "Pre-AMA", username: "pre-ama-bf", runtime: "claude" }, false);
+    await db.prepare("UPDATE agents SET ama_agent_id = NULL WHERE id = ?").bind(agent.id).run();
+
+    const fetchMock = makeFetchMock([
+      new Response(JSON.stringify({ id: "ama_agent_x", projectId: PROJECT_ID, name: "Pre-AMA", providerId: "anthropic" }), { status: 201 }),
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await apiRequest(env, "POST", "/api/ama/provision", undefined, token);
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.agents_backfilled).toBe(1);
+
+    const row = await db.prepare("SELECT ama_agent_id FROM agents WHERE id = ?").bind(agent.id).first<{ ama_agent_id: string }>();
+    expect(row?.ama_agent_id).toBe("ama_agent_x");
+
+    // Exactly one POST /api/v1/agents was made.
+    const agentPostCount = fetchMock.mock.calls.filter(
+      ([url, init]) => String(url) === "https://ama.test/api/v1/agents" && (init as any)?.method === "POST",
+    ).length;
+    expect(agentPostCount).toBe(1);
+  });
+
+  it("is idempotent: second provision does not create another AMA agent", async () => {
+    const env = makeEnv();
+    const { userId, token } = await createSessionUser(env, "backfill-idempotent@test.com");
+    await linkAmaAccount(db, userId);
+    await seedIntegration(userId);
+
+    const agent = await createTestAgent(db, userId, { name: "Idempotent", username: "idempotent-bf", runtime: "claude" }, false);
+    await db.prepare("UPDATE agents SET ama_agent_id = NULL WHERE id = ?").bind(agent.id).run();
+
+    // First provision — backfills the agent.
+    const firstFetch = makeFetchMock([
+      new Response(JSON.stringify({ id: "ama_agent_idem", projectId: PROJECT_ID, name: "Idempotent", providerId: "anthropic" }), { status: 201 }),
+    ]);
+    vi.stubGlobal("fetch", firstFetch);
+    const first = await apiRequest(env, "POST", "/api/ama/provision", undefined, token);
+    expect(((await first.json()) as any).agents_backfilled).toBe(1);
+
+    // Second provision — agent now has ama_agent_id; backfill skips it.
+    // ensureAmaAgentForAkAgent will call GET /api/v1/agents/:id to verify the
+    // existing AMA agent is live, so mock that too.
+    const secondFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === `https://ama.test/api/v1/projects/${PROJECT_ID}`) {
+        return new Response(JSON.stringify({ id: PROJECT_ID, name: "Workspace" }), { status: 200 });
+      }
+      if (url === "https://ama.test/api/v1/agents/ama_agent_idem") {
+        // readAmaAgent called when ama_agent_id is already set.
+        return new Response(JSON.stringify({ id: "ama_agent_idem", projectId: PROJECT_ID, name: "Idempotent", providerId: "anthropic" }), {
+          status: 200,
+        });
+      }
+      if (url === "https://ama.test/api/v1/agents/ama_agent_idem" && (init as any)?.method === "PATCH") {
+        return new Response(JSON.stringify({ id: "ama_agent_idem" }), { status: 200 });
+      }
+      // updateAmaAgentConfig uses PATCH.
+      if (url.startsWith("https://ama.test/api/v1/agents") && (init as any)?.method === "PATCH") {
+        return new Response(JSON.stringify({ id: "ama_agent_idem" }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch on 2nd provision: ${url} (${(init as any)?.method ?? "GET"})`);
+    });
+    vi.stubGlobal("fetch", secondFetch);
+
+    const second = await apiRequest(env, "POST", "/api/ama/provision", undefined, token);
+    expect(second.status).toBe(200);
+    expect(((await second.json()) as any).agents_backfilled).toBe(0);
+
+    // No new POST /api/v1/agents on the second call.
+    const secondPostCount = secondFetch.mock.calls.filter(
+      ([url, init]) => String(url) === "https://ama.test/api/v1/agents" && (init as any)?.method === "POST",
+    ).length;
+    expect(secondPostCount).toBe(0);
+  });
+
+  it("excludes builtin agents: does not backfill builtin=1 rows", async () => {
+    const env = makeEnv();
+    const { userId, token } = await createSessionUser(env, "backfill-builtin@test.com");
+    await linkAmaAccount(db, userId);
+    await seedIntegration(userId);
+
+    // Builtin agent (createTestAgent with builtin=true) never gets ama_agent_id.
+    await createTestAgent(db, userId, { name: "Builtin Soul", username: "builtin-soul-bf", runtime: "claude" }, true);
+
+    // Fetch mock should never see a POST /api/v1/agents.
+    const fetchMock = makeFetchMock([]); // no agent responses expected
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await apiRequest(env, "POST", "/api/ama/provision", undefined, token);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).agents_backfilled).toBe(0);
+
+    const agentPostCount = fetchMock.mock.calls.filter(
+      ([url, init]) => String(url) === "https://ama.test/api/v1/agents" && (init as any)?.method === "POST",
+    ).length;
+    expect(agentPostCount).toBe(0);
+
+    // Builtin row's ama_agent_id remains NULL.
+    const row = await db
+      .prepare("SELECT ama_agent_id FROM agents WHERE username = ? AND owner_id = ?")
+      .bind("builtin-soul-bf", userId)
+      .first<{ ama_agent_id: string | null }>();
+    expect(row?.ama_agent_id ?? null).toBeNull();
+  });
+
+  it("excludes snapshot (non-latest) agent rows from backfill", async () => {
+    const env = makeEnv();
+    const { userId, token } = await createSessionUser(env, "backfill-snapshot@test.com");
+    await linkAmaAccount(db, userId);
+    await seedIntegration(userId);
+
+    // Insert a non-latest (snapshot) agent row directly — no POST /api/agents
+    // helper to avoid triggering the route.
+    const snapshotId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    await db
+      .prepare(
+        `INSERT INTO agents (id, owner_id, name, username, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, version, public_key, private_key, fingerprint, builtin, ama_agent_id, metadata, created_at, updated_at)
+         VALUES (?, ?, 'Snap', 'snap-agent-bf', NULL, NULL, NULL, 'worker', NULL, 'claude', NULL, NULL, NULL, 'snapshot-v1', 'pubkey', 'privkey', 'fp', 0, NULL, '{}', ?, ?)`,
+      )
+      .bind(snapshotId, userId, now, now)
+      .run();
+
+    const fetchMock = makeFetchMock([]); // no POST expected
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await apiRequest(env, "POST", "/api/ama/provision", undefined, token);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).agents_backfilled).toBe(0);
+
+    const agentPostCount = fetchMock.mock.calls.filter(
+      ([url, init]) => String(url) === "https://ama.test/api/v1/agents" && (init as any)?.method === "POST",
+    ).length;
+    expect(agentPostCount).toBe(0);
+
+    // Snapshot row still has NULL ama_agent_id.
+    const row = await db.prepare("SELECT ama_agent_id FROM agents WHERE id = ?").bind(snapshotId).first<{ ama_agent_id: string | null }>();
+    expect(row?.ama_agent_id ?? null).toBeNull();
+  });
+
+  it("per-agent failure is non-fatal: one failing agent does not block the other", async () => {
+    const env = makeEnv();
+    const { userId, token } = await createSessionUser(env, "backfill-partial@test.com");
+    await linkAmaAccount(db, userId);
+    await seedIntegration(userId);
+
+    // Two eligible agents, both without ama_agent_id.
+    const agentA = await createTestAgent(db, userId, { name: "Agent A", username: "agent-a-bf", runtime: "claude" }, false);
+    const agentB = await createTestAgent(db, userId, { name: "Agent B", username: "agent-b-bf", runtime: "claude" }, false);
+    await db.prepare("UPDATE agents SET ama_agent_id = NULL WHERE id IN (?, ?)").bind(agentA.id, agentB.id).run();
+
+    // We don't know which agent is processed first (order depends on DB), so we
+    // make the mock fail on the FIRST call and succeed on the SECOND call.
+    const fetchMock = makeFetchMock([
+      "error",
+      new Response(JSON.stringify({ id: "ama_agent_success", projectId: PROJECT_ID, name: "Agent", providerId: "anthropic" }), { status: 201 }),
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await apiRequest(env, "POST", "/api/ama/provision", undefined, token);
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as any;
+    expect(body.agents_backfilled).toBe(1);
+
+    // Exactly one of the two agents got an ama_agent_id.
+    const rows = await db
+      .prepare("SELECT id, ama_agent_id FROM agents WHERE id IN (?, ?) AND version = 'latest'")
+      .bind(agentA.id, agentB.id)
+      .all<{ id: string; ama_agent_id: string | null }>();
+    const withId = rows.results.filter((r) => r.ama_agent_id !== null);
+    const withoutId = rows.results.filter((r) => r.ama_agent_id === null);
+    expect(withId).toHaveLength(1);
+    expect(withoutId).toHaveLength(1);
+    expect(withId[0].ama_agent_id).toBe("ama_agent_success");
+  });
+});

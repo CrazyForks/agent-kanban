@@ -484,6 +484,19 @@ export async function getAgentAmaId(db: D1, agentId: string): Promise<string | n
   return row?.ama_agent_id ?? null;
 }
 
+// Latest, non-builtin agents that predate AMA and so have no backing AMA agent.
+// The connect/provision backfill creates one per row so old agents become
+// dispatchable. Snapshots share the username's ama_agent_id via setAgentAmaId,
+// and builtin agents are never given one (parity with the create-agent route),
+// so both are excluded.
+export async function listAgentsMissingAmaAgent(db: D1, ownerId: string): Promise<{ id: string; username: string; runtime: string }[]> {
+  const result = await db
+    .prepare("SELECT id, username, runtime FROM agents WHERE owner_id = ? AND version = 'latest' AND builtin = 0 AND ama_agent_id IS NULL")
+    .bind(ownerId)
+    .all<{ id: string; username: string; runtime: string }>();
+  return result.results;
+}
+
 export async function getAgentMailboxToken(db: D1, agentId: string): Promise<string | null> {
   const row = await db.prepare("SELECT mailbox_token FROM agents WHERE id = ?").bind(agentId).first<{ mailbox_token: string | null }>();
   return row?.mailbox_token ?? null;

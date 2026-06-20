@@ -24,6 +24,7 @@ import {
   getAgentLogs,
   getAgentMailboxToken,
   listAgents,
+  listAgentsMissingAmaAgent,
   prepareAgent,
   updateAgent,
   upsertLatestAgent,
@@ -939,10 +940,33 @@ api.post("/api/ama/provision", async (c) => {
   if (!isAmaTaskDispatchConfigured(c.env)) {
     throw new HTTPException(500, { message: "AMA is not configured" });
   }
-  await requireAmaConnected(c.env.DB, c.env, c.get("ownerId"));
-  const integration = await ensureAmaOwnerIntegration(c.env.DB, c.env, c.get("ownerId"));
-  return c.json({ ok: true, project_id: integration.amaProjectId });
+  const ownerId = c.get("ownerId");
+  await requireAmaConnected(c.env.DB, c.env, ownerId);
+  const integration = await ensureAmaOwnerIntegration(c.env.DB, c.env, ownerId);
+  // Backfill agents that predate AMA: give each a backing AMA agent so old
+  // agents become dispatchable without being recreated. Runs on every
+  // connect/reconnect (the AccountPage fires provision then); idempotent
+  // because it only touches rows still missing an ama_agent_id. Per-agent
+  // failures are logged and skipped so one bad agent can't block the rest —
+  // the next provision retries whatever is still missing.
+  const backfilled = await backfillAgentAmaIds(c.env.DB, c.env, ownerId, integration.amaProjectId);
+  return c.json({ ok: true, project_id: integration.amaProjectId, agents_backfilled: backfilled });
 });
+
+async function backfillAgentAmaIds(db: D1, env: Env, ownerId: string, projectId: string): Promise<number> {
+  const pending = await listAgentsMissingAmaAgent(db, ownerId);
+  let backfilled = 0;
+  for (const agent of pending) {
+    try {
+      await ensureAmaAgentForAkAgent(db, env, ownerId, agent.id, projectId, amaRuntimeName(agent.runtime));
+      backfilled += 1;
+    } catch (err: unknown) {
+      logger.warn(`ama agent backfill failed for agent ${agent.username} (${agent.id}): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  if (pending.length > 0) logger.info(`ama agent backfill: ${backfilled}/${pending.length} for owner ${ownerId}`);
+  return backfilled;
+}
 
 // ─── Models ───
 
