@@ -133,13 +133,6 @@ export interface AmaRuntimeCommandResult {
   accepted: boolean;
 }
 
-export interface AmaSessionRuntimeSnapshot {
-  taskSessionId: string;
-  session: Record<string, unknown>;
-  events: Record<string, unknown>[];
-  pagination: Record<string, unknown>;
-}
-
 export interface AmaListResponse<T> {
   data: T[];
   pagination?: Record<string, unknown>;
@@ -538,37 +531,6 @@ export async function sendAmaSessionMessage(
   // A 201 means the prompt message was accepted and queued for the session.
   await client.sessions.createMessage(sessionId, { type: "prompt", content: message });
   return { accepted: true };
-}
-
-export interface AmaSessionEventsQuery {
-  cursor?: number;
-  order?: "asc" | "desc";
-  limit?: number;
-}
-
-export async function getAmaSessionRuntimeSnapshot(
-  env: Env,
-  ownerId: string,
-  sessionId: string,
-  projectId?: string,
-  events: AmaSessionEventsQuery = {},
-): Promise<AmaSessionRuntimeSnapshot> {
-  const client = await createAmaClient(env, ownerId, projectId);
-  const [session, eventPage] = await Promise.all([
-    client.sessions.get(sessionId),
-    client.sessions.listEvents(sessionId, {
-      limit: events.limit ?? 100,
-      order: events.order ?? "asc",
-      ...(events.cursor !== undefined ? { cursor: events.cursor } : {}),
-    }),
-  ]);
-  // The snapshot is forwarded to the browser as opaque session JSON.
-  return {
-    taskSessionId: sessionId,
-    session: session as unknown as Record<string, unknown>,
-    events: eventPage.data as unknown as Record<string, unknown>[],
-    pagination: eventPage.pagination as unknown as Record<string, unknown>,
-  };
 }
 
 export async function readAmaSession(env: Env, ownerId: string, sessionId: string, projectId?: string): Promise<Record<string, unknown> | null> {

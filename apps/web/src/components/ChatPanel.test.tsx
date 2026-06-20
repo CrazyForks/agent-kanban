@@ -6,13 +6,11 @@ import { ChatPanel } from "./ChatPanel";
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
-const runtimeMock = vi.fn();
 const runtimeSocketMock = vi.fn();
 
 vi.mock("../lib/api", () => ({
   api: {
     tasks: {
-      runtime: (...args: unknown[]) => runtimeMock(...args),
       runtimeSocket: (...args: unknown[]) => runtimeSocketMock(...args),
     },
   },
@@ -33,19 +31,27 @@ vi.mock("@/components/chat", () => ({
 // ── WebSocket fake ────────────────────────────────────────────────────────────
 
 // Minimal WebSocket fake for jsdom. Captures the most-recently constructed
-// instance so tests can fire messages on it.
+// instance so tests can fire messages and inspect sends.
 let lastWebSocket: FakeWebSocket | null = null;
 
 class FakeWebSocket {
+  static OPEN = 1;
+  static CLOSED = 3;
+
   url: string;
   onmessage: ((ev: { data: string }) => void) | null = null;
   onclose: (() => void) | null = null;
   onerror: ((ev: unknown) => void) | null = null;
   readyState = 1; // OPEN
+  sends: string[] = [];
 
   constructor(url: string) {
     this.url = url;
     lastWebSocket = this;
+  }
+
+  send(data: string) {
+    this.sends.push(data);
   }
 
   close() {
@@ -53,9 +59,14 @@ class FakeWebSocket {
     if (this.onclose) this.onclose();
   }
 
-  // Helper used by tests to deliver a message as if the server sent it.
-  simulateMessage(data: unknown) {
+  // Helper used by tests to deliver a server→client message.
+  emit(data: unknown) {
     if (this.onmessage) this.onmessage({ data: JSON.stringify(data) });
+  }
+
+  // Convenience alias for readability.
+  simulateMessage(data: unknown) {
+    this.emit(data);
   }
 }
 
@@ -79,6 +90,31 @@ function renderPanel(props: Partial<React.ComponentProps<typeof ChatPanel>> = {}
   );
 }
 
+// Waits for the FakeWebSocket to be constructed (i.e., for the async connect()
+// in AmaSessionChat to resolve the runtimeSocket promise and call `new WebSocket`).
+async function waitForWebSocket(): Promise<FakeWebSocket> {
+  // Flush microtasks so runtimeSocket's resolved promise runs.
+  await act(async () => {
+    await Promise.resolve();
+  });
+  if (!lastWebSocket) {
+    // One more flush for environments where mock resolution takes two ticks.
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+  if (!lastWebSocket) throw new Error("FakeWebSocket was never constructed — runtimeSocket may not have resolved");
+  return lastWebSocket;
+}
+
+// Delivers a backfill frame to lastWebSocket so AmaSessionChat transitions to "ready".
+async function deliverBackfill(events: Record<string, unknown>[] = [], hasMore = false, nextCursor: number | null = null) {
+  const ws = await waitForWebSocket();
+  await act(async () => {
+    ws.emit({ type: "backfill", events, hasMore, nextCursor });
+  });
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("ChatPanel", () => {
@@ -86,9 +122,7 @@ describe("ChatPanel", () => {
     vi.clearAllMocks();
     lastWebSocket = null;
 
-    // Default: single empty page, no more.
-    runtimeMock.mockResolvedValue({ events: [], session: undefined, pagination: { hasMore: false } });
-    // Default: socket url for not-done AMA branch.
+    // Default: socket url for AMA branch.
     runtimeSocketMock.mockResolvedValue({ url: "wss://test/socket" });
 
     // Install the fake WebSocket globally so source code that does
@@ -103,35 +137,35 @@ describe("ChatPanel", () => {
       expect(screen.getByText("No agent assigned. Chat is available when an agent is working on this task.")).toBeInTheDocument();
     });
 
-    it("does not call api.tasks.runtime", () => {
+    it("does not call api.tasks.runtimeSocket", () => {
       renderPanel({ agentId: null });
 
-      expect(runtimeMock).not.toHaveBeenCalled();
+      expect(runtimeSocketMock).not.toHaveBeenCalled();
     });
   });
 
   describe("branch 2: agentId set + amaSessionId present", () => {
-    it("renders the AMA runtime provider marker", async () => {
+    it("renders the AMA runtime provider marker after a backfill frame", async () => {
       renderPanel({ amaSessionId: "session_x" });
 
-      // AmaSessionChat enters the "loading" phase first; once the mock resolves
-      // it transitions to "ready" and mounts AmaRuntimeProvider.
-      expect(await screen.findByTestId("ama-runtime-provider")).toBeInTheDocument();
+      // AmaSessionChat stays in loading until the first backfill frame arrives.
+      await deliverBackfill();
+
+      expect(screen.getByTestId("ama-runtime-provider")).toBeInTheDocument();
     });
 
-    it("calls api.tasks.runtime with order asc on initial load", async () => {
+    it("calls api.tasks.runtimeSocket with the taskId", async () => {
       renderPanel({ amaSessionId: "session_x" });
 
-      // Wait for the initial-load effect to fire.
-      await screen.findByTestId("ama-runtime-provider");
+      await deliverBackfill();
 
-      expect(runtimeMock).toHaveBeenCalledWith(TASK_ID, { order: "asc", cursor: undefined, limit: 200 });
+      expect(runtimeSocketMock).toHaveBeenCalledWith(TASK_ID);
     });
 
     it("does not render the relay provider", async () => {
       renderPanel({ amaSessionId: "session_x" });
 
-      await screen.findByTestId("ama-runtime-provider");
+      await deliverBackfill();
 
       expect(screen.queryByTestId("relay-runtime-provider")).not.toBeInTheDocument();
     });
@@ -150,10 +184,10 @@ describe("ChatPanel", () => {
       expect(screen.getByTestId("relay-runtime-provider")).toHaveAttribute("data-session-id", "relay_x");
     });
 
-    it("does not call api.tasks.runtime", () => {
+    it("does not call api.tasks.runtimeSocket", () => {
       renderPanel({ amaSessionId: null, relaySessionId: "relay_x" });
 
-      expect(runtimeMock).not.toHaveBeenCalled();
+      expect(runtimeSocketMock).not.toHaveBeenCalled();
     });
 
     it("does not render the AMA provider", () => {
@@ -179,170 +213,194 @@ describe("ChatPanel", () => {
   });
 
   describe("AmaSessionChat internal states", () => {
-    it("shows loading state before api resolves", () => {
-      // Hold the promise so the component stays in loading phase.
-      let resolve!: (v: unknown) => void;
-      runtimeMock.mockReturnValue(
-        new Promise((r) => {
-          resolve = r;
-        }),
-      );
+    it("shows loading state before any backfill frame arrives", () => {
+      // Hold runtimeSocket so the WS is never constructed.
+      runtimeSocketMock.mockReturnValue(new Promise(() => {}));
 
       renderPanel({ amaSessionId: "session_x" });
 
       expect(screen.getByText("Loading runtime history...")).toBeInTheDocument();
-
-      // Resolve to avoid unhandled promise rejection after test ends.
-      act(() => {
-        resolve({ events: [], session: undefined, pagination: { hasMore: false } });
-      });
     });
 
-    it("shows error state when api.tasks.runtime rejects", async () => {
-      runtimeMock.mockRejectedValue(new Error("network error"));
+    it("shows error state when api.tasks.runtimeSocket rejects", async () => {
+      runtimeSocketMock.mockRejectedValue(new Error("network error"));
 
       renderPanel({ amaSessionId: "session_x" });
 
       expect(await screen.findByText("Session history is not available for this task.")).toBeInTheDocument();
     });
 
-    it("renders the AMA provider when taskDone=true after api resolves", async () => {
+    it("renders the AMA provider when taskDone=true after a backfill frame", async () => {
       renderPanel({ amaSessionId: "session_x", taskDone: true });
 
-      // The taskDone=true path fires tick() once then returns; we still reach "ready".
-      expect(await screen.findByTestId("ama-runtime-provider")).toBeInTheDocument();
+      await deliverBackfill();
+
+      expect(screen.getByTestId("ama-runtime-provider")).toBeInTheDocument();
     });
-
-    it("calls api.tasks.runtime for live tail when taskDone=true", async () => {
-      // First call = initial load (asc), second call = live-tail tick (asc, taskDone path).
-      renderPanel({ amaSessionId: "session_x", taskDone: true });
-
-      await screen.findByTestId("ama-runtime-provider");
-
-      const calls = runtimeMock.mock.calls;
-      const tailCall = calls.find((c: unknown[]) => (c[1] as Record<string, unknown>)?.order === "asc" && c[1] !== calls[0]?.[1]);
-      // At minimum two calls were made (initial load + tail).
-      expect(calls.length).toBeGreaterThanOrEqual(2);
-      // The tail call uses order asc.
-      const tailCalls = calls.filter((c: unknown[]) => (c[1] as Record<string, unknown>)?.order === "asc");
-      expect(tailCalls.length).toBeGreaterThanOrEqual(2);
-      void tailCall;
-    });
-
-    it("merges new events returned by the live-tail tick into the display list", async () => {
-      // Initial load returns event seq=1; live tail returns seq=2 so mergeUnique runs.
-      runtimeMock
-        .mockResolvedValueOnce({ events: [makeEvent(1)], session: undefined, pagination: { hasMore: false } })
-        .mockResolvedValueOnce({ events: [makeEvent(2)], session: undefined, pagination: { hasMore: false } });
-
-      renderPanel({ amaSessionId: "session_x", taskDone: true });
-
-      // After both calls resolve the provider should still be present.
-      expect(await screen.findByTestId("ama-runtime-provider")).toBeInTheDocument();
-      // Both calls were made (initial + tail).
-      expect(runtimeMock).toHaveBeenCalledTimes(2);
-    });
-
-    // ── Multi-page initial load ───────────────────────────────────────────────
-
-    it("pages through multiple pages on initial load until hasMore is false", async () => {
-      // Page 1: hasMore=true, page 2: hasMore=false.
-      runtimeMock
-        .mockResolvedValueOnce({
-          events: [makeEvent(1), makeEvent(2)],
-          session: undefined,
-          pagination: { hasMore: true },
-        })
-        .mockResolvedValueOnce({
-          events: [makeEvent(3), makeEvent(4)],
-          session: undefined,
-          pagination: { hasMore: false },
-        });
-
-      renderPanel({ amaSessionId: "session_x", taskDone: true });
-
-      await screen.findByTestId("ama-runtime-provider");
-
-      // The initial load must have made at least 2 ascending calls.
-      const ascCalls = runtimeMock.mock.calls.filter((c: unknown[]) => (c[1] as Record<string, unknown>)?.order === "asc");
-      expect(ascCalls.length).toBeGreaterThanOrEqual(2);
-    });
-
-    it("passes the cursor from the last event of page 1 when fetching page 2", async () => {
-      // Page 1 ends at sequence 2; page 2 should be fetched with cursor=2.
-      runtimeMock
-        .mockResolvedValueOnce({
-          events: [makeEvent(1), makeEvent(2)],
-          session: undefined,
-          pagination: { hasMore: true },
-        })
-        .mockResolvedValueOnce({
-          events: [makeEvent(3)],
-          session: undefined,
-          pagination: { hasMore: false },
-        });
-
-      renderPanel({ amaSessionId: "session_x", taskDone: true });
-
-      await screen.findByTestId("ama-runtime-provider");
-
-      // Second ascending call must use cursor = 2 (sequence of last event on page 1).
-      const ascCalls = runtimeMock.mock.calls.filter((c: unknown[]) => (c[1] as Record<string, unknown>)?.order === "asc");
-      expect(ascCalls.length).toBeGreaterThanOrEqual(2);
-      const secondAscCall = ascCalls[1];
-      expect((secondAscCall[1] as Record<string, unknown>).cursor).toBe(2);
-    });
-
-    // ── WebSocket live tail (not-done task) ───────────────────────────────────
 
     it("calls api.tasks.runtimeSocket for a not-done AMA task", async () => {
       renderPanel({ amaSessionId: "session_x", taskDone: false });
 
-      await screen.findByTestId("ama-runtime-provider");
+      await deliverBackfill();
 
       expect(runtimeSocketMock).toHaveBeenCalledWith(TASK_ID);
     });
+
+    it("calls api.tasks.runtimeSocket for a done AMA task (history view)", async () => {
+      renderPanel({ amaSessionId: "session_x", taskDone: true });
+
+      await deliverBackfill();
+
+      expect(runtimeSocketMock).toHaveBeenCalledWith(TASK_ID);
+    });
+
+    // ── Backfill rendering ────────────────────────────────────────────────────
+
+    it("renders the AMA provider after a backfill frame with events", async () => {
+      renderPanel({ amaSessionId: "session_x" });
+
+      await deliverBackfill([makeEvent(1), makeEvent(2)]);
+
+      expect(screen.getByTestId("ama-runtime-provider")).toBeInTheDocument();
+    });
+
+    it("requests the next page when backfill hasMore=true and nextCursor is a number", async () => {
+      renderPanel({ amaSessionId: "session_x" });
+
+      // Wait for WS to be constructed then deliver a paged backfill.
+      await act(async () => {
+        // Allow runtimeSocket promise to resolve and WS to be created.
+        await Promise.resolve();
+      });
+
+      await deliverBackfill([makeEvent(1), makeEvent(2)], true, 2);
+
+      // The component should have sent a backfill request for the next page.
+      expect(lastWebSocket!.sends.length).toBeGreaterThanOrEqual(1);
+      const sentFrame = JSON.parse(lastWebSocket!.sends[0]);
+      expect(sentFrame.type).toBe("backfill");
+      expect(sentFrame.cursor).toBe(2);
+    });
+
+    it("does not send a next-page request when hasMore=false", async () => {
+      renderPanel({ amaSessionId: "session_x" });
+
+      await deliverBackfill([makeEvent(1)], false, null);
+
+      expect(lastWebSocket!.sends.length).toBe(0);
+    });
+
+    it("does not send a next-page request when nextCursor is not a number", async () => {
+      renderPanel({ amaSessionId: "session_x" });
+
+      const ws = await waitForWebSocket();
+      await act(async () => {
+        ws.emit({ type: "backfill", events: [makeEvent(1)], hasMore: true, nextCursor: null });
+      });
+
+      expect(ws.sends.length).toBe(0);
+    });
+
+    // ── Live event appends ────────────────────────────────────────────────────
+
+    it("appends a live event delivered after the initial backfill", async () => {
+      renderPanel({ amaSessionId: "session_x" });
+
+      await deliverBackfill([makeEvent(1)]);
+
+      // Deliver a live event frame.
+      await act(async () => {
+        lastWebSocket!.emit({ type: "event", event: makeEvent(10) });
+      });
+
+      // Provider remains rendered (events were appended without error).
+      expect(screen.getByTestId("ama-runtime-provider")).toBeInTheDocument();
+    });
+
+    it("transitions to ready on a live event frame even without a prior backfill", async () => {
+      renderPanel({ amaSessionId: "session_x" });
+
+      const ws = await waitForWebSocket();
+      await act(async () => {
+        ws.emit({ type: "event", event: makeEvent(1) });
+      });
+
+      expect(screen.getByTestId("ama-runtime-provider")).toBeInTheDocument();
+    });
+
+    // ── WebSocket construction ────────────────────────────────────────────────
 
     it("constructs a WebSocket with the url returned by runtimeSocket", async () => {
       runtimeSocketMock.mockResolvedValue({ url: "wss://example.com/socket" });
 
       renderPanel({ amaSessionId: "session_x", taskDone: false });
 
-      await screen.findByTestId("ama-runtime-provider");
+      // Allow runtimeSocket to resolve and WS to be constructed.
+      await act(async () => {
+        await Promise.resolve();
+      });
 
       expect(lastWebSocket).not.toBeNull();
       expect(lastWebSocket!.url).toBe("wss://example.com/socket");
     });
 
-    it("appends an event to the thread when the WebSocket delivers a message", async () => {
-      renderPanel({ amaSessionId: "session_x", taskDone: false });
+    it("does not open a WebSocket when runtimeSocket rejects", async () => {
+      runtimeSocketMock.mockRejectedValue(new Error("auth failed"));
 
-      await screen.findByTestId("ama-runtime-provider");
+      renderPanel({ amaSessionId: "session_x" });
 
-      // Deliver an event message over the fake WebSocket.
+      expect(await screen.findByText("Session history is not available for this task.")).toBeInTheDocument();
+      expect(lastWebSocket).toBeNull();
+    });
+
+    // ── Done task path ────────────────────────────────────────────────────────
+
+    it("opens a WebSocket for a done task to show history", async () => {
+      renderPanel({ amaSessionId: "session_x", taskDone: true });
+
       await act(async () => {
-        lastWebSocket!.simulateMessage({ type: "event", event: makeEvent(10) });
+        await Promise.resolve();
       });
 
-      // The provider is still rendered (events were appended without error).
+      expect(lastWebSocket).not.toBeNull();
+    });
+
+    it("renders the AMA provider for a done task after receiving the backfill", async () => {
+      renderPanel({ amaSessionId: "session_x", taskDone: true });
+
+      await deliverBackfill([makeEvent(1), makeEvent(2)]);
+
       expect(screen.getByTestId("ama-runtime-provider")).toBeInTheDocument();
     });
 
-    it("does not call api.tasks.runtimeSocket for a done task", async () => {
+    it("does not trigger reconnect for a done task when socket closes", async () => {
       renderPanel({ amaSessionId: "session_x", taskDone: true });
 
-      await screen.findByTestId("ama-runtime-provider");
+      await deliverBackfill();
 
-      expect(runtimeSocketMock).not.toHaveBeenCalled();
+      const firstSocket = lastWebSocket;
+
+      // Close the socket; for a done task there should be no reconnect.
+      await act(async () => {
+        firstSocket!.close();
+      });
+
+      // No new WebSocket constructed.
+      expect(lastWebSocket).toBe(firstSocket);
     });
 
-    it("does not open a WebSocket for a done task", async () => {
-      lastWebSocket = null;
-      renderPanel({ amaSessionId: "session_x", taskDone: true });
+    // ── Ignored malformed frames ──────────────────────────────────────────────
 
-      await screen.findByTestId("ama-runtime-provider");
+    it("ignores a frame with an unrecognised type without crashing", async () => {
+      renderPanel({ amaSessionId: "session_x" });
 
-      expect(lastWebSocket).toBeNull();
+      // Stay in loading — a bad frame shouldn't crash or transition to error.
+      const ws = await waitForWebSocket();
+      await act(async () => {
+        ws.emit({ type: "unknown", payload: "garbage" });
+      });
+
+      expect(screen.getByText("Loading runtime history...")).toBeInTheDocument();
     });
   });
 });

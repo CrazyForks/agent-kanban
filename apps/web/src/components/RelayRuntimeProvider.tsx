@@ -393,17 +393,18 @@ export function RelayRuntimeProvider({ sessionId, taskDone, children }: RelayRun
 }
 
 interface AmaRuntimeProviderProps {
-  runtimeSnapshot: { session?: Record<string, unknown>; events?: Record<string, unknown>[] } | null | undefined;
+  events: Record<string, unknown>[];
   taskDone: boolean;
   children: ReactNode;
 }
 
-export function AmaRuntimeProvider({ runtimeSnapshot, taskDone, children }: AmaRuntimeProviderProps) {
-  const events = useMemo(() => (runtimeSnapshot?.events ?? []).map(amaEventToRelayEvent), [runtimeSnapshot?.events]);
-  const status = typeof runtimeSnapshot?.session?.status === "string" ? runtimeSnapshot.session.status : null;
-  const agentStatus: AgentStatus = status === "running" || status === "pending" ? "working" : "idle";
+export function AmaRuntimeProvider({ events: rawEvents, taskDone, children }: AmaRuntimeProviderProps) {
+  const events = useMemo(() => rawEvents.map(amaEventToRelayEvent), [rawEvents]);
+  // No session metadata is fetched — events arrive over the socket. A task that is
+  // not yet done is treated as actively running for the typing indicator.
+  const agentStatus: AgentStatus = taskDone ? "idle" : "working";
   const messages = useMemo(() => convertEvents(events, agentStatus), [events, agentStatus]);
-  const isRunning = agentStatus === "working" && !taskDone;
+  const isRunning = !taskDone;
   const convertMessage = useCallback((message: ThreadMessageLike): ThreadMessageLike => message, []);
   const onNew = useCallback(async () => {}, []);
 

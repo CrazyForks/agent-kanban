@@ -1,9 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { AgentThread, ChatToolUIs } from "@/components/chat";
 import { api } from "../lib/api";
 import { AmaRuntimeProvider, RelayRuntimeProvider } from "./RelayRuntimeProvider";
 
-const PAGE_SIZE = 50;
 const LIVE_POLL_MS = 2000;
 
 type RuntimeEvent = Record<string, unknown>;
@@ -13,11 +12,12 @@ function sequenceOf(event: RuntimeEvent): number {
   return Number.isFinite(seq) ? seq : 0;
 }
 
-function mergeUnique(base: RuntimeEvent[], incoming: RuntimeEvent[], side: "head" | "tail"): RuntimeEvent[] {
+function mergeUnique(base: RuntimeEvent[], incoming: RuntimeEvent[]): RuntimeEvent[] {
   const seen = new Set(base.map(sequenceOf));
   const added = incoming.filter((event) => !seen.has(sequenceOf(event)));
   if (added.length === 0) return base;
-  return side === "head" ? [...added, ...base] : [...base, ...added];
+  // Backfill pages and live events can interleave; keep the thread sequence-ordered.
+  return [...base, ...added].sort((a, b) => sequenceOf(a) - sequenceOf(b));
 }
 
 interface ChatPanelProps {
@@ -68,75 +68,19 @@ export function ChatPanel({ taskId, agentId, taskDone, amaSessionId, relaySessio
 // back through AK's server as a paginated snapshot and live-tailed.
 function AmaSessionChat({ taskId, taskDone }: { taskId: string; taskDone: boolean }) {
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
-  const [session, setSession] = useState<RuntimeEvent | undefined>(undefined);
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
 
-  // Ref so the catch-up read for a finished task reads the current tail.
-  const latestSeqRef = useRef<number | undefined>(undefined);
+  // Events come entirely over the AMA browser WebSocket — never HTTP. On connect
+  // the Session DO pushes the history (a backfill frame, paginated over the same
+  // socket), then streams new events live. AK hands the SPA a token-bearing socket
+  // URL; the browser connects directly to the session's DO socket.
   useEffect(() => {
-    latestSeqRef.current = events.length ? sequenceOf(events[events.length - 1]) : undefined;
-  }, [events]);
-
-  // Initial load: the whole transcript, oldest -> newest, in one shot — a session
-  // is a single short transcript, so we page through all of it up front rather
-  // than a "scroll up to load more" prompt. Live events then arrive pushed.
-  useEffect(() => {
-    let cancelled = false;
-    setPhase("loading");
-    setEvents([]);
-    (async () => {
-      try {
-        const all: RuntimeEvent[] = [];
-        let cursor: number | undefined;
-        let sessionData: RuntimeEvent | undefined;
-        for (;;) {
-          const data = await api.tasks.runtime(taskId, { order: "asc", cursor, limit: 200 });
-          if (cancelled) return;
-          sessionData = data?.session ?? sessionData;
-          const page: RuntimeEvent[] = data?.events ?? [];
-          all.push(...page);
-          if (page.length === 0 || !data?.pagination?.hasMore) break;
-          cursor = sequenceOf(page[page.length - 1]);
-        }
-        if (cancelled) return;
-        setEvents(all);
-        setSession(sessionData);
-        setPhase("ready");
-      } catch {
-        if (!cancelled) setPhase("error");
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [taskId]);
-
-  // Live tail: events are pushed over the AMA browser WebSocket — no poll loop.
-  // AK hands the SPA a token-bearing socket URL and the browser connects directly
-  // to the session's DO socket. A finished task has no more live events, so we do
-  // one catch-up read instead of holding a socket open.
-  useEffect(() => {
-    if (phase !== "ready") return;
     let active = true;
-
-    if (taskDone) {
-      void (async () => {
-        try {
-          const data = await api.tasks.runtime(taskId, { order: "asc", cursor: latestSeqRef.current, limit: PAGE_SIZE });
-          if (!active) return;
-          setSession(data?.session ?? undefined);
-          if (data?.events?.length) setEvents((prev) => mergeUnique(prev, data.events, "tail"));
-        } catch {
-          // transient
-        }
-      })();
-      return () => {
-        active = false;
-      };
-    }
-
     let ws: WebSocket | null = null;
     let reconnect: ReturnType<typeof setTimeout> | null = null;
+    setPhase("loading");
+    setEvents([]);
+
     const connect = async () => {
       try {
         const { url } = await api.tasks.runtimeSocket(taskId);
@@ -145,8 +89,16 @@ function AmaSessionChat({ taskId, taskDone }: { taskId: string; taskDone: boolea
         ws.onmessage = (event) => {
           try {
             const frame = JSON.parse(typeof event.data === "string" ? event.data : "");
-            if (frame?.type === "event" && frame.event) {
-              setEvents((prev) => mergeUnique(prev, [frame.event as RuntimeEvent], "tail"));
+            if (frame?.type === "backfill" && Array.isArray(frame.events)) {
+              setEvents((prev) => mergeUnique(prev, frame.events as RuntimeEvent[]));
+              setPhase("ready");
+              // Pull older pages over the same socket until the history is whole.
+              if (frame.hasMore && typeof frame.nextCursor === "number" && ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "backfill", order: "asc", limit: 200, cursor: frame.nextCursor }));
+              }
+            } else if (frame?.type === "event" && frame.event) {
+              setEvents((prev) => mergeUnique(prev, [frame.event as RuntimeEvent]));
+              setPhase("ready");
             }
           } catch {
             // ignore a malformed frame
@@ -154,10 +106,14 @@ function AmaSessionChat({ taskId, taskDone }: { taskId: string; taskDone: boolea
         };
         ws.onclose = () => {
           ws = null;
-          if (active) reconnect = setTimeout(connect, LIVE_POLL_MS);
+          // A finished task has no more live events; reconnect only while running.
+          if (active && !taskDone) reconnect = setTimeout(connect, LIVE_POLL_MS);
         };
       } catch {
-        if (active) reconnect = setTimeout(connect, LIVE_POLL_MS);
+        if (active) {
+          setPhase((prev) => (prev === "loading" ? "error" : prev));
+          reconnect = setTimeout(connect, LIVE_POLL_MS);
+        }
       }
     };
     void connect();
@@ -166,7 +122,7 @@ function AmaSessionChat({ taskId, taskDone }: { taskId: string; taskDone: boolea
       if (reconnect) clearTimeout(reconnect);
       ws?.close();
     };
-  }, [phase, taskDone, taskId]);
+  }, [taskId, taskDone]);
 
   if (phase === "loading") {
     return (
@@ -185,7 +141,7 @@ function AmaSessionChat({ taskId, taskDone }: { taskId: string; taskDone: boolea
   }
 
   return (
-    <AmaRuntimeProvider runtimeSnapshot={{ session, events }} taskDone={taskDone}>
+    <AmaRuntimeProvider events={events} taskDone={taskDone}>
       <ChatToolUIs />
       <AgentThread taskDone={taskDone} />
     </AmaRuntimeProvider>

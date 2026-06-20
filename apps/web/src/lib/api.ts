@@ -49,14 +49,6 @@ export const api = {
       return request<any[]>("GET", `/tasks${qs}`);
     },
     get: (id: string) => request<any>("GET", `/tasks/${id}`),
-    runtime: (id: string, params?: { cursor?: number; order?: "asc" | "desc"; limit?: number }) => {
-      const qs = new URLSearchParams();
-      if (params?.cursor !== undefined) qs.set("cursor", String(params.cursor));
-      if (params?.order) qs.set("order", params.order);
-      if (params?.limit !== undefined) qs.set("limit", String(params.limit));
-      const suffix = qs.toString();
-      return request<any>("GET", `/tasks/${id}/runtime${suffix ? `?${suffix}` : ""}`);
-    },
     runtimeSocket: (id: string) => request<{ url: string }>("GET", `/tasks/${id}/runtime/socket`),
     create: (input: Record<string, unknown>) => request<any>("POST", "/tasks", input),
     update: (id: string, body: Record<string, unknown>) => request<any>("PATCH", `/tasks/${id}`, body),

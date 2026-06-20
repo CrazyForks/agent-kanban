@@ -45,7 +45,6 @@ import {
   createAmaEnvironment,
   createAmaScheduledAgentTrigger,
   deleteAmaScheduledAgentTrigger,
-  getAmaSessionRuntimeSnapshot,
   getAmaSessionSocketUrl,
   isAmaTaskDispatchConfigured,
   listAmaRunners,
@@ -1332,31 +1331,6 @@ api.get("/api/tasks/:id", async (c) => {
   const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) throw new HTTPException(404, { message: "Task not found" });
   return c.json(task);
-});
-
-api.get("/api/tasks/:id/runtime", async (c) => {
-  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
-  if (!task) throw new HTTPException(404, { message: "Task not found" });
-  const annotations = task.metadata?.annotations;
-  const taskAnnotations =
-    annotations && typeof annotations === "object" && !Array.isArray(annotations) ? (annotations as Record<string, unknown>) : {};
-  const sessionId = taskAnnotations["ama.sessionId"];
-  if (typeof sessionId !== "string" || !sessionId) {
-    throw new HTTPException(404, { message: "Task is not bound to a session" });
-  }
-  const projectId = typeof taskAnnotations["ama.projectId"] === "string" ? taskAnnotations["ama.projectId"] : undefined;
-  const orderParam = c.req.query("order");
-  const order = orderParam === "desc" ? "desc" : orderParam === "asc" ? "asc" : undefined;
-  const limitRaw = Number.parseInt(c.req.query("limit") ?? "", 10);
-  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : undefined;
-  const cursorRaw = Number.parseInt(c.req.query("cursor") ?? "", 10);
-  const cursor = Number.isFinite(cursorRaw) ? cursorRaw : undefined;
-  const runtime = await getAmaSessionRuntimeSnapshot(c.env, c.get("ownerId"), sessionId, projectId, { order, limit, cursor });
-  return c.json({
-    task_id: task.id,
-    session_id: sessionId,
-    ...runtime,
-  });
 });
 
 // The token-bearing AMA browser-socket URL the chat connects to directly: live
