@@ -1,6 +1,6 @@
 import { AuiIf, ErrorPrimitive, MessagePrimitive, ThreadPrimitive, type ToolCallMessagePartComponent } from "@assistant-ui/react";
-import { ArrowDownIcon, Loader2, Plug, Wrench } from "lucide-react";
-import { type FC, useEffect, useLayoutEffect, useRef } from "react";
+import { ArrowDownIcon, Plug, Wrench } from "lucide-react";
+import { type FC, useRef } from "react";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { Mono, parseMcpToolName, ToolShell } from "./tool-uis";
@@ -9,53 +9,12 @@ import { Mono, parseMcpToolName, ToolShell } from "./tool-uis";
 
 interface AgentThreadProps {
   taskDone: boolean;
-  /** Load the previous page of earlier activity. Omitted when none remain. */
-  onLoadOlder?: () => void;
-  loadingOlder?: boolean;
 }
 
 // ─── Thread Root ───
 
-export const AgentThread: FC<AgentThreadProps> = ({ taskDone, onLoadOlder, loadingOlder }) => {
+export const AgentThread: FC<AgentThreadProps> = ({ taskDone }) => {
   const viewportRef = useRef<HTMLDivElement>(null);
-  const topSentinelRef = useRef<HTMLDivElement>(null);
-  // scrollHeight captured when an older-page load is triggered, to anchor position
-  // after the earlier events are prepended (so the viewport doesn't jump).
-  const anchorHeightRef = useRef<number | null>(null);
-  // Latest values for the observer callback, which is registered only once.
-  const onLoadOlderRef = useRef(onLoadOlder);
-  const loadingOlderRef = useRef(loadingOlder);
-  onLoadOlderRef.current = onLoadOlder;
-  loadingOlderRef.current = loadingOlder;
-
-  // Load earlier activity when the top sentinel scrolls into view. An observer is
-  // used rather than a scrollTop threshold so it also fires when the initial page
-  // is short enough that the viewport does not overflow (and thus cannot scroll).
-  useEffect(() => {
-    const viewport = viewportRef.current;
-    const sentinel = topSentinelRef.current;
-    if (!viewport || !sentinel) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (!entries[0]?.isIntersecting) return;
-        if (!onLoadOlderRef.current || loadingOlderRef.current) return;
-        anchorHeightRef.current = viewport.scrollHeight;
-        onLoadOlderRef.current();
-      },
-      { root: viewport, rootMargin: "120px 0px 0px 0px" },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, []);
-
-  useLayoutEffect(() => {
-    const viewport = viewportRef.current;
-    if (viewport && anchorHeightRef.current !== null && !loadingOlder) {
-      const delta = viewport.scrollHeight - anchorHeightRef.current;
-      if (delta > 0) viewport.scrollTop += delta;
-      anchorHeightRef.current = null;
-    }
-  });
 
   return (
     <ThreadPrimitive.Root className="aui-root aui-thread-root flex h-full flex-col">
@@ -63,20 +22,6 @@ export const AgentThread: FC<AgentThreadProps> = ({ taskDone, onLoadOlder, loadi
         ref={viewportRef}
         className="aui-thread-viewport flex flex-1 flex-col gap-4 overflow-y-auto overflow-x-hidden scroll-smooth pr-3"
       >
-        <div ref={topSentinelRef} aria-hidden className="h-px w-full shrink-0" />
-        {(onLoadOlder || loadingOlder) && (
-          <div className="flex items-center justify-center gap-1.5 py-1.5 text-xs text-content-tertiary">
-            {loadingOlder ? (
-              <>
-                <Loader2 className="size-3 animate-spin" />
-                Loading earlier activity…
-              </>
-            ) : (
-              "Scroll up for earlier activity"
-            )}
-          </div>
-        )}
-
         <AuiIf condition={(s) => s.thread.isEmpty}>
           <div className="flex items-center justify-center h-full">
             <p className="text-sm text-content-tertiary">{taskDone ? "No activity recorded." : "Waiting for agent activity..."}</p>

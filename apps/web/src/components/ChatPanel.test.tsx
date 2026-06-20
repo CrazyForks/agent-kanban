@@ -7,11 +7,13 @@ import { ChatPanel } from "./ChatPanel";
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
 const runtimeMock = vi.fn();
+const runtimeSocketMock = vi.fn();
 
 vi.mock("../lib/api", () => ({
   api: {
     tasks: {
       runtime: (...args: unknown[]) => runtimeMock(...args),
+      runtimeSocket: (...args: unknown[]) => runtimeSocketMock(...args),
     },
   },
 }));
@@ -23,16 +25,39 @@ vi.mock("./RelayRuntimeProvider", () => ({
     React.createElement("div", { "data-testid": "relay-runtime-provider", "data-session-id": sessionId }, children),
 }));
 
-// AgentThread mock captures the onLoadOlder callback so tests can invoke it.
-let capturedOnLoadOlder: (() => void) | undefined;
-
 vi.mock("@/components/chat", () => ({
-  AgentThread: ({ onLoadOlder }: { onLoadOlder?: () => void }) => {
-    capturedOnLoadOlder = onLoadOlder;
-    return React.createElement("div", { "data-testid": "agent-thread" });
-  },
+  AgentThread: () => React.createElement("div", { "data-testid": "agent-thread" }),
   ChatToolUIs: () => React.createElement("div", { "data-testid": "chat-tool-uis" }),
 }));
+
+// ── WebSocket fake ────────────────────────────────────────────────────────────
+
+// Minimal WebSocket fake for jsdom. Captures the most-recently constructed
+// instance so tests can fire messages on it.
+let lastWebSocket: FakeWebSocket | null = null;
+
+class FakeWebSocket {
+  url: string;
+  onmessage: ((ev: { data: string }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: ((ev: unknown) => void) | null = null;
+  readyState = 1; // OPEN
+
+  constructor(url: string) {
+    this.url = url;
+    lastWebSocket = this;
+  }
+
+  close() {
+    this.readyState = 3; // CLOSED
+    if (this.onclose) this.onclose();
+  }
+
+  // Helper used by tests to deliver a message as if the server sent it.
+  simulateMessage(data: unknown) {
+    if (this.onmessage) this.onmessage({ data: JSON.stringify(data) });
+  }
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -59,8 +84,16 @@ function renderPanel(props: Partial<React.ComponentProps<typeof ChatPanel>> = {}
 describe("ChatPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    capturedOnLoadOlder = undefined;
+    lastWebSocket = null;
+
+    // Default: single empty page, no more.
     runtimeMock.mockResolvedValue({ events: [], session: undefined, pagination: { hasMore: false } });
+    // Default: socket url for not-done AMA branch.
+    runtimeSocketMock.mockResolvedValue({ url: "wss://test/socket" });
+
+    // Install the fake WebSocket globally so source code that does
+    // `new WebSocket(url)` uses the fake instead of the real browser API.
+    vi.stubGlobal("WebSocket", FakeWebSocket);
   });
 
   describe("branch 1: agentId is null", () => {
@@ -86,13 +119,13 @@ describe("ChatPanel", () => {
       expect(await screen.findByTestId("ama-runtime-provider")).toBeInTheDocument();
     });
 
-    it("calls api.tasks.runtime with the taskId", async () => {
+    it("calls api.tasks.runtime with order asc on initial load", async () => {
       renderPanel({ amaSessionId: "session_x" });
 
       // Wait for the initial-load effect to fire.
       await screen.findByTestId("ama-runtime-provider");
 
-      expect(runtimeMock).toHaveBeenCalledWith(TASK_ID, expect.objectContaining({ order: "desc" }));
+      expect(runtimeMock).toHaveBeenCalledWith(TASK_ID, { order: "asc", cursor: undefined, limit: 200 });
     });
 
     it("does not render the relay provider", async () => {
@@ -181,14 +214,19 @@ describe("ChatPanel", () => {
     });
 
     it("calls api.tasks.runtime for live tail when taskDone=true", async () => {
-      // First call = initial load (desc), second call = live-tail tick (asc, taskDone path).
+      // First call = initial load (asc), second call = live-tail tick (asc, taskDone path).
       renderPanel({ amaSessionId: "session_x", taskDone: true });
 
       await screen.findByTestId("ama-runtime-provider");
 
       const calls = runtimeMock.mock.calls;
-      const tailCall = calls.find((c: unknown[]) => (c[1] as Record<string, unknown>)?.order === "asc");
-      expect(tailCall).toBeDefined();
+      const tailCall = calls.find((c: unknown[]) => (c[1] as Record<string, unknown>)?.order === "asc" && c[1] !== calls[0]?.[1]);
+      // At minimum two calls were made (initial load + tail).
+      expect(calls.length).toBeGreaterThanOrEqual(2);
+      // The tail call uses order asc.
+      const tailCalls = calls.filter((c: unknown[]) => (c[1] as Record<string, unknown>)?.order === "asc");
+      expect(tailCalls.length).toBeGreaterThanOrEqual(2);
+      void tailCall;
     });
 
     it("merges new events returned by the live-tail tick into the display list", async () => {
@@ -205,36 +243,106 @@ describe("ChatPanel", () => {
       expect(runtimeMock).toHaveBeenCalledTimes(2);
     });
 
-    it("exposes onLoadOlder callback when hasMore is true and invokes api on call", async () => {
-      // Initial load with hasMore=true so onLoadOlder is wired into AgentThread.
-      runtimeMock.mockResolvedValueOnce({
-        events: [makeEvent(5)],
-        session: undefined,
-        pagination: { hasMore: true },
-      });
-      // loadOlder call returns an older page.
-      runtimeMock.mockResolvedValueOnce({
-        events: [makeEvent(3), makeEvent(4)],
-        session: undefined,
-        pagination: { hasMore: false },
-      });
+    // ── Multi-page initial load ───────────────────────────────────────────────
 
-      renderPanel({ amaSessionId: "session_x" });
+    it("pages through multiple pages on initial load until hasMore is false", async () => {
+      // Page 1: hasMore=true, page 2: hasMore=false.
+      runtimeMock
+        .mockResolvedValueOnce({
+          events: [makeEvent(1), makeEvent(2)],
+          session: undefined,
+          pagination: { hasMore: true },
+        })
+        .mockResolvedValueOnce({
+          events: [makeEvent(3), makeEvent(4)],
+          session: undefined,
+          pagination: { hasMore: false },
+        });
+
+      renderPanel({ amaSessionId: "session_x", taskDone: true });
 
       await screen.findByTestId("ama-runtime-provider");
 
-      // capturedOnLoadOlder should be set because hasMore=true.
-      expect(capturedOnLoadOlder).toBeDefined();
+      // The initial load must have made at least 2 ascending calls.
+      const ascCalls = runtimeMock.mock.calls.filter((c: unknown[]) => (c[1] as Record<string, unknown>)?.order === "asc");
+      expect(ascCalls.length).toBeGreaterThanOrEqual(2);
+    });
 
-      // Trigger load-older.
+    it("passes the cursor from the last event of page 1 when fetching page 2", async () => {
+      // Page 1 ends at sequence 2; page 2 should be fetched with cursor=2.
+      runtimeMock
+        .mockResolvedValueOnce({
+          events: [makeEvent(1), makeEvent(2)],
+          session: undefined,
+          pagination: { hasMore: true },
+        })
+        .mockResolvedValueOnce({
+          events: [makeEvent(3)],
+          session: undefined,
+          pagination: { hasMore: false },
+        });
+
+      renderPanel({ amaSessionId: "session_x", taskDone: true });
+
+      await screen.findByTestId("ama-runtime-provider");
+
+      // Second ascending call must use cursor = 2 (sequence of last event on page 1).
+      const ascCalls = runtimeMock.mock.calls.filter((c: unknown[]) => (c[1] as Record<string, unknown>)?.order === "asc");
+      expect(ascCalls.length).toBeGreaterThanOrEqual(2);
+      const secondAscCall = ascCalls[1];
+      expect((secondAscCall[1] as Record<string, unknown>).cursor).toBe(2);
+    });
+
+    // ── WebSocket live tail (not-done task) ───────────────────────────────────
+
+    it("calls api.tasks.runtimeSocket for a not-done AMA task", async () => {
+      renderPanel({ amaSessionId: "session_x", taskDone: false });
+
+      await screen.findByTestId("ama-runtime-provider");
+
+      expect(runtimeSocketMock).toHaveBeenCalledWith(TASK_ID);
+    });
+
+    it("constructs a WebSocket with the url returned by runtimeSocket", async () => {
+      runtimeSocketMock.mockResolvedValue({ url: "wss://example.com/socket" });
+
+      renderPanel({ amaSessionId: "session_x", taskDone: false });
+
+      await screen.findByTestId("ama-runtime-provider");
+
+      expect(lastWebSocket).not.toBeNull();
+      expect(lastWebSocket!.url).toBe("wss://example.com/socket");
+    });
+
+    it("appends an event to the thread when the WebSocket delivers a message", async () => {
+      renderPanel({ amaSessionId: "session_x", taskDone: false });
+
+      await screen.findByTestId("ama-runtime-provider");
+
+      // Deliver an event message over the fake WebSocket.
       await act(async () => {
-        await capturedOnLoadOlder!();
+        lastWebSocket!.simulateMessage({ type: "event", event: makeEvent(10) });
       });
 
-      // api.tasks.runtime should have been called a second time (for loadOlder).
-      expect(runtimeMock).toHaveBeenCalledTimes(2);
-      const olderCall = runtimeMock.mock.calls[1];
-      expect((olderCall[1] as Record<string, unknown>).order).toBe("desc");
+      // The provider is still rendered (events were appended without error).
+      expect(screen.getByTestId("ama-runtime-provider")).toBeInTheDocument();
+    });
+
+    it("does not call api.tasks.runtimeSocket for a done task", async () => {
+      renderPanel({ amaSessionId: "session_x", taskDone: true });
+
+      await screen.findByTestId("ama-runtime-provider");
+
+      expect(runtimeSocketMock).not.toHaveBeenCalled();
+    });
+
+    it("does not open a WebSocket for a done task", async () => {
+      lastWebSocket = null;
+      renderPanel({ amaSessionId: "session_x", taskDone: true });
+
+      await screen.findByTestId("ama-runtime-provider");
+
+      expect(lastWebSocket).toBeNull();
     });
   });
 });

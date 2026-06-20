@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AgentThread, ChatToolUIs } from "@/components/chat";
 import { api } from "../lib/api";
 import { AmaRuntimeProvider, RelayRuntimeProvider } from "./RelayRuntimeProvider";
@@ -69,36 +69,43 @@ export function ChatPanel({ taskId, agentId, taskDone, amaSessionId, relaySessio
 function AmaSessionChat({ taskId, taskDone }: { taskId: string; taskDone: boolean }) {
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [session, setSession] = useState<RuntimeEvent | undefined>(undefined);
-  const [hasOlder, setHasOlder] = useState(false);
-  const [loadingOlder, setLoadingOlder] = useState(false);
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
 
-  // Refs so the polling/loadOlder closures always read the current bounds.
-  const earliestSeqRef = useRef<number | undefined>(undefined);
+  // Ref so the catch-up read for a finished task reads the current tail.
   const latestSeqRef = useRef<number | undefined>(undefined);
   useEffect(() => {
-    earliestSeqRef.current = events.length ? sequenceOf(events[0]) : undefined;
     latestSeqRef.current = events.length ? sequenceOf(events[events.length - 1]) : undefined;
   }, [events]);
 
-  // Initial load: the most recent page (descending), displayed oldest -> newest.
+  // Initial load: the whole transcript, oldest -> newest, in one shot — a session
+  // is a single short transcript, so we page through all of it up front rather
+  // than a "scroll up to load more" prompt. Live events then arrive pushed.
   useEffect(() => {
     let cancelled = false;
     setPhase("loading");
     setEvents([]);
-    setHasOlder(false);
-    api.tasks
-      .runtime(taskId, { order: "desc", limit: PAGE_SIZE })
-      .then((data) => {
+    (async () => {
+      try {
+        const all: RuntimeEvent[] = [];
+        let cursor: number | undefined;
+        let sessionData: RuntimeEvent | undefined;
+        for (;;) {
+          const data = await api.tasks.runtime(taskId, { order: "asc", cursor, limit: 200 });
+          if (cancelled) return;
+          sessionData = data?.session ?? sessionData;
+          const page: RuntimeEvent[] = data?.events ?? [];
+          all.push(...page);
+          if (page.length === 0 || !data?.pagination?.hasMore) break;
+          cursor = sequenceOf(page[page.length - 1]);
+        }
         if (cancelled) return;
-        setEvents([...(data?.events ?? [])].reverse());
-        setSession(data?.session ?? undefined);
-        setHasOlder(Boolean(data?.pagination?.hasMore));
+        setEvents(all);
+        setSession(sessionData);
         setPhase("ready");
-      })
-      .catch(() => {
+      } catch {
         if (!cancelled) setPhase("error");
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
@@ -161,22 +168,6 @@ function AmaSessionChat({ taskId, taskDone }: { taskId: string; taskDone: boolea
     };
   }, [phase, taskDone, taskId]);
 
-  const loadOlder = useCallback(async () => {
-    const cursor = earliestSeqRef.current;
-    if (loadingOlder || !hasOlder || cursor === undefined) return;
-    setLoadingOlder(true);
-    try {
-      const data = await api.tasks.runtime(taskId, { order: "desc", cursor, limit: PAGE_SIZE });
-      const older: RuntimeEvent[] = [...(data?.events ?? [])].reverse();
-      if (older.length) setEvents((prev) => mergeUnique(prev, older, "head"));
-      setHasOlder(Boolean(data?.pagination?.hasMore));
-    } catch {
-      // keep hasOlder so the user can retry by scrolling again
-    } finally {
-      setLoadingOlder(false);
-    }
-  }, [taskId, hasOlder, loadingOlder]);
-
   if (phase === "loading") {
     return (
       <div className="flex-1 flex items-center justify-center px-6">
@@ -196,7 +187,7 @@ function AmaSessionChat({ taskId, taskDone }: { taskId: string; taskDone: boolea
   return (
     <AmaRuntimeProvider runtimeSnapshot={{ session, events }} taskDone={taskDone}>
       <ChatToolUIs />
-      <AgentThread taskDone={taskDone} onLoadOlder={hasOlder ? loadOlder : undefined} loadingOlder={loadingOlder} />
+      <AgentThread taskDone={taskDone} />
     </AmaRuntimeProvider>
   );
 }
