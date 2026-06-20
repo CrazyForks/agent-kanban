@@ -19,6 +19,24 @@ const BETTER_AUTH_URL = "http://localhost:8788";
 const env = createTestEnv();
 let mf: Miniflare;
 
+// hey-api's fetch client calls fetch(request) with a single Request object.
+// These helpers normalise both call signatures so mocks can match on url,
+// method, and body regardless of which form is used.
+function reqUrl(input: RequestInfo | URL): string {
+  return input instanceof Request ? input.url : String(input);
+}
+function reqMethod(input: RequestInfo | URL, init?: RequestInit): string {
+  return input instanceof Request ? input.method : ((init as any)?.method ?? "GET");
+}
+async function reqBody(input: RequestInfo | URL, init?: RequestInit): Promise<string> {
+  return input instanceof Request ? input.clone().text() : String((init as any)?.body ?? "");
+}
+// hey-api defaults to parseAs:'auto' which infers JSON only when Content-Type
+// is application/json. Always include it so the SDK parses the body correctly.
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
 async function apiRequest(method: string, path: string, body?: unknown, token?: string) {
   const { api } = await import("../apps/web/server/routes");
   const headers: Record<string, string> = { "Content-Type": "application/json", Host: "localhost:8788", "x-forwarded-proto": "http" };
@@ -273,47 +291,42 @@ describe("routes", () => {
     const updateRequests: any[] = [];
     const archiveRequests: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token" });
       }
       if (url === "https://ama.test/api/v1/projects/project_123") {
-        return new Response(JSON.stringify({ id: "project_123", name: "Workspace" }), { status: 200 });
+        return jsonResponse({ id: "project_123", name: "Workspace" });
       }
       if (url === "https://ama.test/api/v1/providers?limit=100") {
-        return new Response(JSON.stringify({ data: [{ id: "provider_codex", type: "openai", status: "active" }] }), { status: 200 });
+        return jsonResponse({ data: [{ id: "provider_codex", type: "openai", status: "active" }] });
       }
       if (url === "https://ama.test/api/v1/providers/provider_codex/models?limit=100") {
-        return new Response(JSON.stringify({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] }), {
-          status: 200,
-        });
+        return jsonResponse({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] });
       }
-      if (url === "https://ama.test/api/v1/providers/provider_codex/models" && init?.method === "POST") {
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      if (url === "https://ama.test/api/v1/providers/provider_codex/models" && reqMethod(input, init) === "POST") {
+        return jsonResponse({ ok: true });
       }
       // ensureAmaAgentForAkAgent reads the stored ama_agent_id then updates its
       // config (the AMA agent was created eagerly at agent creation).
-      if (url === "https://ama.test/api/v1/agents/ama_agent_maintainer" && (init?.method ?? "GET") === "GET") {
-        return new Response(
-          JSON.stringify({
-            id: "ama_agent_maintainer",
-            projectId: "project_123",
-            name: "agent",
-            providerId: "provider_codex",
-            model: "gpt-5.3-codex",
-          }),
-          { status: 200 },
-        );
+      if (url === "https://ama.test/api/v1/agents/ama_agent_maintainer" && (reqMethod(input, init) ?? "GET") === "GET") {
+        return jsonResponse({
+          id: "ama_agent_maintainer",
+          projectId: "project_123",
+          name: "agent",
+          providerId: "provider_codex",
+          model: "gpt-5.3-codex",
+        });
       }
-      if (url === "https://ama.test/api/v1/agents/ama_agent_maintainer" && init?.method === "PATCH") {
-        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+      if (url === "https://ama.test/api/v1/agents/ama_agent_maintainer" && reqMethod(input, init) === "PATCH") {
+        const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         expect(body.skills).toEqual(["saltbo/agent-kanban@agent-kanban"]);
         expect(body.handoffPolicy).toEqual({ enabled: true, targets: [{ role: "worker" }] });
         expect(body.memoryPolicy).toEqual({ enabled: true, mode: "notebook", scope: "project_agent" });
-        return new Response(JSON.stringify({ id: "ama_agent_maintainer", projectId: "project_123", name: "agent" }), { status: 200 });
+        return jsonResponse({ id: "ama_agent_maintainer", projectId: "project_123", name: "agent" });
       }
       if (url === "https://ama.test/api/v1/triggers") {
-        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+        const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         scheduleRequests.push(body);
         expect(body.metadata).toBeUndefined();
         expect(body.agentId).toBe("ama_agent_maintainer");
@@ -328,8 +341,8 @@ describe("routes", () => {
         expect(body.env).not.toHaveProperty("AK_SESSION_ID");
         expect(body.secretEnv).toEqual([]);
         expect(body.promptTemplate).toContain(`AK board ${maintainerBoard.id}`);
-        return new Response(
-          JSON.stringify({
+        return jsonResponse(
+          {
             id: "sched_maintainer",
             agentId: "ama_agent_maintainer",
             environmentId: "env_123",
@@ -340,57 +353,51 @@ describe("routes", () => {
             archivedAt: null,
             lastDispatchedAt: null,
             lastRunId: null,
-          }),
-          { status: 201 },
+          },
+          201,
         );
       }
-      if (url === "https://ama.test/api/v1/triggers/sched_maintainer" && init?.method === "DELETE") {
+      if (url === "https://ama.test/api/v1/triggers/sched_maintainer" && reqMethod(input, init) === "DELETE") {
         archiveRequests.push(url);
         return new Response(null, { status: 204 });
       }
-      if (url === "https://ama.test/api/v1/triggers/sched_maintainer" && init?.method === "PATCH") {
-        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+      if (url === "https://ama.test/api/v1/triggers/sched_maintainer" && reqMethod(input, init) === "PATCH") {
+        const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         updateRequests.push(body);
         expect(body.metadata).toBeUndefined();
-        return new Response(
-          JSON.stringify({
-            id: "sched_maintainer",
-            agentId: "ama_agent_maintainer",
-            environmentId: "env_123",
-            name: body.name ?? "Daily maintainer",
-            promptTemplate: body.promptTemplate ?? "unchanged",
-            schedule: { intervalSeconds: body.schedule?.intervalSeconds ?? 3600, windowSeconds: 0 },
-            enabled: body.enabled ?? true,
-            archivedAt: null,
-            lastDispatchedAt: null,
-            lastRunId: null,
-          }),
-          { status: 200 },
-        );
+        return jsonResponse({
+          id: "sched_maintainer",
+          agentId: "ama_agent_maintainer",
+          environmentId: "env_123",
+          name: body.name ?? "Daily maintainer",
+          promptTemplate: body.promptTemplate ?? "unchanged",
+          schedule: { intervalSeconds: body.schedule?.intervalSeconds ?? 3600, windowSeconds: 0 },
+          enabled: body.enabled ?? true,
+          archivedAt: null,
+          lastDispatchedAt: null,
+          lastRunId: null,
+        });
       }
       if (url.startsWith("https://ama.test/api/v1/triggers/sched_maintainer/runs?")) {
         const limit = Number(new URL(url).searchParams.get("limit") ?? 20);
-        return new Response(
-          JSON.stringify({
-            data: [
-              {
-                id: "run_maintainer_1",
-                projectId: "project_123",
-                triggerId: "sched_maintainer",
-                scheduledFor: "2026-06-08T12:00:00.000Z",
-                heartbeatAt: "2026-06-08T12:00:03.000Z",
-                state: "completed",
-                sessionId: "session_maintainer_1",
-                errorMessage: null,
-                metadata: { attempt: 1 },
-                createdAt: "2026-06-08T12:00:00.000Z",
-                updatedAt: "2026-06-08T12:00:04.000Z",
-              },
-            ],
-            pagination: { limit, hasMore: false },
-          }),
-          { status: 200 },
-        );
+        return jsonResponse({
+          data: [
+            {
+              id: "run_maintainer_1",
+              projectId: "project_123",
+              triggerId: "sched_maintainer",
+              scheduledFor: "2026-06-08T12:00:00.000Z",
+              heartbeatAt: "2026-06-08T12:00:03.000Z",
+              state: "completed",
+              sessionId: "session_maintainer_1",
+              errorMessage: null,
+              metadata: { attempt: 1 },
+              createdAt: "2026-06-08T12:00:00.000Z",
+              updatedAt: "2026-06-08T12:00:04.000Z",
+            },
+          ],
+          pagination: { limit, hasMore: false },
+        });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -554,43 +561,38 @@ describe("routes", () => {
     const capturedPatchHeaders: Record<string, string>[] = [];
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token" });
       }
       if (url === "https://ama.test/api/v1/projects/project_patch_test") {
-        return new Response(JSON.stringify({ id: "project_patch_test", name: "Workspace" }), { status: 200 });
+        return jsonResponse({ id: "project_patch_test", name: "Workspace" });
       }
       if (url === "https://ama.test/api/v1/providers?limit=100") {
-        return new Response(JSON.stringify({ data: [{ id: "provider_codex_patch", type: "openai", status: "active" }] }), { status: 200 });
+        return jsonResponse({ data: [{ id: "provider_codex_patch", type: "openai", status: "active" }] });
       }
       if (url === "https://ama.test/api/v1/providers/provider_codex_patch/models?limit=100") {
-        return new Response(JSON.stringify({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] }), {
-          status: 200,
-        });
+        return jsonResponse({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] });
       }
-      if (url === "https://ama.test/api/v1/providers/provider_codex_patch/models" && init?.method === "POST") {
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      if (url === "https://ama.test/api/v1/providers/provider_codex_patch/models" && reqMethod(input, init) === "POST") {
+        return jsonResponse({ ok: true });
       }
       // Maintainer route reconciles the eagerly-created AMA agent (read + patch).
-      if (url === "https://ama.test/api/v1/agents/ama_agent_patch" && (init?.method ?? "GET") === "GET") {
-        return new Response(
-          JSON.stringify({
-            id: "ama_agent_patch",
-            projectId: amaProjectId,
-            name: "agent",
-            providerId: "provider_codex_patch",
-            model: "gpt-5.3-codex",
-          }),
-          { status: 200 },
-        );
+      if (url === "https://ama.test/api/v1/agents/ama_agent_patch" && (reqMethod(input, init) ?? "GET") === "GET") {
+        return jsonResponse({
+          id: "ama_agent_patch",
+          projectId: amaProjectId,
+          name: "agent",
+          providerId: "provider_codex_patch",
+          model: "gpt-5.3-codex",
+        });
       }
-      if (url === "https://ama.test/api/v1/agents/ama_agent_patch" && init?.method === "PATCH") {
-        return new Response(JSON.stringify({ id: "ama_agent_patch", projectId: amaProjectId, name: "agent" }), { status: 200 });
+      if (url === "https://ama.test/api/v1/agents/ama_agent_patch" && reqMethod(input, init) === "PATCH") {
+        return jsonResponse({ id: "ama_agent_patch", projectId: amaProjectId, name: "agent" });
       }
-      if (url === "https://ama.test/api/v1/triggers" && init?.method === "POST") {
-        return new Response(
-          JSON.stringify({
+      if (url === "https://ama.test/api/v1/triggers" && reqMethod(input, init) === "POST") {
+        return jsonResponse(
+          {
             id: "sched_patch",
             agentId: "ama_agent_patch",
             environmentId: "env_patch_test",
@@ -601,30 +603,28 @@ describe("routes", () => {
             archivedAt: null,
             lastDispatchedAt: null,
             lastRunId: null,
-          }),
-          { status: 201 },
+          },
+          201,
         );
       }
-      if (url === "https://ama.test/api/v1/triggers/sched_patch" && init?.method === "PATCH") {
-        capturedPatchHeaders.push({ ...(init?.headers as Record<string, string>) });
-        return new Response(
-          JSON.stringify({
-            id: "sched_patch",
-            agentId: "ama_agent_patch",
-            environmentId: "env_patch_test",
-            name: "Patch header agent",
-            promptTemplate: "template",
-            schedule: { intervalSeconds: 3600, windowSeconds: 0 },
-            enabled: false,
-            archivedAt: null,
-            lastDispatchedAt: null,
-            lastRunId: null,
-          }),
-          { status: 200 },
-        );
+      if (url === "https://ama.test/api/v1/triggers/sched_patch" && reqMethod(input, init) === "PATCH") {
+        const headersObj = input instanceof Request ? Object.fromEntries(input.headers.entries()) : { ...(init?.headers as Record<string, string>) };
+        capturedPatchHeaders.push(headersObj);
+        return jsonResponse({
+          id: "sched_patch",
+          agentId: "ama_agent_patch",
+          environmentId: "env_patch_test",
+          name: "Patch header agent",
+          promptTemplate: "template",
+          schedule: { intervalSeconds: 3600, windowSeconds: 0 },
+          enabled: false,
+          archivedAt: null,
+          lastDispatchedAt: null,
+          lastRunId: null,
+        });
       }
       if (url.startsWith("https://ama.test/api/v1/triggers/sched_patch/runs?")) {
-        return new Response(JSON.stringify({ data: [], pagination: { limit: 20, hasMore: false } }), { status: 200 });
+        return jsonResponse({ data: [], pagination: { limit: 20, hasMore: false } });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -699,43 +699,38 @@ describe("routes", () => {
     const capturedDeleteHeaders: Record<string, string>[] = [];
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token" });
       }
       if (url === "https://ama.test/api/v1/projects/project_delete_test") {
-        return new Response(JSON.stringify({ id: "project_delete_test", name: "Workspace" }), { status: 200 });
+        return jsonResponse({ id: "project_delete_test", name: "Workspace" });
       }
       if (url === "https://ama.test/api/v1/providers?limit=100") {
-        return new Response(JSON.stringify({ data: [{ id: "provider_codex_delete", type: "openai", status: "active" }] }), { status: 200 });
+        return jsonResponse({ data: [{ id: "provider_codex_delete", type: "openai", status: "active" }] });
       }
       if (url === "https://ama.test/api/v1/providers/provider_codex_delete/models?limit=100") {
-        return new Response(JSON.stringify({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] }), {
-          status: 200,
-        });
+        return jsonResponse({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] });
       }
-      if (url === "https://ama.test/api/v1/providers/provider_codex_delete/models" && init?.method === "POST") {
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      if (url === "https://ama.test/api/v1/providers/provider_codex_delete/models" && reqMethod(input, init) === "POST") {
+        return jsonResponse({ ok: true });
       }
       // Maintainer route reconciles the eagerly-created AMA agent (read + patch).
-      if (url === "https://ama.test/api/v1/agents/ama_agent_delete" && (init?.method ?? "GET") === "GET") {
-        return new Response(
-          JSON.stringify({
-            id: "ama_agent_delete",
-            projectId: amaProjectId,
-            name: "agent",
-            providerId: "provider_codex_delete",
-            model: "gpt-5.3-codex",
-          }),
-          { status: 200 },
-        );
+      if (url === "https://ama.test/api/v1/agents/ama_agent_delete" && (reqMethod(input, init) ?? "GET") === "GET") {
+        return jsonResponse({
+          id: "ama_agent_delete",
+          projectId: amaProjectId,
+          name: "agent",
+          providerId: "provider_codex_delete",
+          model: "gpt-5.3-codex",
+        });
       }
-      if (url === "https://ama.test/api/v1/agents/ama_agent_delete" && init?.method === "PATCH") {
-        return new Response(JSON.stringify({ id: "ama_agent_delete", projectId: amaProjectId, name: "agent" }), { status: 200 });
+      if (url === "https://ama.test/api/v1/agents/ama_agent_delete" && reqMethod(input, init) === "PATCH") {
+        return jsonResponse({ id: "ama_agent_delete", projectId: amaProjectId, name: "agent" });
       }
-      if (url === "https://ama.test/api/v1/triggers" && init?.method === "POST") {
-        return new Response(
-          JSON.stringify({
+      if (url === "https://ama.test/api/v1/triggers" && reqMethod(input, init) === "POST") {
+        return jsonResponse(
+          {
             id: "sched_delete",
             agentId: "ama_agent_delete",
             environmentId: "env_delete_test",
@@ -746,16 +741,17 @@ describe("routes", () => {
             archivedAt: null,
             lastDispatchedAt: null,
             lastRunId: null,
-          }),
-          { status: 201 },
+          },
+          201,
         );
       }
-      if (url === "https://ama.test/api/v1/triggers/sched_delete" && init?.method === "DELETE") {
-        capturedDeleteHeaders.push({ ...(init?.headers as Record<string, string>) });
+      if (url === "https://ama.test/api/v1/triggers/sched_delete" && reqMethod(input, init) === "DELETE") {
+        const headersObj = input instanceof Request ? Object.fromEntries(input.headers.entries()) : { ...(init?.headers as Record<string, string>) };
+        capturedDeleteHeaders.push(headersObj);
         return new Response(null, { status: 204 });
       }
       if (url.startsWith("https://ama.test/api/v1/triggers/sched_delete/runs?")) {
-        return new Response(JSON.stringify({ data: [], pagination: { limit: 20, hasMore: false } }), { status: 200 });
+        return jsonResponse({ data: [], pagination: { limit: 20, hasMore: false } });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -953,45 +949,39 @@ describe("routes", () => {
     await configureAmaOwnerRuntime(userId, "claude", "env_available");
     await configureAmaOwnerRuntime(userId, "codex", "env_full");
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token" });
       }
       if (url === "https://ama.test/api/v1/runners?environmentId=env_available&limit=100") {
-        return new Response(
-          JSON.stringify({
-            data: [
-              {
-                id: "runner_available",
-                environmentId: "env_available",
-                state: "active",
-                capabilities: ["runtime-provider-model:claude-code:*:claude-sonnet-4-6"],
-                currentLoad: 0,
-                maxConcurrent: 5,
-                lastHeartbeatAt: new Date().toISOString(),
-              },
-            ],
-          }),
-          { status: 200 },
-        );
+        return jsonResponse({
+          data: [
+            {
+              id: "runner_available",
+              environmentId: "env_available",
+              state: "active",
+              capabilities: ["runtime-provider-model:claude-code:*:claude-sonnet-4-6"],
+              currentLoad: 0,
+              maxConcurrent: 5,
+              lastHeartbeatAt: new Date().toISOString(),
+            },
+          ],
+        });
       }
       if (url === "https://ama.test/api/v1/runners?environmentId=env_full&limit=100") {
-        return new Response(
-          JSON.stringify({
-            data: [
-              {
-                id: "runner_full",
-                environmentId: "env_full",
-                state: "active",
-                capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
-                currentLoad: 2,
-                maxConcurrent: 2,
-                lastHeartbeatAt: new Date().toISOString(),
-              },
-            ],
-          }),
-          { status: 200 },
-        );
+        return jsonResponse({
+          data: [
+            {
+              id: "runner_full",
+              environmentId: "env_full",
+              state: "active",
+              capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
+              currentLoad: 2,
+              maxConcurrent: 2,
+              lastHeartbeatAt: new Date().toISOString(),
+            },
+          ],
+        });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -1037,48 +1027,42 @@ describe("routes", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
+        const url = reqUrl(input);
         if (url === "https://auth.test/oauth/token") {
-          return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+          return jsonResponse({ access_token: "oauth-token" });
         }
         if (url === "https://ama.test/api/v1/runners?environmentId=env_available&limit=100") {
-          return new Response(
-            JSON.stringify({
-              data: [
-                {
-                  id: "runner_available",
-                  environmentId: "env_available",
-                  state: "active",
-                  capabilities: ["runtime-provider-model:claude-code:*:claude-sonnet-4-6"],
-                  currentLoad: 0,
-                  maxConcurrent: 5,
-                  lastHeartbeatAt: new Date().toISOString(),
-                },
-              ],
-            }),
-            { status: 200 },
-          );
+          return jsonResponse({
+            data: [
+              {
+                id: "runner_available",
+                environmentId: "env_available",
+                state: "active",
+                capabilities: ["runtime-provider-model:claude-code:*:claude-sonnet-4-6"],
+                currentLoad: 0,
+                maxConcurrent: 5,
+                lastHeartbeatAt: new Date().toISOString(),
+              },
+            ],
+          });
         }
         if (url === "https://ama.test/api/v1/runners?environmentId=env_full&limit=100") {
-          return new Response(
-            JSON.stringify({
-              data: [
-                {
-                  id: "runner_full",
-                  environmentId: "env_full",
-                  state: "active",
-                  capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
-                  currentLoad: 2,
-                  maxConcurrent: 2,
-                  lastHeartbeatAt: new Date().toISOString(),
-                },
-              ],
-            }),
-            { status: 200 },
-          );
+          return jsonResponse({
+            data: [
+              {
+                id: "runner_full",
+                environmentId: "env_full",
+                state: "active",
+                capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
+                currentLoad: 2,
+                maxConcurrent: 2,
+                lastHeartbeatAt: new Date().toISOString(),
+              },
+            ],
+          });
         }
         if (url === "https://ama.test/api/v1/runners?environmentId=env_unavailable&limit=100") {
-          return new Response(JSON.stringify({ data: [] }), { status: 200 });
+          return jsonResponse({ data: [] });
         }
         throw new Error(`Unexpected fetch: ${url}`);
       }),
@@ -1124,42 +1108,39 @@ describe("routes", () => {
       AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token", expires_in: 3600 }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token", expires_in: 3600 });
       }
       // AMA's global model catalog endpoint (replaced the old per-runtime endpoint)
       if (url === "https://ama.test/api/v1/providers/models") {
-        return new Response(
-          JSON.stringify({
-            data: [
-              // Non-preferred model first — must be sorted after preferred ones
-              {
-                providerId: "meta",
-                modelId: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-                displayName: "Llama 3.3 70B (Workers AI)",
-                availability: "available",
-              },
-              // Preferred models in reverse order to prove sorting works
-              { providerId: "openai", modelId: "@cf/openai/gpt-oss-120b", displayName: "GPT-OSS 120B (Workers AI)", availability: "available" },
-              {
-                providerId: "moonshotai",
-                modelId: "@cf/moonshotai/kimi-k2.7-code",
-                displayName: "Kimi K2.7 Code (Workers AI)",
-                availability: "available",
-              },
-              // Unavailable model must be excluded
-              {
-                providerId: "meta",
-                modelId: "@cf/meta/llama-4-scout-17b-16e-instruct",
-                displayName: "Llama 4 Scout (Workers AI)",
-                availability: "disabled",
-              },
-            ],
-            pagination: { nextCursor: null },
-          }),
-          { status: 200 },
-        );
+        return jsonResponse({
+          data: [
+            // Non-preferred model first — must be sorted after preferred ones
+            {
+              providerId: "meta",
+              modelId: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+              displayName: "Llama 3.3 70B (Workers AI)",
+              availability: "available",
+            },
+            // Preferred models in reverse order to prove sorting works
+            { providerId: "openai", modelId: "@cf/openai/gpt-oss-120b", displayName: "GPT-OSS 120B (Workers AI)", availability: "available" },
+            {
+              providerId: "moonshotai",
+              modelId: "@cf/moonshotai/kimi-k2.7-code",
+              displayName: "Kimi K2.7 Code (Workers AI)",
+              availability: "available",
+            },
+            // Unavailable model must be excluded
+            {
+              providerId: "meta",
+              modelId: "@cf/meta/llama-4-scout-17b-16e-instruct",
+              displayName: "Llama 4 Scout (Workers AI)",
+              availability: "disabled",
+            },
+          ],
+          pagination: { nextCursor: null },
+        });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -1203,56 +1184,53 @@ describe("routes", () => {
     });
     await configureAmaOwnerRuntime(userId, "gemini", "env_models");
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token" });
       }
       // gemini is a self-hosted runtime: model discovery goes directly to runner capabilities
       if (url === "https://ama.test/api/v1/runners?environmentId=env_models&limit=100") {
-        return new Response(
-          JSON.stringify({
-            data: [
-              {
-                id: "runner_models_1",
-                environmentId: "env_models",
-                state: "active",
-                capabilities: [
-                  "gemini",
-                  "runtime-provider-model:gemini:google:gemini-3-pro",
-                  // model segment is the remainder after the provider and may contain colons
-                  "runtime-provider-model:gemini:*:models/gemini:exp",
-                  // wildcard model declarations are not concrete models
-                  "runtime-provider-model:gemini:*:*",
-                  // other runtimes are ignored
-                  "runtime-provider-model:codex:openai:gpt-5.3-codex",
-                ],
-                currentLoad: 0,
-                maxConcurrent: 2,
-                lastHeartbeatAt: new Date().toISOString(),
-              },
-              {
-                id: "runner_models_2",
-                environmentId: "env_models",
-                state: "active",
-                // duplicate model declared by a second runner is deduped
-                capabilities: ["runtime-provider-model:gemini:openai:gemini-3-pro"],
-                currentLoad: 2,
-                maxConcurrent: 2,
-                lastHeartbeatAt: new Date().toISOString(),
-              },
-              {
-                id: "runner_models_offline",
-                environmentId: "env_models",
-                state: "draining",
-                capabilities: ["runtime-provider-model:gemini:google:offline-model"],
-                currentLoad: 0,
-                maxConcurrent: 2,
-                lastHeartbeatAt: null,
-              },
-            ],
-          }),
-          { status: 200 },
-        );
+        return jsonResponse({
+          data: [
+            {
+              id: "runner_models_1",
+              environmentId: "env_models",
+              state: "active",
+              capabilities: [
+                "gemini",
+                "runtime-provider-model:gemini:google:gemini-3-pro",
+                // model segment is the remainder after the provider and may contain colons
+                "runtime-provider-model:gemini:*:models/gemini:exp",
+                // wildcard model declarations are not concrete models
+                "runtime-provider-model:gemini:*:*",
+                // other runtimes are ignored
+                "runtime-provider-model:codex:openai:gpt-5.3-codex",
+              ],
+              currentLoad: 0,
+              maxConcurrent: 2,
+              lastHeartbeatAt: new Date().toISOString(),
+            },
+            {
+              id: "runner_models_2",
+              environmentId: "env_models",
+              state: "active",
+              // duplicate model declared by a second runner is deduped
+              capabilities: ["runtime-provider-model:gemini:openai:gemini-3-pro"],
+              currentLoad: 2,
+              maxConcurrent: 2,
+              lastHeartbeatAt: new Date().toISOString(),
+            },
+            {
+              id: "runner_models_offline",
+              environmentId: "env_models",
+              state: "draining",
+              capabilities: ["runtime-provider-model:gemini:google:offline-model"],
+              currentLoad: 0,
+              maxConcurrent: 2,
+              lastHeartbeatAt: null,
+            },
+          ],
+        });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -1282,16 +1260,16 @@ describe("routes", () => {
     });
     await configureAmaOwnerRuntime(userId, "hermes", "env_models_empty");
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token" });
       }
       // hermes is a self-hosted runtime: AMA returns no cloud models, falling through to runner discovery
       if (url === "https://ama.test/api/v1/runtimes/hermes/models") {
-        return new Response(JSON.stringify({ data: [] }), { status: 200 });
+        return jsonResponse({ data: [] });
       }
       if (url === "https://ama.test/api/v1/runners?environmentId=env_models_empty&limit=100") {
-        return new Response(JSON.stringify({ data: [] }), { status: 200 });
+        return jsonResponse({ data: [] });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -1871,39 +1849,36 @@ describe("routes", () => {
     const taskDetail = "Use the detail alias in the task dispatch prompt.";
     let runtimePrivateKeyJwk: JsonWebKey | null = null;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token" });
       }
       if (url === "https://ama.test/api/v1/projects/project_123") {
-        return new Response(JSON.stringify({ id: "project_123", name: "Workspace" }), { status: 200 });
+        return jsonResponse({ id: "project_123", name: "Workspace" });
       }
       if (url === "https://ama.test/api/v1/runners?environmentId=env_123&limit=100") {
-        return new Response(
-          JSON.stringify({
-            data: [
-              {
-                id: "runner_123",
-                environmentId: "env_123",
-                state: "active",
-                capabilities: ["runtime-provider-model:claude-code:anthropic:claude-sonnet-4-6"],
-                currentLoad: 0,
-                maxConcurrent: 1,
-                lastHeartbeatAt: new Date().toISOString(),
-              },
-            ],
-          }),
-          { status: 200 },
-        );
+        return jsonResponse({
+          data: [
+            {
+              id: "runner_123",
+              environmentId: "env_123",
+              state: "active",
+              capabilities: ["runtime-provider-model:claude-code:anthropic:claude-sonnet-4-6"],
+              currentLoad: 0,
+              maxConcurrent: 1,
+              lastHeartbeatAt: new Date().toISOString(),
+            },
+          ],
+        });
       }
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
-        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+        const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         expect(body.secret.secretValue).toContain('"kty":"OKP"');
         runtimePrivateKeyJwk = JSON.parse(body.secret.secretValue) as JsonWebKey;
-        return new Response(JSON.stringify({ id: "vaultcred_123", activeVersionId: "vaultver_123" }), { status: 201 });
+        return jsonResponse({ id: "vaultcred_123", activeVersionId: "vaultver_123" }, 201);
       }
       if (url === "https://ama.test/api/v1/sessions") {
-        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+        const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         expect(body.agentId).toBe("ama_agent_123");
         expect(body.environmentId).toBe("env_123");
         expect(body.runtime).toBe("claude-code");
@@ -1916,15 +1891,15 @@ describe("routes", () => {
         expect(body.secretEnv).toEqual([{ name: "AK_AGENT_KEY", credentialRef: { credentialId: "vaultcred_123", versionId: "vaultver_123" } }]);
         expect(body.initialPrompt).toContain(`Task detail:\n${taskDetail}`);
         expect(JSON.stringify(body)).not.toContain("board_");
-        return new Response(
-          JSON.stringify({
+        return jsonResponse(
+          {
             id: "session_ama_123",
             agentId: body.agentId,
             environmentId: "env_123",
             state: "pending",
             stateReason: null,
-          }),
-          { status: 201 },
+          },
+          201,
         );
       }
       throw new Error(`Unexpected fetch: ${url}`);
@@ -1967,7 +1942,7 @@ describe("routes", () => {
       expect(sessionRow).toMatchObject({ ama_session_id: "session_ama_123", status: "active" });
       const bridgeMachine = await env.DB.prepare("SELECT id FROM machines WHERE device_id = 'ama-runtime-bridge'").first<{ id: string }>();
       expect(bridgeMachine).toBeNull();
-      const calledUrls = fetchMock.mock.calls.map(([url]) => String(url));
+      const calledUrls = fetchMock.mock.calls.map(([url]) => reqUrl(url));
       // Dispatch no longer creates the AMA agent (created eagerly at agent
       // creation); it reads the stored id and only creates the session.
       expect(calledUrls).not.toContain("https://ama.test/api/v1/agents");
@@ -2015,32 +1990,30 @@ describe("routes", () => {
       runtime: "codex",
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token" });
       }
       if (url === "https://ama.test/api/v1/environments/env_123") {
-        return new Response(JSON.stringify({ id: "env_123", runtime: "codex" }), { status: 200 });
+        return jsonResponse({ id: "env_123", runtime: "codex" });
       }
       if (url === "https://ama.test/api/v1/providers?limit=100") {
-        return new Response(JSON.stringify({ data: [{ id: "provider_codex", status: "active" }] }), { status: 200 });
+        return jsonResponse({ data: [{ id: "provider_codex", status: "active" }] });
       }
       if (url === "https://ama.test/api/v1/providers/provider_codex/models?limit=100") {
-        return new Response(JSON.stringify({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] }), {
-          status: 200,
-        });
+        return jsonResponse({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] });
       }
       if (url === "https://ama.test/api/v1/agents") {
-        return new Response(
-          JSON.stringify({ id: "ama_agent_123", projectId: "project_123", name: "agent", providerId: "provider_codex", model: "gpt-5.3-codex" }),
-          { status: 201 },
+        return jsonResponse(
+          { id: "ama_agent_123", projectId: "project_123", name: "agent", providerId: "provider_codex", model: "gpt-5.3-codex" },
+          201,
         );
       }
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
-        return new Response(JSON.stringify({ id: "vaultcred_123", activeVersionId: "vaultver_123" }), { status: 201 });
+        return jsonResponse({ id: "vaultcred_123", activeVersionId: "vaultver_123" }, 201);
       }
       if (url === "https://ama.test/api/v1/sessions") {
-        return new Response(JSON.stringify({ error: "runtime unavailable" }), { status: 503 });
+        return jsonResponse({ error: "runtime unavailable" }, 503);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2092,32 +2065,30 @@ describe("routes", () => {
       runtime: "codex",
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token" });
       }
       if (url === "https://ama.test/api/v1/environments/env_123") {
-        return new Response(JSON.stringify({ id: "env_123", runtime: "codex" }), { status: 200 });
+        return jsonResponse({ id: "env_123", runtime: "codex" });
       }
       if (url === "https://ama.test/api/v1/providers?limit=100") {
-        return new Response(JSON.stringify({ data: [{ id: "provider_codex", status: "active" }] }), { status: 200 });
+        return jsonResponse({ data: [{ id: "provider_codex", status: "active" }] });
       }
       if (url === "https://ama.test/api/v1/providers/provider_codex/models?limit=100") {
-        return new Response(JSON.stringify({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] }), {
-          status: 200,
-        });
+        return jsonResponse({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] });
       }
       if (url === "https://ama.test/api/v1/agents") {
-        return new Response(
-          JSON.stringify({ id: "ama_agent_123", projectId: "project_123", name: "agent", providerId: "provider_codex", model: "gpt-5.3-codex" }),
-          { status: 201 },
+        return jsonResponse(
+          { id: "ama_agent_123", projectId: "project_123", name: "agent", providerId: "provider_codex", model: "gpt-5.3-codex" },
+          201,
         );
       }
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
-        return new Response(JSON.stringify({ id: "vaultcred_123", activeVersionId: "vaultver_123" }), { status: 201 });
+        return jsonResponse({ id: "vaultcred_123", activeVersionId: "vaultver_123" }, 201);
       }
       if (url === "https://ama.test/api/v1/sessions") {
-        return new Response(JSON.stringify({ error: "runtime unavailable" }), { status: 503 });
+        return jsonResponse({ error: "runtime unavailable" }, 503);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2164,86 +2135,80 @@ describe("routes", () => {
 
     let sessionCreateCount = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token" });
       }
       if (url === "https://ama.test/api/v1/projects/project_123") {
-        return new Response(JSON.stringify({ id: "project_123", name: "Workspace" }), { status: 200 });
+        return jsonResponse({ id: "project_123", name: "Workspace" });
       }
       if (url === "https://ama.test/api/v1/runners?environmentId=env_release&limit=100") {
-        return new Response(
-          JSON.stringify({
-            data: [
-              {
-                id: "runner_release",
-                environmentId: "env_release",
-                state: "active",
-                capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
-                currentLoad: 0,
-                maxConcurrent: 1,
-                lastHeartbeatAt: new Date().toISOString(),
-              },
-            ],
-          }),
-          { status: 200 },
-        );
+        return jsonResponse({
+          data: [
+            {
+              id: "runner_release",
+              environmentId: "env_release",
+              state: "active",
+              capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
+              currentLoad: 0,
+              maxConcurrent: 1,
+              lastHeartbeatAt: new Date().toISOString(),
+            },
+          ],
+        });
       }
       if (url === "https://ama.test/api/v1/providers?limit=100") {
-        return new Response(
-          JSON.stringify({
-            data: [{ id: "provider_codex", type: "openai", status: "active" }],
-            pagination: { limit: 100, hasMore: false, nextCursor: null },
-          }),
-          { status: 200 },
-        );
+        return jsonResponse({
+          data: [{ id: "provider_codex", type: "openai", status: "active" }],
+          pagination: { limit: 100, hasMore: false, nextCursor: null },
+        });
       }
       if (url === "https://ama.test/api/v1/providers/provider_codex/models?limit=100") {
-        return new Response(
-          JSON.stringify({
-            data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }],
-            pagination: { limit: 100, hasMore: false, nextCursor: null },
-          }),
-          { status: 200 },
-        );
+        return jsonResponse({
+          data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }],
+          pagination: { limit: 100, hasMore: false, nextCursor: null },
+        });
       }
       if (url === "https://ama.test/api/v1/agents/ama_agent_release") {
-        return new Response(
-          JSON.stringify({ id: "ama_agent_release", projectId: "project_123", name: "agent", providerId: "provider_codex", model: "gpt-5.3-codex" }),
-          { status: 200 },
-        );
+        return jsonResponse({
+          id: "ama_agent_release",
+          projectId: "project_123",
+          name: "agent",
+          providerId: "provider_codex",
+          model: "gpt-5.3-codex",
+        });
       }
       if (url === "https://ama.test/api/v1/agents") {
-        return new Response(
-          JSON.stringify({ id: "ama_agent_release", projectId: "project_123", name: "agent", providerId: "provider_codex", model: "gpt-5.3-codex" }),
-          { status: 201 },
+        return jsonResponse(
+          { id: "ama_agent_release", projectId: "project_123", name: "agent", providerId: "provider_codex", model: "gpt-5.3-codex" },
+          201,
         );
       }
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
-        return new Response(JSON.stringify({ id: "vaultcred_release", activeVersionId: "vaultver_release" }), { status: 201 });
+        return jsonResponse({ id: "vaultcred_release", activeVersionId: "vaultver_release" }, 201);
       }
-      if (url === "https://ama.test/api/v1/sessions/session_release_old" && (init as any)?.method === "PATCH") {
-        return new Response(JSON.stringify({ id: "session_release_old", state: "stopped" }), { status: 200 });
+      if (url === "https://ama.test/api/v1/sessions/session_release_old" && reqMethod(input, init) === "PATCH") {
+        return jsonResponse({ id: "session_release_old", state: "stopped" });
       }
-      if (url === "https://ama.test/api/v1/sessions/session_release_1" && (init as any)?.method === "PATCH") {
-        return new Response(JSON.stringify({ id: "session_release_1", state: "stopped" }), { status: 200 });
+      if (url === "https://ama.test/api/v1/sessions/session_release_1" && reqMethod(input, init) === "PATCH") {
+        return jsonResponse({ id: "session_release_1", state: "stopped" });
       }
       if (url === "https://ama.test/api/v1/sessions") {
-        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+        const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         expect(body.agentId).toBe("ama_agent_release");
         expect(body.environmentId).toBe("env_release");
         expect(body.runtime).toBe("codex");
         expect(body.initialPrompt).toContain("AK task");
         sessionCreateCount += 1;
-        return new Response(
-          JSON.stringify({
+        return jsonResponse(
+          {
             id: `session_release_${sessionCreateCount}`,
             agentId: body.agentId,
             environmentId: "env_release",
             state: "pending",
             stateReason: null,
-          }),
-          { status: 201 },
+          },
+          201,
         );
       }
       throw new Error(`Unexpected fetch: ${url}`);
@@ -2272,7 +2237,7 @@ describe("routes", () => {
         "ama.dispatch.result": "accepted",
       });
       expect(body.metadata.annotations.agentSessionId).toEqual(expect.any(String));
-      expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain("https://ama.test/api/v1/sessions");
+      expect(fetchMock.mock.calls.map(([url]) => reqUrl(url))).toContain("https://ama.test/api/v1/sessions");
 
       const assignRes = await apiRequest("POST", `/api/tasks/${task.id}/assign`, { agent_id: tempAgent.id }, leaderJwt);
       expect(assignRes.status).toBe(200);
@@ -2554,20 +2519,20 @@ describe("routes", () => {
     const runtimeMessages: string[] = [];
     const stops: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token" });
       }
       if (url === "https://ama.test/api/v1/sessions/session_123/messages") {
-        const body = JSON.parse(String(init?.body)) as { content: string };
-        expect(init?.method).toBe("POST");
+        const body = JSON.parse(await reqBody(input, init)) as { content: string };
+        expect(reqMethod(input, init)).toBe("POST");
         expect(body).toMatchObject({ type: "prompt" });
         runtimeMessages.push(body.content);
-        return new Response(JSON.stringify({ id: "msg_1" }), { status: 201 });
+        return jsonResponse({ id: "msg_1" }, 201);
       }
-      if (url === "https://ama.test/api/v1/sessions/session_123" && (init as any)?.method === "PATCH") {
+      if (url === "https://ama.test/api/v1/sessions/session_123" && reqMethod(input, init) === "PATCH") {
         stops.push(url);
-        return new Response(JSON.stringify({ id: "session_123", state: "stopped" }), { status: 200 });
+        return jsonResponse({ id: "session_123", state: "stopped" });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2636,15 +2601,15 @@ describe("routes", () => {
       AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token" });
       }
       if (url === "https://ama.test/api/v1/sessions/session_failed/messages") {
-        return new Response(JSON.stringify({ error: "command failed" }), { status: 502 });
+        return jsonResponse({ error: "command failed" }, 502);
       }
-      if (url === "https://ama.test/api/v1/sessions/session_failed" && (init as any)?.method === "PATCH") {
-        return new Response(JSON.stringify({ error: "stop failed" }), { status: 502 });
+      if (url === "https://ama.test/api/v1/sessions/session_failed" && reqMethod(input, init) === "PATCH") {
+        return jsonResponse({ error: "stop failed" }, 502);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2756,23 +2721,20 @@ describe("routes", () => {
     });
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token" });
       }
       if (url === "https://ama.test/api/v1/sessions/session_runtime_123") {
-        expect(init?.method).toBe("GET");
-        return new Response(JSON.stringify({ id: "session_runtime_123", state: "idle", stateReason: null }), { status: 200 });
+        expect(reqMethod(input, init)).toBe("GET");
+        return jsonResponse({ id: "session_runtime_123", state: "idle", stateReason: null });
       }
       if (url === "https://ama.test/api/v1/sessions/session_runtime_123/events?limit=100&order=asc") {
-        expect(init?.method).toBe("GET");
-        return new Response(
-          JSON.stringify({
-            data: [{ id: "event_1", type: "message_end", sequence: 1, payload: { text: "done" }, metadata: {} }],
-            pagination: { limit: 100, hasMore: false, nextCursor: null },
-          }),
-          { status: 200 },
-        );
+        expect(reqMethod(input, init)).toBe("GET");
+        return jsonResponse({
+          data: [{ id: "event_1", type: "message_end", sequence: 1, payload: { text: "done" }, metadata: {} }],
+          pagination: { limit: 100, hasMore: false, nextCursor: null },
+        });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2827,16 +2789,16 @@ describe("routes", () => {
 
     let capturedEventsUrl: string | undefined;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token", expires_in: 3600 }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token", expires_in: 3600 });
       }
       if (url === "https://ama.test/api/v1/sessions/session_default_params") {
-        return new Response(JSON.stringify({ id: "session_default_params", state: "idle", stateReason: null }), { status: 200 });
+        return jsonResponse({ id: "session_default_params", state: "idle", stateReason: null });
       }
       if (url.startsWith("https://ama.test/api/v1/sessions/session_default_params/events")) {
         capturedEventsUrl = url;
-        return new Response(JSON.stringify({ data: [], pagination: { limit: 100, hasMore: false, nextCursor: null } }), { status: 200 });
+        return jsonResponse({ data: [], pagination: { limit: 100, hasMore: false, nextCursor: null } });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2878,16 +2840,16 @@ describe("routes", () => {
 
     let capturedEventsUrl: string | undefined;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token", expires_in: 3600 }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token", expires_in: 3600 });
       }
       if (url === "https://ama.test/api/v1/sessions/session_order_limit") {
-        return new Response(JSON.stringify({ id: "session_order_limit", state: "active", stateReason: null }), { status: 200 });
+        return jsonResponse({ id: "session_order_limit", state: "active", stateReason: null });
       }
       if (url.startsWith("https://ama.test/api/v1/sessions/session_order_limit/events")) {
         capturedEventsUrl = url;
-        return new Response(JSON.stringify({ data: [], pagination: { limit: 10, hasMore: true, nextCursor: 11 } }), { status: 200 });
+        return jsonResponse({ data: [], pagination: { limit: 10, hasMore: true, nextCursor: 11 } });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2928,16 +2890,16 @@ describe("routes", () => {
 
     let capturedEventsUrl: string | undefined;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token", expires_in: 3600 }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token", expires_in: 3600 });
       }
       if (url === "https://ama.test/api/v1/sessions/session_cursor_test") {
-        return new Response(JSON.stringify({ id: "session_cursor_test", state: "active", stateReason: null }), { status: 200 });
+        return jsonResponse({ id: "session_cursor_test", state: "active", stateReason: null });
       }
       if (url.startsWith("https://ama.test/api/v1/sessions/session_cursor_test/events")) {
         capturedEventsUrl = url;
-        return new Response(JSON.stringify({ data: [], pagination: { limit: 10, hasMore: false, nextCursor: null } }), { status: 200 });
+        return jsonResponse({ data: [], pagination: { limit: 10, hasMore: false, nextCursor: null } });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2978,21 +2940,18 @@ describe("routes", () => {
     });
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "oauth-token", expires_in: 3600 }), { status: 200 });
+        return jsonResponse({ access_token: "oauth-token", expires_in: 3600 });
       }
       if (url === "https://ama.test/api/v1/sessions/session_pagination_pass") {
-        return new Response(JSON.stringify({ id: "session_pagination_pass", state: "idle", stateReason: null }), { status: 200 });
+        return jsonResponse({ id: "session_pagination_pass", state: "idle", stateReason: null });
       }
       if (url.startsWith("https://ama.test/api/v1/sessions/session_pagination_pass/events")) {
-        return new Response(
-          JSON.stringify({
-            data: [{ id: "ev_99", type: "tool_use", sequence: 99 }],
-            pagination: { limit: 5, hasMore: true, nextCursor: 99 },
-          }),
-          { status: 200 },
-        );
+        return jsonResponse({
+          data: [{ id: "ev_99", type: "tool_use", sequence: 99 }],
+          pagination: { limit: 5, hasMore: true, nextCursor: 99 },
+        });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -3126,12 +3085,12 @@ describe("routes", () => {
       vi.stubGlobal(
         "fetch",
         vi.fn(async (input: RequestInfo | URL) => {
-          const url = String(input);
+          const url = reqUrl(input);
           if (url === "https://auth.test/oauth/token") {
-            return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+            return jsonResponse({ access_token: "oauth-token" });
           }
           if (url.startsWith("http://ama.test/api/v1/runners?environmentId=")) {
-            return new Response(JSON.stringify({ data: [] }), { status: 200 });
+            return jsonResponse({ data: [] });
           }
           throw new Error(`Unexpected fetch: ${url}`);
         }),
@@ -3224,27 +3183,24 @@ describe("routes", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
+        const url = reqUrl(input);
         if (url === "https://auth.test/oauth/token") {
-          return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+          return jsonResponse({ access_token: "oauth-token" });
         }
         if (url === "https://ama.test/api/v1/runners?environmentId=env_usage&limit=100") {
-          return new Response(
-            JSON.stringify({
-              data: [
-                {
-                  id: "runner_usage",
-                  environmentId: "env_usage",
-                  state: "active",
-                  capabilities: ["codex"],
-                  currentLoad: 2,
-                  maxConcurrent: 5,
-                  lastHeartbeatAt: "2026-06-08T12:01:00.000Z",
-                },
-              ],
-            }),
-            { status: 200 },
-          );
+          return jsonResponse({
+            data: [
+              {
+                id: "runner_usage",
+                environmentId: "env_usage",
+                state: "active",
+                capabilities: ["codex"],
+                currentLoad: 2,
+                maxConcurrent: 5,
+                lastHeartbeatAt: "2026-06-08T12:01:00.000Z",
+              },
+            ],
+          });
         }
         throw new Error(`Unexpected fetch: ${url}`);
       }),

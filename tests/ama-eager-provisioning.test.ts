@@ -45,8 +45,26 @@ function makeEnv(overrides: Record<string, unknown> = {}): any {
   };
 }
 
+// hey-api's fetch client calls fetch(request) with a single Request object.
+// These helpers normalise both call signatures so mocks can match on url,
+// method, and body regardless of which form is used.
+function reqUrl(input: RequestInfo | URL): string {
+  return input instanceof Request ? input.url : String(input);
+}
+function reqMethod(input: RequestInfo | URL, init?: RequestInit): string {
+  return input instanceof Request ? input.method : ((init as any)?.method ?? "GET");
+}
+async function reqBody(input: RequestInfo | URL, init?: RequestInit): Promise<string> {
+  return input instanceof Request ? input.clone().text() : String((init as any)?.body ?? "");
+}
+// hey-api defaults to parseAs:'auto' which infers JSON only when Content-Type
+// is application/json. Always include it so the SDK parses the body correctly.
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
 function oauthTokenResponse() {
-  return new Response(JSON.stringify({ access_token: "test-token", expires_in: 3600 }), { status: 200 });
+  return jsonResponse({ access_token: "test-token", expires_in: 3600 }, 200);
 }
 
 async function apiRequest(env: any, method: string, path: string, body: unknown, token?: string) {
@@ -87,18 +105,18 @@ describe("connect-provisions-project", () => {
     let projectCreates = 0;
     let vaultCreates = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/v1/projects" && (init as any)?.method === "POST") {
+      if (url === "https://ama.test/api/v1/projects" && reqMethod(input, init) === "POST") {
         projectCreates += 1;
-        return new Response(JSON.stringify({ id: "project_eager", name: "Workspace" }), { status: 201 });
+        return jsonResponse({ id: "project_eager", name: "Workspace" }, 201);
       }
       if (url === "https://ama.test/api/v1/projects/project_eager") {
-        return new Response(JSON.stringify({ id: "project_eager", name: "Workspace" }), { status: 200 });
+        return jsonResponse({ id: "project_eager", name: "Workspace" });
       }
-      if (url === "https://ama.test/api/v1/vaults" && (init as any)?.method === "POST") {
+      if (url === "https://ama.test/api/v1/vaults" && reqMethod(input, init) === "POST") {
         vaultCreates += 1;
-        return new Response(JSON.stringify({ id: "vault_eager" }), { status: 201 });
+        return jsonResponse({ id: "vault_eager" }, 201);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -125,8 +143,8 @@ describe("connect-provisions-project", () => {
     const env = makeEnv();
     const { token } = await createSessionUser(env, "provision-unlinked@test.com");
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input) === "https://auth.test/oauth/token") return oauthTokenResponse();
-      throw new Error(`Unexpected fetch: ${String(input)}`);
+      if (reqUrl(input) === "https://auth.test/oauth/token") return oauthTokenResponse();
+      throw new Error(`Unexpected fetch: ${reqUrl(input)}`);
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -155,15 +173,12 @@ describe("create-agent-creates-ama-agent-first", () => {
 
     let agentCreateBody: Record<string, any> | null = null;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/v1/projects/project_ca")
-        return new Response(JSON.stringify({ id: "project_ca", name: "Workspace" }), { status: 200 });
-      if (url === "https://ama.test/api/v1/agents" && (init as any)?.method === "POST") {
-        agentCreateBody = JSON.parse(String(init?.body)) as Record<string, any>;
-        return new Response(JSON.stringify({ id: "ama_agent_ca", projectId: "project_ca", name: agentCreateBody.name, providerId: "anthropic" }), {
-          status: 201,
-        });
+      if (url === "https://ama.test/api/v1/projects/project_ca") return jsonResponse({ id: "project_ca", name: "Workspace" });
+      if (url === "https://ama.test/api/v1/agents" && reqMethod(input, init) === "POST") {
+        agentCreateBody = JSON.parse(await reqBody(input, init)) as Record<string, any>;
+        return jsonResponse({ id: "ama_agent_ca", projectId: "project_ca", name: agentCreateBody.name, providerId: "anthropic" }, 201);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -185,12 +200,11 @@ describe("create-agent-creates-ama-agent-first", () => {
     await seedIntegration(userId);
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/v1/projects/project_ca")
-        return new Response(JSON.stringify({ id: "project_ca", name: "Workspace" }), { status: 200 });
-      if (url === "https://ama.test/api/v1/agents" && (init as any)?.method === "POST") {
-        return new Response(JSON.stringify({ error: "agent quota exceeded" }), { status: 503 });
+      if (url === "https://ama.test/api/v1/projects/project_ca") return jsonResponse({ id: "project_ca", name: "Workspace" });
+      if (url === "https://ama.test/api/v1/agents" && reqMethod(input, init) === "POST") {
+        return jsonResponse({ error: "agent quota exceeded" }, 503);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -207,8 +221,8 @@ describe("create-agent-creates-ama-agent-first", () => {
     const env = makeEnv();
     const { token } = await createSessionUser(env, "create-agent-gate@test.com");
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input) === "https://auth.test/oauth/token") return oauthTokenResponse();
-      throw new Error(`Unexpected fetch: ${String(input)}`);
+      if (reqUrl(input) === "https://auth.test/oauth/token") return oauthTokenResponse();
+      throw new Error(`Unexpected fetch: ${reqUrl(input)}`);
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -248,13 +262,12 @@ describe("add-cloud-sandbox-creates-cloud-env", () => {
 
     let envCreateBody: Record<string, any> | null = null;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      if (url === "https://ama.test/api/v1/projects/project_cloud_m")
-        return new Response(JSON.stringify({ id: "project_cloud_m", name: "Workspace" }), { status: 200 });
-      if (url === "https://ama.test/api/v1/environments" && (init as any)?.method === "POST") {
-        envCreateBody = JSON.parse(String(init?.body)) as Record<string, any>;
-        return new Response(JSON.stringify({ id: "cloud_env_m" }), { status: 201 });
+      if (url === "https://ama.test/api/v1/projects/project_cloud_m") return jsonResponse({ id: "project_cloud_m", name: "Workspace" });
+      if (url === "https://ama.test/api/v1/environments" && reqMethod(input, init) === "POST") {
+        envCreateBody = JSON.parse(await reqBody(input, init)) as Record<string, any>;
+        return jsonResponse({ id: "cloud_env_m" }, 201);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -279,8 +292,8 @@ describe("add-cloud-sandbox-creates-cloud-env", () => {
     const env = makeEnv();
     const { token } = await createSessionUser(env, "cloud-machine-gate@test.com");
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input) === "https://auth.test/oauth/token") return oauthTokenResponse();
-      throw new Error(`Unexpected fetch: ${String(input)}`);
+      if (reqUrl(input) === "https://auth.test/oauth/token") return oauthTokenResponse();
+      throw new Error(`Unexpected fetch: ${reqUrl(input)}`);
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -328,11 +341,11 @@ describe("delete archives the AMA resource (AMA has no hard delete)", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
+        const url = reqUrl(input);
         if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-        if (url === `https://ama.test/api/v1/agents/${amaAgentId}` && init?.method === "PATCH") {
-          archiveBody = JSON.parse(String(init.body));
-          return new Response(JSON.stringify({ id: amaAgentId, name: "Del", archivedAt: "2026-01-01T00:00:00.000Z" }), { status: 200 });
+        if (url === `https://ama.test/api/v1/agents/${amaAgentId}` && reqMethod(input, init) === "PATCH") {
+          archiveBody = JSON.parse(await reqBody(input, init));
+          return jsonResponse({ id: amaAgentId, name: "Del", archivedAt: "2026-01-01T00:00:00.000Z" });
         }
         throw new Error(`Unexpected fetch: ${url}`);
       }),
@@ -357,11 +370,11 @@ describe("delete archives the AMA resource (AMA has no hard delete)", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
+        const url = reqUrl(input);
         if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-        if (url === "https://ama.test/api/v1/environments/env_del_machine" && init?.method === "PATCH") {
-          archiveBody = JSON.parse(String(init.body));
-          return new Response(JSON.stringify({ id: "env_del_machine", archivedAt: "2026-01-01T00:00:00.000Z" }), { status: 200 });
+        if (url === "https://ama.test/api/v1/environments/env_del_machine" && reqMethod(input, init) === "PATCH") {
+          archiveBody = JSON.parse(await reqBody(input, init));
+          return jsonResponse({ id: "env_del_machine", archivedAt: "2026-01-01T00:00:00.000Z" });
         }
         throw new Error(`Unexpected fetch: ${url}`);
       }),
@@ -400,20 +413,20 @@ describe("connect-backfills-pre-ama-agents", () => {
   function makeFetchMock(agentResponses: Array<Response | "error">) {
     let agentCallIndex = 0;
     return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
       // ensureAmaOwnerIntegration verifies the project is live via GET.
       if (url === `https://ama.test/api/v1/projects/${PROJECT_ID}`) {
-        return new Response(JSON.stringify({ id: PROJECT_ID, name: "Workspace" }), { status: 200 });
+        return jsonResponse({ id: PROJECT_ID, name: "Workspace" });
       }
-      if (url === "https://ama.test/api/v1/agents" && (init as any)?.method === "POST") {
+      if (url === "https://ama.test/api/v1/agents" && reqMethod(input, init) === "POST") {
         const resp = agentResponses[agentCallIndex++];
         if (resp === "error") {
-          return new Response(JSON.stringify({ error: "internal server error" }), { status: 500 });
+          return jsonResponse({ error: "internal server error" }, 500);
         }
         return resp;
       }
-      throw new Error(`Unexpected fetch: ${url} (${(init as any)?.method ?? "GET"})`);
+      throw new Error(`Unexpected fetch: ${url} (${reqMethod(input, init) ?? "GET"})`);
     });
   }
 
@@ -428,9 +441,7 @@ describe("connect-backfills-pre-ama-agents", () => {
     const agent = await createTestAgent(db, userId, { name: "Pre-AMA", username: "pre-ama-bf", runtime: "claude" }, false);
     await db.prepare("UPDATE agents SET ama_agent_id = NULL WHERE id = ?").bind(agent.id).run();
 
-    const fetchMock = makeFetchMock([
-      new Response(JSON.stringify({ id: "ama_agent_x", projectId: PROJECT_ID, name: "Pre-AMA", providerId: "anthropic" }), { status: 201 }),
-    ]);
+    const fetchMock = makeFetchMock([jsonResponse({ id: "ama_agent_x", projectId: PROJECT_ID, name: "Pre-AMA", providerId: "anthropic" }, 201)]);
     vi.stubGlobal("fetch", fetchMock);
 
     const res = await apiRequest(env, "POST", "/api/ama/provision", undefined, token);
@@ -445,7 +456,7 @@ describe("connect-backfills-pre-ama-agents", () => {
 
     // Exactly one POST /api/v1/agents was made.
     const agentPostCount = fetchMock.mock.calls.filter(
-      ([url, init]) => String(url) === "https://ama.test/api/v1/agents" && (init as any)?.method === "POST",
+      ([url, init]) => reqUrl(url) === "https://ama.test/api/v1/agents" && reqMethod(url, init) === "POST",
     ).length;
     expect(agentPostCount).toBe(1);
   });
@@ -461,7 +472,7 @@ describe("connect-backfills-pre-ama-agents", () => {
 
     // First provision — backfills the agent.
     const firstFetch = makeFetchMock([
-      new Response(JSON.stringify({ id: "ama_agent_idem", projectId: PROJECT_ID, name: "Idempotent", providerId: "anthropic" }), { status: 201 }),
+      jsonResponse({ id: "ama_agent_idem", projectId: PROJECT_ID, name: "Idempotent", providerId: "anthropic" }, 201),
     ]);
     vi.stubGlobal("fetch", firstFetch);
     const first = await apiRequest(env, "POST", "/api/ama/provision", undefined, token);
@@ -471,25 +482,23 @@ describe("connect-backfills-pre-ama-agents", () => {
     // ensureAmaAgentForAkAgent will call GET /api/v1/agents/:id to verify the
     // existing AMA agent is live, so mock that too.
     const secondFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
       if (url === `https://ama.test/api/v1/projects/${PROJECT_ID}`) {
-        return new Response(JSON.stringify({ id: PROJECT_ID, name: "Workspace" }), { status: 200 });
+        return jsonResponse({ id: PROJECT_ID, name: "Workspace" });
       }
       if (url === "https://ama.test/api/v1/agents/ama_agent_idem") {
         // readAmaAgent called when ama_agent_id is already set.
-        return new Response(JSON.stringify({ id: "ama_agent_idem", projectId: PROJECT_ID, name: "Idempotent", providerId: "anthropic" }), {
-          status: 200,
-        });
+        return jsonResponse({ id: "ama_agent_idem", projectId: PROJECT_ID, name: "Idempotent", providerId: "anthropic" });
       }
-      if (url === "https://ama.test/api/v1/agents/ama_agent_idem" && (init as any)?.method === "PATCH") {
-        return new Response(JSON.stringify({ id: "ama_agent_idem" }), { status: 200 });
+      if (url === "https://ama.test/api/v1/agents/ama_agent_idem" && reqMethod(input, init) === "PATCH") {
+        return jsonResponse({ id: "ama_agent_idem" });
       }
       // updateAmaAgentConfig uses PATCH.
-      if (url.startsWith("https://ama.test/api/v1/agents") && (init as any)?.method === "PATCH") {
-        return new Response(JSON.stringify({ id: "ama_agent_idem" }), { status: 200 });
+      if (url.startsWith("https://ama.test/api/v1/agents") && reqMethod(input, init) === "PATCH") {
+        return jsonResponse({ id: "ama_agent_idem" });
       }
-      throw new Error(`Unexpected fetch on 2nd provision: ${url} (${(init as any)?.method ?? "GET"})`);
+      throw new Error(`Unexpected fetch on 2nd provision: ${url} (${reqMethod(input, init) ?? "GET"})`);
     });
     vi.stubGlobal("fetch", secondFetch);
 
@@ -499,7 +508,7 @@ describe("connect-backfills-pre-ama-agents", () => {
 
     // No new POST /api/v1/agents on the second call.
     const secondPostCount = secondFetch.mock.calls.filter(
-      ([url, init]) => String(url) === "https://ama.test/api/v1/agents" && (init as any)?.method === "POST",
+      ([url, init]) => reqUrl(url) === "https://ama.test/api/v1/agents" && reqMethod(url, init) === "POST",
     ).length;
     expect(secondPostCount).toBe(0);
   });
@@ -522,7 +531,7 @@ describe("connect-backfills-pre-ama-agents", () => {
     expect(((await res.json()) as any).agents_backfilled).toBe(0);
 
     const agentPostCount = fetchMock.mock.calls.filter(
-      ([url, init]) => String(url) === "https://ama.test/api/v1/agents" && (init as any)?.method === "POST",
+      ([url, init]) => reqUrl(url) === "https://ama.test/api/v1/agents" && reqMethod(url, init) === "POST",
     ).length;
     expect(agentPostCount).toBe(0);
 
@@ -560,7 +569,7 @@ describe("connect-backfills-pre-ama-agents", () => {
     expect(((await res.json()) as any).agents_backfilled).toBe(0);
 
     const agentPostCount = fetchMock.mock.calls.filter(
-      ([url, init]) => String(url) === "https://ama.test/api/v1/agents" && (init as any)?.method === "POST",
+      ([url, init]) => reqUrl(url) === "https://ama.test/api/v1/agents" && reqMethod(url, init) === "POST",
     ).length;
     expect(agentPostCount).toBe(0);
 
@@ -584,7 +593,7 @@ describe("connect-backfills-pre-ama-agents", () => {
     // make the mock fail on the FIRST call and succeed on the SECOND call.
     const fetchMock = makeFetchMock([
       "error",
-      new Response(JSON.stringify({ id: "ama_agent_success", projectId: PROJECT_ID, name: "Agent", providerId: "anthropic" }), { status: 201 }),
+      jsonResponse({ id: "ama_agent_success", projectId: PROJECT_ID, name: "Agent", providerId: "anthropic" }, 201),
     ]);
     vi.stubGlobal("fetch", fetchMock);
 

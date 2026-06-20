@@ -8,6 +8,18 @@ import { createTestAgent, createTestEnv, seedUser, setupMiniflare, signUpVerifie
 const env = createTestEnv();
 let mf: Miniflare;
 
+// hey-api's fetch client calls fetch(request) with a single Request object,
+// not fetch(url, init). These helpers normalise both call signatures so mocks
+// can read url, method, and body regardless of which form is used.
+function reqUrl(input: RequestInfo | URL): string {
+  return input instanceof Request ? input.url : String(input);
+}
+// hey-api defaults to parseAs:'auto' which infers JSON only when Content-Type
+// is application/json. Always include it so the SDK parses the body correctly.
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
 async function apiRequest(method: string, path: string, body?: Record<string, unknown>, token?: string) {
   const { api } = await import("../apps/web/server/routes");
   const headers: Record<string, string> = { "Content-Type": "application/json", Host: "localhost:8788", "x-forwarded-proto": "http" };
@@ -315,28 +327,25 @@ describe("GET /api/admin/stats", () => {
       .run();
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = reqUrl(input);
         if (url === "https://auth.test/oauth/token") {
-          return new Response(JSON.stringify({ access_token: "oauth-token" }), { status: 200 });
+          return jsonResponse({ access_token: "oauth-token" });
         }
         if (url === "https://ama.test/api/v1/runners?environmentId=env_admin_stats&limit=100") {
-          return new Response(
-            JSON.stringify({
-              data: [
-                {
-                  id: "runner_admin_stats",
-                  environmentId: "env_admin_stats",
-                  state: "active",
-                  capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
-                  currentLoad: 0,
-                  maxConcurrent: 5,
-                  lastHeartbeatAt: "2026-06-08T12:00:00.000Z",
-                },
-              ],
-            }),
-            { status: 200 },
-          );
+          return jsonResponse({
+            data: [
+              {
+                id: "runner_admin_stats",
+                environmentId: "env_admin_stats",
+                state: "active",
+                capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
+                currentLoad: 0,
+                maxConcurrent: 5,
+                lastHeartbeatAt: "2026-06-08T12:00:00.000Z",
+              },
+            ],
+          });
         }
         throw new Error(`Unexpected fetch: ${url}`);
       }),

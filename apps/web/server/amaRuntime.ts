@@ -1,4 +1,4 @@
-import { AmaClient, type AmaOperationId, type AmaRequestOptions } from "@any-managed-agents/sdk";
+import { createAmaClient as createSdkClient, type Runtime, type UpdateTriggerRequest } from "@any-managed-agents/sdk";
 import { createAuth } from "./betterAuth";
 import type { Env } from "./types";
 
@@ -145,31 +145,6 @@ export interface AmaListResponse<T> {
   pagination?: Record<string, unknown>;
 }
 
-interface AmaSessionResponse {
-  id: string;
-  agentId: string;
-  environmentId: string | null;
-  state: string;
-  stateReason: string | null;
-}
-
-interface AmaCredentialResponse {
-  id: string;
-  activeVersionId: string | null;
-}
-
-interface AmaAgentResponse {
-  id: string;
-  projectId: string;
-  name: string;
-  providerId: string | null;
-  model: string | null;
-}
-
-interface AmaEnvironmentResponse {
-  id: string;
-}
-
 export interface AmaRuntimeUsageWindow {
   label: string;
   utilization: number;
@@ -274,17 +249,15 @@ export function isAmaTaskDispatchConfigured(env: Env): boolean {
 export async function createAmaTaskSession(env: Env, ownerId: string, input: AmaTaskSessionInput): Promise<AmaSessionDispatch> {
   const client = await createAmaClient(env, ownerId, input.projectId);
   const session = await withAmaErrorDetails("create session", () =>
-    client.request<AmaSessionResponse>("createSession", {
-      body: {
-        agentId: input.agentId,
-        environmentId: input.environmentId,
-        runtime: input.runtime,
-        title: input.title,
-        resourceRefs: input.resourceRefs ?? [],
-        ...(input.runtimeEnv ? { env: input.runtimeEnv } : {}),
-        ...(input.runtimeSecretEnv ? { secretEnv: toAmaSecretEnv(input.runtimeSecretEnv) } : {}),
-        ...(input.initialPrompt ? { initialPrompt: input.initialPrompt } : {}),
-      },
+    client.sessions.create({
+      agentId: input.agentId,
+      environmentId: input.environmentId,
+      runtime: input.runtime as Runtime,
+      title: input.title,
+      resourceRefs: input.resourceRefs ?? [],
+      ...(input.runtimeEnv ? { env: input.runtimeEnv } : {}),
+      ...(input.runtimeSecretEnv ? { secretEnv: toAmaSecretEnv(input.runtimeSecretEnv) } : {}),
+      ...(input.initialPrompt ? { initialPrompt: input.initialPrompt } : {}),
     }),
   );
 
@@ -310,21 +283,19 @@ function toAmaSecretEnv(entries: AmaRuntimeSecretEnvRef[]): { name: string; cred
 export async function createAmaAgent(env: Env, ownerId: string, input: AmaAgentInput): Promise<AmaAgent> {
   const client = await createAmaClient(env, ownerId, input.projectId);
   const agent = await withAmaErrorDetails("create runtime agent", () =>
-    client.request<AmaAgentResponse>("createAgent", {
-      body: {
-        name: input.name,
-        description: input.description ?? null,
-        instructions: input.instructions ?? null,
-        ...(input.provider ? { providerId: input.provider } : {}),
-        ...(input.model ? { model: input.model } : {}),
-        ...(input.role ? { role: input.role } : {}),
-        skills: input.skills ?? [],
-        subagents: input.subagents ?? [],
-        capabilityTags: input.capabilityTags ?? [],
-        handoffPolicy: input.handoffPolicy ?? {},
-        metadata: input.metadata ?? {},
-        memoryPolicy: input.memoryPolicy ?? { enabled: false },
-      },
+    client.agents.create({
+      name: input.name,
+      description: input.description ?? null,
+      instructions: input.instructions ?? null,
+      ...(input.provider ? { providerId: input.provider } : {}),
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.role ? { role: input.role } : {}),
+      skills: input.skills ?? [],
+      subagents: input.subagents ?? [],
+      capabilityTags: input.capabilityTags ?? [],
+      handoffPolicy: input.handoffPolicy ?? {},
+      metadata: input.metadata ?? {},
+      memoryPolicy: input.memoryPolicy ?? { enabled: false },
     }),
   );
   return {
@@ -338,22 +309,18 @@ export async function createAmaAgent(env: Env, ownerId: string, input: AmaAgentI
 
 export async function createAmaProject(env: Env, ownerId: string, input: { name: string }): Promise<AmaProject> {
   const client = await createAmaClient(env, ownerId);
-  const project = await withAmaErrorDetails("create project", () =>
-    client.request<{ id: string; name: string }>("createProject", { body: { name: input.name } }),
-  );
+  const project = await withAmaErrorDetails("create project", () => client.projects.create({ name: input.name }));
   return { id: project.id, name: project.name };
 }
 
 export async function createAmaVault(env: Env, ownerId: string, input: AmaVaultInput): Promise<AmaVault> {
   const client = await createAmaClient(env, ownerId, input.projectId);
   const vault = await withAmaErrorDetails("create vault", () =>
-    client.request<{ id: string }>("createVault", {
-      body: {
-        name: input.name,
-        description: input.description,
-        scope: input.scope,
-        metadata: input.metadata ?? {},
-      },
+    client.vaults.create({
+      name: input.name,
+      description: input.description,
+      scope: input.scope,
+      metadata: input.metadata ?? {},
     }),
   );
   return { id: vault.id };
@@ -362,13 +329,11 @@ export async function createAmaVault(env: Env, ownerId: string, input: AmaVaultI
 export async function createAmaEnvironment(env: Env, ownerId: string, input: AmaEnvironmentInput): Promise<AmaEnvironment> {
   const client = await createAmaClient(env, ownerId, input.projectId);
   const environment = await withAmaErrorDetails("create environment", () =>
-    client.request<AmaEnvironmentResponse>("createEnvironment", {
-      body: {
-        name: input.name,
-        description: input.description,
-        hostingMode: input.hostingMode,
-        metadata: input.metadata ?? {},
-      },
+    client.environments.create({
+      name: input.name,
+      description: input.description,
+      hostingMode: input.hostingMode,
+      metadata: input.metadata ?? {},
     }),
   );
   return { id: environment.id };
@@ -388,7 +353,7 @@ async function withAmaErrorDetails<T>(operation: string, fn: () => Promise<T>): 
 export async function readAmaAgent(env: Env, ownerId: string, projectId: string, agentId: string): Promise<AmaAgent | null> {
   const client = await createAmaClient(env, ownerId, projectId);
   try {
-    const agent = await client.request<AmaAgentResponse>("readAgent", { path: { agentId } });
+    const agent = await client.agents.get(agentId);
     return {
       id: agent.id,
       projectId: agent.projectId,
@@ -405,22 +370,19 @@ export async function readAmaAgent(env: Env, ownerId: string, projectId: string,
 export async function updateAmaAgentConfig(env: Env, ownerId: string, projectId: string, agentId: string, input: AmaAgentInput): Promise<void> {
   const client = await createAmaClient(env, ownerId, projectId);
   await withAmaErrorDetails("update runtime agent config", () =>
-    client.request("updateAgent", {
-      path: { agentId },
-      body: {
-        name: input.name,
-        description: input.description ?? null,
-        instructions: input.instructions ?? null,
-        ...(input.provider ? { providerId: input.provider } : {}),
-        model: input.model ?? null,
-        role: input.role ?? null,
-        skills: input.skills ?? [],
-        subagents: input.subagents ?? [],
-        capabilityTags: input.capabilityTags ?? [],
-        handoffPolicy: input.handoffPolicy ?? {},
-        metadata: input.metadata ?? {},
-        memoryPolicy: input.memoryPolicy ?? { enabled: false },
-      },
+    client.agents.update(agentId, {
+      name: input.name,
+      description: input.description ?? null,
+      instructions: input.instructions ?? null,
+      ...(input.provider ? { providerId: input.provider } : {}),
+      model: input.model ?? null,
+      role: input.role ?? null,
+      skills: input.skills ?? [],
+      subagents: input.subagents ?? [],
+      capabilityTags: input.capabilityTags ?? [],
+      handoffPolicy: input.handoffPolicy ?? {},
+      metadata: input.metadata ?? {},
+      memoryPolicy: input.memoryPolicy ?? { enabled: false },
     }),
   );
 }
@@ -431,19 +393,17 @@ export async function updateAmaAgentConfig(env: Env, ownerId: string, projectId:
 // lists, history preserved). Archive is the {archived:true} lifecycle PATCH.
 export async function archiveAmaAgent(env: Env, ownerId: string, projectId: string, agentId: string): Promise<void> {
   const client = await createAmaClient(env, ownerId, projectId);
-  await withAmaErrorDetails("archive runtime agent", () => client.request("updateAgent", { path: { agentId }, body: { archived: true } }));
+  await withAmaErrorDetails("archive runtime agent", () => client.agents.update(agentId, { archived: true }));
 }
 
 export async function archiveAmaEnvironment(env: Env, ownerId: string, projectId: string, environmentId: string): Promise<void> {
   const client = await createAmaClient(env, ownerId, projectId);
-  await withAmaErrorDetails("archive runtime environment", () =>
-    client.request("updateEnvironment", { path: { environmentId }, body: { archived: true } }),
-  );
+  await withAmaErrorDetails("archive runtime environment", () => client.environments.update(environmentId, { archived: true }));
 }
 
 export async function readAmaEnvironment(env: Env, ownerId: string, projectId: string, environmentId: string): Promise<AmaEnvironment> {
   const client = await createAmaClient(env, ownerId, projectId);
-  const environment = await client.request<AmaEnvironmentResponse>("readEnvironment", { path: { environmentId } });
+  const environment = await client.environments.get(environmentId);
   return { id: environment.id };
 }
 
@@ -454,7 +414,7 @@ export async function readAmaEnvironment(env: Env, ownerId: string, projectId: s
 export async function readAmaProject(env: Env, ownerId: string, projectId: string): Promise<AmaProject | null> {
   const client = await createAmaClient(env, ownerId, projectId);
   try {
-    const project = await client.request<{ id: string; name: string }>("readProject", { path: { projectId } });
+    const project = await client.projects.get(projectId);
     return { id: project.id, name: project.name };
   } catch (error) {
     if ((error as { status?: unknown }).status === 404) return null;
@@ -465,7 +425,7 @@ export async function readAmaProject(env: Env, ownerId: string, projectId: strin
 export async function amaEnvironmentExists(env: Env, ownerId: string, projectId: string, environmentId: string): Promise<boolean> {
   const client = await createAmaClient(env, ownerId, projectId);
   try {
-    await client.request("readEnvironment", { path: { environmentId } });
+    await client.environments.get(environmentId);
     return true;
   } catch (error) {
     if ((error as { status?: unknown }).status === 404) return false;
@@ -494,14 +454,12 @@ export function resolveAmaProviderModelProfile(input: { runtime: string; preferr
 export async function createAmaFederatedTenant(env: Env, ownerId: string, input: AmaFederatedTenantInput): Promise<void> {
   const client = await createAmaClient(env, ownerId, input.projectId);
   try {
-    await client.request("createFederatedTenant", {
-      body: {
-        issuer: input.issuer,
-        externalTenantId: input.externalTenantId,
-        capabilities: input.capabilities ?? RUNNER_FEDERATION_CAPABILITIES,
-        ...(input.environmentId ? { environmentId: input.environmentId } : {}),
-        ...(input.metadata ? { metadata: input.metadata } : {}),
-      },
+    await client.federatedTenants.create({
+      issuer: input.issuer,
+      externalTenantId: input.externalTenantId,
+      capabilities: input.capabilities ?? RUNNER_FEDERATION_CAPABILITIES,
+      ...(input.environmentId ? { environmentId: input.environmentId } : {}),
+      ...(input.metadata ? { metadata: input.metadata } : {}),
     });
   } catch (error) {
     // 409: (issuer, externalTenantId) is already bound to this project — the
@@ -516,17 +474,14 @@ export async function createAmaFederatedTenant(env: Env, ownerId: string, input:
 
 export async function createAmaSessionSecret(env: Env, ownerId: string, input: AmaSessionSecretInput): Promise<AmaSessionSecret> {
   const client = await createAmaClient(env, ownerId, input.projectId);
-  const credential = await client.request<AmaCredentialResponse>("createVaultCredential", {
-    path: { vaultId: input.vaultId },
-    body: {
-      name: input.name,
-      type: "session_env_secret",
-      metadata: input.metadata ?? {},
-      secret: {
-        provider: "ama-managed",
-        secretValue: input.secretValue,
-        referenceName: input.name,
-      },
+  const credential = await client.vaults.createCredential(input.vaultId, {
+    name: input.name,
+    type: "session_env_secret",
+    metadata: input.metadata ?? {},
+    secret: {
+      provider: "ama-managed",
+      secretValue: input.secretValue,
+      referenceName: input.name,
     },
   });
   if (!credential.activeVersionId) {
@@ -555,9 +510,7 @@ export async function readAmaSessionUsageTotals(
   let records = 0;
   let cursor: string | undefined;
   do {
-    const page = await client.request<
-      AmaListResponse<{ promptTokens?: number; completionTokens?: number; costMicros?: number }> & { pagination?: { nextCursor?: string | null } }
-    >("listUsageRecords", { query: { sessionId, limit: 100, ...(cursor ? { cursor } : {}) } });
+    const page = await client.usage.listRecords({ sessionId, limit: 100, ...(cursor ? { cursor } : {}) });
     for (const record of page.data) {
       totals.promptTokens += record.promptTokens ?? 0;
       totals.completionTokens += record.completionTokens ?? 0;
@@ -571,10 +524,7 @@ export async function readAmaSessionUsageTotals(
 
 export async function revokeAmaVaultCredential(env: Env, ownerId: string, projectId: string, vaultId: string, credentialId: string): Promise<void> {
   const client = await createAmaClient(env, ownerId, projectId);
-  await client.request("updateVaultCredential", {
-    path: { vaultId, credentialId },
-    body: { state: "revoked", revokeReason: "AK agent session closed" },
-  });
+  await client.vaults.updateCredential(vaultId, credentialId, { state: "revoked", revokeReason: "AK agent session closed" });
 }
 
 export async function sendAmaSessionMessage(
@@ -586,10 +536,7 @@ export async function sendAmaSessionMessage(
 ): Promise<AmaRuntimeCommandResult> {
   const client = await createAmaClient(env, ownerId, projectId);
   // A 201 means the prompt message was accepted and queued for the session.
-  await client.request<{ id: string }>("createSessionMessage", {
-    path: { sessionId },
-    body: { type: "prompt", content: message },
-  });
+  await client.sessions.createMessage(sessionId, { type: "prompt", content: message });
   return { accepted: true };
 }
 
@@ -607,27 +554,27 @@ export async function getAmaSessionRuntimeSnapshot(
   events: AmaSessionEventsQuery = {},
 ): Promise<AmaSessionRuntimeSnapshot> {
   const client = await createAmaClient(env, ownerId, projectId);
-  const eventQuery: Record<string, string | number | boolean | undefined> = { limit: events.limit ?? 100, order: events.order ?? "asc" };
-  if (events.cursor !== undefined) eventQuery.cursor = events.cursor;
   const [session, eventPage] = await Promise.all([
-    client.request<Record<string, unknown>>("readSession", { path: { sessionId } }),
-    client.request<{ data: Record<string, unknown>[]; pagination: Record<string, unknown> }>("listSessionEvents", {
-      path: { sessionId },
-      query: eventQuery,
+    client.sessions.get(sessionId),
+    client.sessions.listEvents(sessionId, {
+      limit: events.limit ?? 100,
+      order: events.order ?? "asc",
+      ...(events.cursor !== undefined ? { cursor: events.cursor } : {}),
     }),
   ]);
+  // The snapshot is forwarded to the browser as opaque session JSON.
   return {
     taskSessionId: sessionId,
-    session,
-    events: eventPage.data,
-    pagination: eventPage.pagination,
+    session: session as unknown as Record<string, unknown>,
+    events: eventPage.data as unknown as Record<string, unknown>[],
+    pagination: eventPage.pagination as unknown as Record<string, unknown>,
   };
 }
 
 export async function readAmaSession(env: Env, ownerId: string, sessionId: string, projectId?: string): Promise<Record<string, unknown> | null> {
   const client = await createAmaClient(env, ownerId, projectId);
   try {
-    return await client.request<Record<string, unknown>>("readSession", { path: { sessionId } });
+    return (await client.sessions.get(sessionId)) as unknown as Record<string, unknown>;
   } catch (error) {
     if ((error as { status?: unknown }).status === 404) return null;
     throw error;
@@ -636,16 +583,12 @@ export async function readAmaSession(env: Env, ownerId: string, sessionId: strin
 
 export async function listAmaAgents(env: Env, ownerId: string): Promise<AmaListResponse<Record<string, unknown>>> {
   const client = await createAmaClient(env, ownerId);
-  return await client.request<AmaListResponse<Record<string, unknown>>>("listAgents", {
-    query: { limit: 100 },
-  });
+  return (await client.agents.list({ limit: 100 })) as unknown as AmaListResponse<Record<string, unknown>>;
 }
 
 export async function listAmaEnvironments(env: Env, ownerId: string): Promise<AmaListResponse<Record<string, unknown>>> {
   const client = await createAmaClient(env, ownerId);
-  return await client.request<AmaListResponse<Record<string, unknown>>>("listEnvironments", {
-    query: { limit: 100 },
-  });
+  return (await client.environments.list({ limit: 100 })) as unknown as AmaListResponse<Record<string, unknown>>;
 }
 
 export interface AmaCatalogModel {
@@ -665,26 +608,13 @@ export async function listAmaCatalogModels(env: Env, ownerId: string): Promise<A
   // GET /api/v1/providers/models returns the entire catalog in one envelope
   // (the AMA route lists all rows; pagination is always {hasMore:false}), so no
   // cursor loop is needed.
-  const response = await client.request<AmaListResponse<AmaCatalogModel>>("listModels");
-  return response.data;
-}
-
-interface AmaRunnerResponse {
-  id: string;
-  environmentId: string | null;
-  state: string;
-  capabilities: string[];
-  currentLoad: number;
-  maxConcurrent: number;
-  lastHeartbeatAt: string | null;
-  runtimeUsage?: AmaRuntimeUsage[];
+  const response = await client.models.list();
+  return response.data as unknown as AmaCatalogModel[];
 }
 
 export async function listAmaRunners(env: Env, ownerId: string, projectId: string, environmentId: string): Promise<AmaListResponse<AmaRunner>> {
   const client = await createAmaClient(env, ownerId, projectId);
-  const page = await client.request<AmaListResponse<AmaRunnerResponse>>("listRunners", {
-    query: { environmentId, limit: 100 },
-  });
+  const page = await client.runners.list({ environmentId, limit: 100 });
   // /api/v1 runners report lifecycle as `state`; AK's dispatch gate reads
   // `status` (active | draining | disabled | offline).
   return {
@@ -774,10 +704,7 @@ export async function listAmaScheduledTriggerRuns(
   options: { limit?: number } = {},
 ): Promise<AmaListResponse<AmaScheduledTriggerRun>> {
   const client = await createAmaClient(env, ownerId, projectId);
-  const page = await client.request<AmaListResponse<AmaTriggerRunResponse>>("listTriggerRuns", {
-    path: { triggerId },
-    query: { limit: options.limit ?? 20 },
-  });
+  const page = await client.triggers.listRuns(triggerId, { limit: options.limit ?? 20 });
   return { data: page.data.map(toAmaScheduledTriggerRun), pagination: page.pagination };
 }
 
@@ -790,24 +717,22 @@ export async function stopAmaSession(
 ) {
   const client = await createAmaClient(env, ownerId, projectId);
   // /api/v1 has no dedicated stop verb: transition the session to `stopped`.
-  await client.request("updateSession", { path: { sessionId }, body: { state: "stopped", metadata: { stopReason: reason } } });
+  await client.sessions.update(sessionId, { state: "stopped", metadata: { stopReason: reason } });
 }
 
 export async function createAmaScheduledAgentTrigger(env: Env, ownerId: string, input: AmaScheduledTriggerInput): Promise<AmaScheduledTrigger> {
   const client = await createAmaClient(env, ownerId, input.projectId);
-  const trigger = await client.request<AmaTriggerResponse>("createTrigger", {
-    body: {
-      agentId: input.agentId,
-      ...(input.environmentId ? { environmentId: input.environmentId } : {}),
-      runtime: input.runtime,
-      name: input.name,
-      promptTemplate: input.promptTemplate,
-      resourceRefs: input.resourceRefs ?? [],
-      env: input.runtimeEnv ?? {},
-      secretEnv: toAmaSecretEnv(input.runtimeSecretEnv ?? []),
-      schedule: { type: "interval", intervalSeconds: input.intervalSeconds },
-      enabled: (input.status ?? "active") !== "paused",
-    },
+  const trigger = await client.triggers.create({
+    agentId: input.agentId,
+    ...(input.environmentId ? { environmentId: input.environmentId } : {}),
+    runtime: input.runtime as Runtime,
+    name: input.name,
+    promptTemplate: input.promptTemplate,
+    resourceRefs: input.resourceRefs ?? [],
+    env: input.runtimeEnv ?? {},
+    secretEnv: toAmaSecretEnv(input.runtimeSecretEnv ?? []),
+    schedule: { type: "interval", intervalSeconds: input.intervalSeconds },
+    enabled: (input.status ?? "active") !== "paused",
   });
   return toAmaScheduledTrigger(trigger);
 }
@@ -819,25 +744,24 @@ export async function updateAmaScheduledAgentTrigger(
   scheduleId: string,
   input: AmaScheduledTriggerUpdate,
 ): Promise<AmaScheduledTrigger> {
-  const body: Record<string, unknown> = {};
+  const body: UpdateTriggerRequest = {};
   if (input.agentId !== undefined) body.agentId = input.agentId;
-  if (input.environmentId !== undefined) body.environmentId = input.environmentId;
-  if (input.runtime !== undefined) body.runtime = input.runtime;
+  // null unpins the environment (AMA resolves one per dispatch); the contract
+  // types this as optional-string, so widen for the null case.
+  if (input.environmentId !== undefined) body.environmentId = input.environmentId as string | undefined;
+  if (input.runtime !== undefined) body.runtime = input.runtime as Runtime;
   if (input.name !== undefined) body.name = input.name;
   if (input.promptTemplate !== undefined) body.promptTemplate = input.promptTemplate;
   if (input.intervalSeconds !== undefined) body.schedule = { type: "interval", intervalSeconds: input.intervalSeconds };
   if (input.status !== undefined) body.enabled = input.status !== "paused";
   const client = await createAmaClient(env, ownerId, projectId);
-  const trigger = await client.request<AmaTriggerResponse>("updateTrigger", {
-    path: { triggerId: scheduleId },
-    body,
-  });
+  const trigger = await client.triggers.update(scheduleId, body);
   return toAmaScheduledTrigger(trigger);
 }
 
 export async function deleteAmaScheduledAgentTrigger(env: Env, ownerId: string, projectId: string, scheduleId: string): Promise<void> {
   const client = await createAmaClient(env, ownerId, projectId);
-  await client.request("deleteTrigger", { path: { triggerId: scheduleId } });
+  await client.triggers.delete(scheduleId);
 }
 
 // Resolves the AMA access token for the linked AMA account of the AK user
@@ -870,13 +794,9 @@ function isAmaAccountNotFound(error: unknown): boolean {
 }
 
 async function createAmaClient(env: Env, ownerId: string, projectId?: string) {
-  const origin = requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN");
-  return {
-    async request<T>(operationId: AmaOperationId, options?: AmaRequestOptions): Promise<T> {
-      const accessToken = await userAmaAccessToken(env, ownerId);
-      return new AmaClient({ origin, accessToken, projectId }).request<T>(operationId, options);
-    },
-  };
+  const baseUrl = requireEnv(env.AMA_ORIGIN, "AMA_ORIGIN");
+  const accessToken = await userAmaAccessToken(env, ownerId);
+  return createSdkClient({ baseUrl, accessToken, projectId });
 }
 
 function requireEnv(value: string | undefined, name: string): string {

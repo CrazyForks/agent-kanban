@@ -17,6 +17,22 @@ const WEBHOOK_SECRET = "test-webhook-secret-xyz";
 let db: D1Database;
 let mf: Miniflare;
 
+// hey-api's fetch client calls fetch(request) with a single Request object,
+// not fetch(url, init). These helpers normalise both call signatures so mocks
+// can read url, method, and body regardless of which form is used.
+function reqUrl(input: RequestInfo | URL): string {
+  return input instanceof Request ? input.url : String(input);
+}
+function reqMethod(input: RequestInfo | URL, init?: RequestInit): string {
+  return input instanceof Request ? input.method : ((init as any)?.method ?? "GET");
+}
+
+// hey-api defaults to parseAs:'auto' which infers JSON only when Content-Type
+// is application/json. Always include it so the SDK parses the body correctly.
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
 // Minimal Env for direct function calls
 function makeEnv(overrides: Record<string, unknown> = {}): any {
   return {
@@ -326,12 +342,11 @@ describe("handleGithubPullRequestEvent", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        if (url === "https://auth.test/oauth/token")
-          return new Response(JSON.stringify({ access_token: "test-token", expires_in: 3600 }), { status: 200 });
-        if (url === `https://ama.test/api/v1/sessions/${amaSessionId}` && (init as any)?.method === "PATCH") {
+        const url = reqUrl(input);
+        if (url === "https://auth.test/oauth/token") return jsonResponse({ access_token: "test-token", expires_in: 3600 });
+        if (url === `https://ama.test/api/v1/sessions/${amaSessionId}` && reqMethod(input, init) === "PATCH") {
           stops.push(url);
-          return new Response(JSON.stringify({ id: amaSessionId, state: "stopped" }), { status: 200 });
+          return jsonResponse({ id: amaSessionId, state: "stopped" });
         }
         // Usage summary (no akSessionId on task so collectUsage is skipped)
         throw new Error(`Unexpected fetch: ${url}`);

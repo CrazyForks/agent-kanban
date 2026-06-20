@@ -2,6 +2,36 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+// hey-api's fetch client calls fetch(request) with a single Request object,
+// not fetch(url, init). This helper normalises both call signatures so mocks
+// can match on url, method, headers, and body regardless of which form is used.
+async function parseFetchArgs(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<{ url: string; method: string; header: (name: string) => string | null; body: () => Promise<string> }> {
+  if (input instanceof Request) {
+    return {
+      url: input.url,
+      method: input.method,
+      header: (name) => input.headers.get(name),
+      body: async () => input.clone().text(),
+    };
+  }
+  const headers = (init?.headers ?? {}) as Record<string, string>;
+  return {
+    url: String(input),
+    method: init?.method ?? "GET",
+    header: (name) => headers[name] ?? headers[name.toLowerCase()] ?? null,
+    body: async () => String(init?.body ?? ""),
+  };
+}
+
+// hey-api defaults to parseAs:'auto' which infers JSON only when Content-Type
+// is application/json. Always include it so the SDK parses the body correctly.
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
 // The per-user AMA token now comes from the linked AMA account via BetterAuth's
 // getAccessToken (auto-refreshed), not a client-credentials exchange. Stub
 // createAuth so amaRuntime resolves a deterministic token for the test owner.
@@ -57,12 +87,12 @@ describe("AMA runtime adapter", () => {
 
   it("creates sessions through AMA SDK as the owner's linked AMA account", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url === "https://ama.test/api/v1/sessions") {
-        expect(init?.method).toBe("POST");
-        expect((init?.headers as Record<string, string>).authorization).toBe("Bearer user-token");
-        expect((init?.headers as Record<string, string>)["x-ama-project-id"]).toBe("project_123");
-        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const req = await parseFetchArgs(input, init);
+      if (req.url === "https://ama.test/api/v1/sessions") {
+        expect(req.method).toBe("POST");
+        expect(req.header("authorization")).toBe("Bearer user-token");
+        expect(req.header("x-ama-project-id")).toBe("project_123");
+        const body = JSON.parse(await req.body()) as Record<string, unknown>;
         expect(body).toEqual({
           agentId: "agent_123",
           environmentId: "env_123",
@@ -75,18 +105,9 @@ describe("AMA runtime adapter", () => {
         });
         expect(JSON.stringify(body)).not.toContain("task_123");
         expect(JSON.stringify(body)).not.toContain("board_123");
-        return new Response(
-          JSON.stringify({
-            id: "session_123",
-            agentId: "agent_123",
-            environmentId: "env_123",
-            state: "pending",
-            stateReason: null,
-          }),
-          { status: 201 },
-        );
+        return jsonResponse({ id: "session_123", agentId: "agent_123", environmentId: "env_123", state: "pending", stateReason: null }, 201);
       }
-      throw new Error(`Unexpected fetch: ${url}`);
+      throw new Error(`Unexpected fetch: ${req.url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -117,12 +138,12 @@ describe("AMA runtime adapter", () => {
 
   it("stores runtime session secrets in AMA vault credentials", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
-        expect(init?.method).toBe("POST");
-        expect((init?.headers as Record<string, string>).authorization).toBe("Bearer user-token");
-        expect((init?.headers as Record<string, string>)["x-ama-project-id"]).toBe("project_123");
-        const body = JSON.parse(String(init?.body)) as Record<string, any>;
+      const req = await parseFetchArgs(input, init);
+      if (req.url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
+        expect(req.method).toBe("POST");
+        expect(req.header("authorization")).toBe("Bearer user-token");
+        expect(req.header("x-ama-project-id")).toBe("project_123");
+        const body = JSON.parse(await req.body()) as Record<string, any>;
         expect(body).toMatchObject({
           name: "AK_AGENT_KEY_session_123",
           type: "session_env_secret",
@@ -132,9 +153,9 @@ describe("AMA runtime adapter", () => {
             referenceName: "AK_AGENT_KEY_session_123",
           },
         });
-        return new Response(JSON.stringify({ id: "vaultcred_123", activeVersionId: "vaultver_123" }), { status: 201 });
+        return jsonResponse({ id: "vaultcred_123", activeVersionId: "vaultver_123" }, 201);
       }
-      throw new Error(`Unexpected fetch: ${url}`);
+      throw new Error(`Unexpected fetch: ${req.url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
 
