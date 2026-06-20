@@ -18,7 +18,10 @@ export const PID_FILE = join(STATE_DIR, "daemon.pid");
 export const DAEMON_STATE_FILE = join(STATE_DIR, "daemon-state.json");
 export const MACHINE_ID_FILE = join(STATE_DIR, "machine-id");
 export const BIN_DIR = join(DATA_DIR, "bin");
+export const REPOS_DIR = join(DATA_DIR, "repos");
+export const WORKTREES_DIR = join(DATA_DIR, "worktrees");
 export const SESSIONS_DIR = join(STATE_DIR, "sessions");
+export const TRACKED_TASKS_FILE = join(STATE_DIR, "tracked-tasks.json");
 export const IDENTITIES_DIR = join(STATE_DIR, "identities");
 
 // Legacy paths — used only for migration, then removed
