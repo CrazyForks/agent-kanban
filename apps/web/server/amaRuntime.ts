@@ -2,6 +2,8 @@ import { createAmaClient as createSdkClient, type Runtime, type UpdateTriggerReq
 import { createAuth } from "./betterAuth";
 import type { Env } from "./types";
 
+const amaAccessTokenRequests = new Map<string, Promise<string>>();
+
 export type AmaResourceRef = Record<string, unknown>;
 export interface AmaRuntimeSecretEnvRef {
   name: string;
@@ -732,6 +734,18 @@ export async function deleteAmaScheduledAgentTrigger(env: Env, ownerId: string, 
 // connected AMA (BetterAuth raises ACCOUNT_NOT_FOUND); other failures (e.g. a
 // revoked refresh token, network) propagate unchanged.
 async function userAmaAccessToken(env: Env, ownerId: string): Promise<string> {
+  const requestKey = `${ownerId}:ama`;
+  const existing = amaAccessTokenRequests.get(requestKey);
+  if (existing) return existing;
+
+  const request = resolveUserAmaAccessToken(env, ownerId).finally(() => {
+    amaAccessTokenRequests.delete(requestKey);
+  });
+  amaAccessTokenRequests.set(requestKey, request);
+  return request;
+}
+
+async function resolveUserAmaAccessToken(env: Env, ownerId: string): Promise<string> {
   const auth = createAuth(env);
   let res: { accessToken?: string } | undefined;
   try {

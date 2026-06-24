@@ -41,6 +41,7 @@ function amaProviderPlugins(env: Env): BetterAuthPlugin[] {
           discoveryUrl,
           clientId: env.AMA_OAUTH_CLIENT_ID,
           clientSecret: env.AMA_OAUTH_CLIENT_SECRET,
+          authentication: "basic",
           scopes: ["openid", "profile", "email", "offline_access"],
           pkce: true,
         },
