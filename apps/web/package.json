@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "prebuild": "pnpm --filter agent-kanban build && mkdir -p public/cli && cp ../../packages/cli/dist/standalone.js public/cli/ak-standalone.mjs",
+    "prebuild": "pnpm --filter @agent-kanban/shared build && pnpm --filter agent-kanban build && mkdir -p public/cli && cp ../../packages/cli/dist/standalone.js public/cli/ak-standalone.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "deploy": "vite build && npx wrangler deploy",
