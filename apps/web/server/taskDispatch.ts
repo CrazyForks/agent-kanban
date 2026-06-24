@@ -79,6 +79,9 @@ export async function dispatchTaskToAma(
   // later one tears down the earlier one mid-run. Assign requests claim with
   // takeover so a deliberate re-assign can kick an already-bound task, but
   // even a takeover never interrupts a dispatch that is still in flight.
+  const currentBinding = taskAnnotations(task);
+  const hasActiveRuntimeBinding =
+    Boolean(stringAnnotation(currentBinding, "agentSessionId")) || stringAnnotation(currentBinding, "ama.dispatch.result") === "accepted";
   if (!(await claimTaskDispatch(db, task.id, { takeover: options.takeover === true }))) return task;
   const refreshed = await getTask(db, task.id, ownerId);
   if (!refreshed) return task;
@@ -90,7 +93,7 @@ export async function dispatchTaskToAma(
   // tearing it down first is what frees capacity for its replacement on a
   // fully loaded runner. Teardown clears the dispatch claim, so re-claim.
   const staleBinding = taskAnnotations(task);
-  if (stringAnnotation(staleBinding, "ama.sessionId") || stringAnnotation(staleBinding, "agentSessionId")) {
+  if (hasActiveRuntimeBinding && (stringAnnotation(staleBinding, "ama.sessionId") || stringAnnotation(staleBinding, "agentSessionId"))) {
     task = await releaseTaskRuntimeBinding(db, env, ownerId, task);
     if (!(await claimTaskDispatch(db, task.id))) return task;
   }
@@ -420,9 +423,9 @@ export async function sendTaskRejectToAma(db: D1, env: Env, ownerId: string, tas
   });
 }
 
-// Tears down a task's runtime binding: stops the AMA session, revokes the
-// session secret, closes the AK agent session, and clears the binding
-// annotations so the dispatch sweep can re-dispatch the task later.
+// Tears down a task's active runtime binding: stops the AMA session, revokes
+// the session secret, and closes the AK agent session. The AMA session id stays
+// on the task as a historical pointer so completed tasks can still load events.
 export async function releaseTaskRuntimeBinding(
   db: D1,
   env: Env,
@@ -462,7 +465,6 @@ export async function releaseTaskRuntimeBinding(
     await closeSession(db, akSessionId);
   }
   return await annotateTask(db, task, {
-    "ama.sessionId": null,
     "ama.environmentId": null,
     "ama.dispatch.result": null,
     agentSessionId: null,
@@ -604,8 +606,8 @@ const STALE_PENDING_SESSION_MS = 10 * 60_000;
 // Cron sweep: reconcile AK task state with AMA session state. A session that
 // died (runner crash, lease retries exhausted, stopped outside AK) leaves the
 // task stranded; release it so the dispatch sweep can re-dispatch. Done and
-// cancelled tasks that kept a binding (best-effort cleanup failed during
-// complete/cancel) are torn down here.
+// cancelled tasks that kept an active binding (best-effort cleanup failed
+// during complete/cancel) are torn down here.
 export async function reconcileAmaBoundTasks(db: D1, env: Env): Promise<void> {
   if (!isAmaRuntimeConfigured(env)) return;
   const rows = await db
@@ -614,6 +616,10 @@ export async function reconcileAmaBoundTasks(db: D1, env: Env): Promise<void> {
       JOIN boards b ON t.board_id = b.id
       WHERE t.status IN ('todo', 'in_progress', 'done', 'cancelled')
         AND json_extract(t.metadata, '$.annotations."ama.sessionId"') IS NOT NULL
+        AND (
+          json_extract(t.metadata, '$.annotations."agentSessionId"') IS NOT NULL
+          OR json_extract(t.metadata, '$.annotations."ama.dispatch.result"') = 'accepted'
+        )
     `)
     .all<{ id: string; status: string; owner_id: string }>();
   for (const row of rows.results) {

@@ -71,16 +71,13 @@ test.describe("Task chat runtime events", () => {
     await expect(detailSheet).toBeVisible();
 
     // 8. Click the agent name button inside the detail sheet to open the chat drawer.
-    //    Start listening for the older-page fetch BEFORE the chat mounts: when the latest
-    //    page is short it loads earlier activity on mount; when it overflows it loads on
-    //    scroll-up. Either way the request carries a cursor and order=desc.
-    const olderRequest = page.waitForRequest(
-      (req) => req.url().includes(`/tasks/${taskId}/runtime`) && req.url().includes("cursor=") && req.url().includes("order=desc"),
-      { timeout: 20000 },
-    );
+    //    Session history and live events now load through the task-scoped WebSocket
+    //    URL endpoint; backfill pagination happens over that socket, not HTTP.
+    const sessionWsRequest = page.waitForRequest((req) => req.url().includes(`/tasks/${taskId}/session/ws`), { timeout: 20000 });
     const agentButton = detailSheet.locator("button[type='button']").filter({ hasText: /chat-pg-agent/ });
     await expect(agentButton).toBeVisible();
     await agentButton.click();
+    await sessionWsRequest;
 
     // 9. The chat drawer opens as a second sheet
     const chatSheet = page.locator('[data-slot="sheet-content"]').nth(1);
@@ -97,15 +94,10 @@ test.describe("Task chat runtime events", () => {
     const messages = chatSheet.locator(".aui-assistant-message-root");
     await expect(messages.first()).toBeVisible({ timeout: 15000 });
 
-    // 12. Scrolling to the top reveals the load-earlier sentinel for tall content.
+    // 12. Scrolling remains stable after WS backfill has populated history.
     await viewport.evaluate((el) => {
       el.scrollTop = 0;
     });
-    // The definitive signal that scroll-up loads earlier activity is the older-page fetch
-    // (cursor + order=desc); message count is not a reliable proxy because many runtime
-    // events render as empty blocks.
-    await olderRequest;
-    // The older page resolves and is prepended; the loading indicator clears.
-    await expect(chatSheet.getByText("Loading earlier activity…")).not.toBeVisible({ timeout: 15000 });
+    await expect(messages.first()).toBeVisible({ timeout: 15000 });
   });
 });

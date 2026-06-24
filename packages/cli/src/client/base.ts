@@ -75,8 +75,11 @@ export abstract class ApiClient {
   getTask(id: string) {
     return this.request("GET", `/api/tasks/${id}`);
   }
-  getTaskRuntime(id: string) {
-    return this.request("GET", `/api/tasks/${id}/runtime`);
+  getTaskSession(id: string) {
+    return this.request("GET", `/api/tasks/${id}/session`);
+  }
+  getTaskSessionWs(id: string) {
+    return this.request<{ url: string }>("GET", `/api/tasks/${id}/session/ws`);
   }
   claimTask(id: string) {
     return this.request("POST", `/api/tasks/${id}/claim`);

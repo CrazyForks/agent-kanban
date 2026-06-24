@@ -1006,12 +1006,21 @@ describe("ApiClient method stubs", () => {
     expect(opts.method).toBe("GET");
   });
 
-  it("getTaskRuntime calls GET /api/tasks/:id/runtime", async () => {
+  it("getTaskSession calls GET /api/tasks/:id/session", async () => {
     const c = await makeAgentClient();
-    stubOk({ task_id: "task-12", ama_session_id: "session-1", session: {}, events: [] });
-    await c.getTaskRuntime("task-12");
+    stubOk({ task_id: "task-12", session_id: "session-1", session: {} });
+    await c.getTaskSession("task-12");
     const [url, opts] = lastCall();
-    expect(url).toContain("/api/tasks/task-12/runtime");
+    expect(url).toContain("/api/tasks/task-12/session");
+    expect(opts.method).toBe("GET");
+  });
+
+  it("getTaskSessionWs calls GET /api/tasks/:id/session/ws", async () => {
+    const c = await makeAgentClient();
+    stubOk({ url: "wss://session.test" });
+    await c.getTaskSessionWs("task-12");
+    const [url, opts] = lastCall();
+    expect(url).toContain("/api/tasks/task-12/session/ws");
     expect(opts.method).toBe("GET");
   });
 

@@ -14,23 +14,35 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // ── Mock createClient before importing the command ────────────────────────────
 
 const mockGetTask = vi.fn();
-const mockGetTaskRuntime = vi.fn();
+const mockGetTaskSession = vi.fn();
+const mockGetTaskSessionWs = vi.fn();
 const mockListTasks = vi.fn();
-const mockClient = { getTask: mockGetTask, getTaskRuntime: mockGetTaskRuntime, listTasks: mockListTasks };
+const mockClient = {
+  getTask: mockGetTask,
+  getTaskSession: mockGetTaskSession,
+  getTaskSessionWs: mockGetTaskSessionWs,
+  listTasks: mockListTasks,
+};
 const mockCreateClient = vi.fn(() => Promise.resolve(mockClient));
+const mockReadSessionEvents = vi.fn();
 
 vi.mock("../src/agent/leader.js", () => ({
   createClient: mockCreateClient,
+}));
+
+vi.mock("../src/sessionWs.js", () => ({
+  readSessionEvents: (...args: unknown[]) => mockReadSessionEvents(...args),
 }));
 
 // Silence output helpers — we don't test formatting
 vi.mock("../src/output.js", () => ({
   getOutputFormat: vi.fn(() => "text"),
   output: vi.fn(),
+  formatSessionEvent: vi.fn(() => "event"),
   formatTask: vi.fn(),
   formatTaskList: vi.fn(),
   formatTaskListWide: vi.fn(),
-  formatTaskRuntime: vi.fn(),
+  formatTaskSession: vi.fn(() => "session"),
   formatBoard: vi.fn(),
   formatBoardList: vi.fn(),
   formatAgent: vi.fn(),
@@ -60,7 +72,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockListTasks.mockResolvedValue([]);
   mockGetTask.mockResolvedValue({ id: "task-1", title: "Test task" });
-  mockGetTaskRuntime.mockResolvedValue({ task_id: "task-1", ama_session_id: "session-1", session: { status: "idle" }, events: [] });
+  mockGetTaskSession.mockResolvedValue({ task_id: "task-1", session_id: "session-1", session: { state: "idle" } });
+  mockGetTaskSessionWs.mockResolvedValue({ url: "wss://session.test" });
+  mockReadSessionEvents.mockResolvedValue([]);
 
   exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
     throw new Error("process.exit called");
@@ -146,17 +160,44 @@ describe("get task — single-task fetch by ID", () => {
     expect(mockListTasks).not.toHaveBeenCalled();
   });
 
-  it("calls client.getTaskRuntime instead of client.getTask when --session is provided", async () => {
+  it("calls client.getTaskSession instead of client.getTask when --session is provided", async () => {
     const program = makeProgram();
     await program.parseAsync(["get", "task", "task-42", "--session"], { from: "user" });
-    expect(mockGetTaskRuntime).toHaveBeenCalledWith("task-42");
+    expect(mockGetTaskSession).toHaveBeenCalledWith("task-42");
+    expect(mockGetTaskSessionWs).toHaveBeenCalledWith("task-42");
     expect(mockGetTask).not.toHaveBeenCalled();
   });
 
   it("requires a task id when --session is provided", async () => {
     const program = makeProgram();
     await expect(program.parseAsync(["get", "task", "--session"], { from: "user" })).rejects.toThrow("process.exit called");
-    expect(errorSpy).toHaveBeenCalledWith("Usage: ak get task <id> --session");
+    expect(errorSpy).toHaveBeenCalledWith("Usage: ak get session <task-id>");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+});
+
+describe("get session", () => {
+  it("loads session metadata and events for a task", async () => {
+    const program = makeProgram();
+    await program.parseAsync(["get", "session", "task-42"], { from: "user" });
+    expect(mockGetTaskSession).toHaveBeenCalledWith("task-42");
+    expect(mockGetTaskSessionWs).toHaveBeenCalledWith("task-42");
+    expect(mockReadSessionEvents).toHaveBeenCalledWith(
+      "wss://session.test",
+      expect.objectContaining({ all: undefined, watch: undefined, filter: "all" }),
+    );
+  });
+
+  it("passes --watch, --all, and --tool to the WebSocket event reader", async () => {
+    const program = makeProgram();
+    await program.parseAsync(["get", "session", "task-42", "--watch", "--all", "--tool"], { from: "user" });
+    expect(mockReadSessionEvents).toHaveBeenCalledWith("wss://session.test", expect.objectContaining({ all: true, watch: true, filter: "tool" }));
+  });
+
+  it("rejects combining --tool and --assistant", async () => {
+    const program = makeProgram();
+    await expect(program.parseAsync(["get", "session", "task-42", "--tool", "--assistant"], { from: "user" })).rejects.toThrow("process.exit called");
+    expect(errorSpy).toHaveBeenCalledWith("--tool and --assistant cannot be used together");
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });

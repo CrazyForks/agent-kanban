@@ -2573,9 +2573,10 @@ describe("routes", () => {
       const cancelRes = await apiRequest("POST", `/api/tasks/${cancelTask.id}/cancel`, {}, leaderJwt);
       expect(cancelRes.status).toBe(200);
       const cancelled = (await cancelRes.json()) as any;
-      // cancel does best-effort teardown: binding annotations are cleared, no ama.lastCommand written
+      // cancel does best-effort teardown: active binding annotations are cleared,
+      // no ama.lastCommand written, and AMA session id remains queryable.
       expect(cancelled.status).toBe("cancelled");
-      expect(cancelled.metadata.annotations["ama.sessionId"]).toBeNull();
+      expect(cancelled.metadata.annotations["ama.sessionId"]).toBe("session_123");
       expect(cancelled.metadata.annotations["ama.dispatch.result"]).toBeNull();
 
       expect(runtimeMessages).toEqual([
@@ -2712,7 +2713,114 @@ describe("routes", () => {
     }
   });
 
-  it("GET /api/tasks/:id/runtime/socket returns a browser socket URL for a bound AMA session", async () => {
+  it("GET /api/tasks/:id/session returns session metadata for a bound AMA session", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth2/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = reqUrl(input);
+      if (url === "https://auth.test/oauth2/token") return jsonResponse({ access_token: "user-token" });
+      if (url === "https://ama.test/api/v1/sessions/session_runtime_123") {
+        return jsonResponse({ id: "session_runtime_123", state: "stopped", title: "Finished task" });
+      }
+      return jsonResponse({ error: "unexpected", url }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { createTask } = await import("../apps/web/server/taskRepo");
+      const task = await createTask(env.DB, userId, {
+        title: "AMA session metadata",
+        board_id: boardId,
+        metadata: { annotations: { "ama.sessionId": "session_runtime_123", "ama.projectId": "project_runtime_123" } },
+      });
+      const res = await apiRequest("GET", `/api/tasks/${task.id}/session`, undefined, apiKey);
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toMatchObject({
+        task_id: task.id,
+        session_id: "session_runtime_123",
+        project_id: "project_runtime_123",
+        session: { id: "session_runtime_123", state: "stopped" },
+      });
+    } finally {
+      Object.assign(env, previousAma);
+    }
+  });
+
+  it("GET /api/tasks/:id/session resolves a historical AMA session from the task action session", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth2/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    });
+
+    const akSessionId = "ak_session_history_123";
+    const amaSessionId = "session_history_123";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = reqUrl(input);
+      if (url === "https://auth.test/oauth2/token") return jsonResponse({ access_token: "user-token" });
+      if (url === `https://ama.test/api/v1/sessions/${amaSessionId}`) {
+        return jsonResponse({ id: amaSessionId, state: "stopped", title: "Finished task" });
+      }
+      return jsonResponse({ error: "unexpected", url }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { createTask, addTaskAction } = await import("../apps/web/server/taskRepo");
+      const task = await createTask(env.DB, userId, {
+        title: "Historical AMA session metadata",
+        board_id: boardId,
+        assigned_to: agentId,
+        metadata: {
+          annotations: {
+            "ama.sessionId": null,
+            "ama.projectId": "project_runtime_123",
+            "ama.runtime": "claude-code",
+            agentSessionId: null,
+          },
+        },
+        skipRuntimeAvailability: true,
+      });
+      await addTaskAction(env.DB, task.id, "agent:worker", agentId, "claimed", null, akSessionId);
+      await env.DB.prepare(
+        `INSERT INTO ama_agent_sessions (id, owner_id, agent_id, ama_session_id, status, public_key, delegation_proof, created_at)
+         VALUES (?, ?, ?, ?, 'closed', ?, ?, ?)`,
+      )
+        .bind(akSessionId, userId, agentId, amaSessionId, "session-public-key", "delegation-proof", new Date().toISOString())
+        .run();
+
+      const res = await apiRequest("GET", `/api/tasks/${task.id}/session`, undefined, apiKey);
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toMatchObject({
+        task_id: task.id,
+        session_id: amaSessionId,
+        ak_session_id: akSessionId,
+        project_id: "project_runtime_123",
+        session: { id: amaSessionId, state: "stopped" },
+      });
+    } finally {
+      Object.assign(env, previousAma);
+    }
+  });
+
+  it("GET /api/tasks/:id/session/ws returns a browser socket URL for a bound AMA session", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
       AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
@@ -2733,7 +2841,7 @@ describe("routes", () => {
         board_id: boardId,
         metadata: { annotations: { "ama.sessionId": "session_runtime_123", "ama.projectId": "project_runtime_123" } },
       });
-      const res = await apiRequest("GET", `/api/tasks/${task.id}/runtime/socket`, undefined, apiKey);
+      const res = await apiRequest("GET", `/api/tasks/${task.id}/session/ws`, undefined, apiKey);
       expect(res.status).toBe(200);
       const body = (await res.json()) as { url: string };
       const url = new URL(body.url);
@@ -2746,10 +2854,10 @@ describe("routes", () => {
     }
   });
 
-  it("GET /api/tasks/:id/runtime/socket returns 404 when a task has no AMA session binding", async () => {
+  it("GET /api/tasks/:id/session/ws returns 404 when a task has no AMA session binding", async () => {
     const { createTask } = await import("../apps/web/server/taskRepo");
     const task = await createTask(env.DB, userId, { title: "No AMA runtime", board_id: boardId });
-    const res = await apiRequest("GET", `/api/tasks/${task.id}/runtime/socket`, undefined, apiKey);
+    const res = await apiRequest("GET", `/api/tasks/${task.id}/session/ws`, undefined, apiKey);
     expect(res.status).toBe(404);
     await expect(res.json()).resolves.toMatchObject({
       error: { message: "Task is not bound to a session" },

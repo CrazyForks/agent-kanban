@@ -49,7 +49,8 @@ export const api = {
       return request<any[]>("GET", `/tasks${qs}`);
     },
     get: (id: string) => request<any>("GET", `/tasks/${id}`),
-    runtimeSocket: (id: string) => request<{ url: string }>("GET", `/tasks/${id}/runtime/socket`),
+    session: (id: string) => request<any>("GET", `/tasks/${id}/session`),
+    sessionWs: (id: string) => request<{ url: string }>("GET", `/tasks/${id}/session/ws`),
     create: (input: Record<string, unknown>) => request<any>("POST", "/tasks", input),
     update: (id: string, body: Record<string, unknown>) => request<any>("PATCH", `/tasks/${id}`, body),
     delete: (id: string) => request<void>("DELETE", `/tasks/${id}`),

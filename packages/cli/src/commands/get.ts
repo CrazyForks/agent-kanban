@@ -12,16 +12,18 @@ import {
   formatModelList,
   formatRepository,
   formatRepositoryList,
+  formatSessionEvent,
   formatSubagent,
   formatSubagentList,
   formatTask,
   formatTaskList,
   formatTaskListWide,
   formatTaskNotes,
-  formatTaskRuntime,
+  formatTaskSession,
   getOutputFormat,
   output,
 } from "../output.js";
+import { readSessionEvents, type SessionEventFilter } from "../sessionWs.js";
 
 type AgentRef = {
   id: string;
@@ -56,6 +58,41 @@ function formatAgentVersions(data: { username: string; versions: AgentRef[] }): 
 
 function isNotFound(error: unknown): boolean {
   return typeof error === "object" && error !== null && "status" in error && error.status === 404;
+}
+
+async function showTaskSession(client: any, taskId: string, opts: { watch?: boolean; all?: boolean; tool?: boolean; assistant?: boolean }) {
+  if (opts.tool && opts.assistant) {
+    console.error("--tool and --assistant cannot be used together");
+    process.exit(1);
+  }
+
+  const mode: SessionEventFilter = opts.tool ? "tool" : opts.assistant ? "assistant" : "all";
+  const { url } = await client.getTaskSessionWs(taskId);
+
+  if (!opts.tool && !opts.assistant) {
+    const session = await client.getTaskSession(taskId);
+    console.log(formatTaskSession(session));
+    console.log(opts.all ? "\nEvents:" : "\nRecent events:");
+  }
+
+  let printed = false;
+  await readSessionEvents(url, {
+    all: opts.all,
+    watch: opts.watch,
+    filter: mode,
+    onEvent: (event) => {
+      printed = true;
+      const line = formatSessionEvent(event, mode);
+      if (line) console.log(line);
+    },
+  });
+
+  if (!printed && !opts.tool && !opts.assistant) {
+    console.log("  none");
+  }
+  if (!opts.watch && !process.env.VITEST_WORKER_ID) {
+    process.exit(0);
+  }
 }
 
 async function getAgentOrVersions(client: any, id: string): Promise<{ value: any; formatter: (value: any) => string }> {
@@ -119,15 +156,14 @@ export function registerGetCommand(program: Command) {
       const fmt = getOutputFormat(opts.output);
       if (id) {
         if (opts.session) {
-          const runtime = await client.getTaskRuntime(id);
-          output(runtime, fmt, formatTaskRuntime, { kind: "taskRuntime" });
+          await showTaskSession(client, id, opts);
         } else {
           const task = await client.getTask(id);
           output(task, fmt, formatTask, { kind: "task" });
         }
       } else {
         if (opts.session) {
-          console.error("Usage: ak get task <id> --session");
+          console.error("Usage: ak get session <task-id>");
           process.exit(1);
         }
         if (!opts.board) {
@@ -141,6 +177,18 @@ export function registerGetCommand(program: Command) {
         const tasks = await client.listTasks(params);
         output(tasks, fmt, formatTaskList, { wideFormatter: formatTaskListWide, kind: "task" });
       }
+    });
+
+  getCmd
+    .command("session <taskId>")
+    .description("Show a task's session state and events")
+    .option("--watch", "Keep streaming new events")
+    .option("--all", "Backfill all historical events")
+    .option("--tool", "Only show tool calls")
+    .option("--assistant", "Only show agent text output")
+    .action(async (taskId: string, opts) => {
+      const client = await createClient();
+      await showTaskSession(client, taskId, opts);
     });
 
   getCmd

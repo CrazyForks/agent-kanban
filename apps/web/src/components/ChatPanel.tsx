@@ -83,9 +83,14 @@ function AmaSessionChat({ taskId, taskDone }: { taskId: string; taskDone: boolea
 
     const connect = async () => {
       try {
-        const { url } = await api.tasks.runtimeSocket(taskId);
+        const { url } = await api.tasks.sessionWs(taskId);
         if (!active) return;
         ws = new WebSocket(url);
+        ws.onopen = () => {
+          // Request history explicitly; stopped sessions may not push a backfill
+          // frame until the client asks for one.
+          ws?.send(JSON.stringify({ type: "backfill", order: "asc", limit: 200 }));
+        };
         ws.onmessage = (event) => {
           try {
             const frame = JSON.parse(typeof event.data === "string" ? event.data : "");

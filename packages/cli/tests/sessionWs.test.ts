@@ -1,0 +1,94 @@
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { readSessionEvents } from "../src/sessionWs.js";
+
+let sockets: FakeWebSocket[] = [];
+
+class FakeWebSocket {
+  url: string;
+  onopen: (() => void) | null = null;
+  onmessage: ((message: { data: string }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  sent: any[] = [];
+  closed = false;
+
+  constructor(url: string) {
+    this.url = url;
+    sockets.push(this);
+    queueMicrotask(() => this.onopen?.());
+  }
+
+  send(data: string) {
+    this.sent.push(JSON.parse(data));
+  }
+
+  close() {
+    this.closed = true;
+    this.onclose?.();
+  }
+
+  emit(frame: unknown) {
+    this.onmessage?.({ data: JSON.stringify(frame) });
+  }
+}
+
+beforeEach(() => {
+  sockets = [];
+  vi.stubGlobal("WebSocket", FakeWebSocket);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+function event(sequence: number, type = "message_end", payload: Record<string, unknown> = {}) {
+  return { id: `event-${sequence}`, sequence, type, payload };
+}
+
+it("requests recent events over WebSocket by default", async () => {
+  const promise = readSessionEvents("wss://session.test");
+  await vi.waitFor(() => expect(sockets[0]?.sent[0]).toMatchObject({ type: "backfill", order: "desc", limit: 20 }));
+  sockets[0].emit({ type: "backfill", events: [event(3), event(2)], hasMore: false });
+  await expect(promise).resolves.toEqual([expect.objectContaining({ sequence: 2 }), expect.objectContaining({ sequence: 3 })]);
+});
+
+it("follows backfill pages when --all is enabled", async () => {
+  const promise = readSessionEvents("wss://session.test", { all: true });
+  await vi.waitFor(() => expect(sockets[0]?.sent[0]).toMatchObject({ type: "backfill", order: "asc", limit: 200 }));
+  sockets[0].emit({ type: "backfill", events: [event(1)], hasMore: true, nextCursor: 1 });
+  await vi.waitFor(() => expect(sockets[0]?.sent[1]).toMatchObject({ type: "backfill", order: "asc", limit: 200, cursor: 1 }));
+  sockets[0].emit({ type: "backfill", events: [event(2)], hasMore: false });
+  await expect(promise).resolves.toEqual([expect.objectContaining({ sequence: 1 }), expect.objectContaining({ sequence: 2 })]);
+  expect(sockets[0].closed).toBe(true);
+});
+
+it("accepts string cursors when following backfill pages", async () => {
+  const promise = readSessionEvents("wss://session.test", { all: true });
+  await vi.waitFor(() => expect(sockets[0]?.sent[0]).toMatchObject({ type: "backfill", order: "asc", limit: 200 }));
+  sockets[0].emit({ type: "backfill", events: [event(1)], hasMore: true, nextCursor: "cursor-1" });
+  await vi.waitFor(() => expect(sockets[0]?.sent[1]).toMatchObject({ type: "backfill", order: "asc", limit: 200, cursor: "cursor-1" }));
+  sockets[0].emit({ type: "backfill", events: [event(2)], hasMore: false });
+  await expect(promise).resolves.toEqual([expect.objectContaining({ sequence: 1 }), expect.objectContaining({ sequence: 2 })]);
+});
+
+it("filters assistant text events", async () => {
+  const promise = readSessionEvents("wss://session.test", { filter: "assistant" });
+  await vi.waitFor(() => expect(sockets[0]?.sent[0]).toBeDefined());
+  sockets[0].emit({
+    type: "backfill",
+    events: [event(1, "message_end", { message: { content: [{ text: "hello" }] } }), event(2, "tool_execution_start", { toolName: "bash" })],
+    hasMore: false,
+  });
+  await expect(promise).resolves.toEqual([expect.objectContaining({ sequence: 1 })]);
+});
+
+it("filters tool events", async () => {
+  const promise = readSessionEvents("wss://session.test", { filter: "tool" });
+  await vi.waitFor(() => expect(sockets[0]?.sent[0]).toBeDefined());
+  sockets[0].emit({
+    type: "backfill",
+    events: [event(1, "message_end", { message: { content: [{ text: "hello" }] } }), event(2, "tool_execution_start", { toolName: "bash" })],
+    hasMore: false,
+  });
+  await expect(promise).resolves.toEqual([expect.objectContaining({ sequence: 2 })]);
+});

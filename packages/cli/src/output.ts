@@ -237,6 +237,75 @@ export function formatTaskRuntime(runtime: any): string {
   return lines.join("\n");
 }
 
+export function formatTaskSession(data: any): string {
+  const session = data.session ?? {};
+  const lines: string[] = [];
+  lines.push(`Task session`);
+  lines.push(`  Task:        ${data.task_id}`);
+  lines.push(`  Session:     ${data.session_id}`);
+  if (data.project_id) lines.push(`  Project:     ${data.project_id}`);
+  lines.push(
+    `  State:       ${session.state ?? session.status ?? "unknown"}${(session.stateReason ?? session.statusReason) ? ` (${session.stateReason ?? session.statusReason})` : ""}`,
+  );
+  if (session.title) lines.push(`  Title:       ${session.title}`);
+  if (session.startedAt) lines.push(`  Started:     ${session.startedAt}`);
+  if (session.stoppedAt) lines.push(`  Stopped:     ${session.stoppedAt}`);
+  return lines.join("\n");
+}
+
+function sessionEventPayload(event: any): Record<string, any> {
+  return event?.payload && typeof event.payload === "object" && !Array.isArray(event.payload) ? event.payload : {};
+}
+
+function sessionEventAssistantText(event: any): string {
+  const payload = sessionEventPayload(event);
+  const embedded = payload.event && typeof payload.event === "object" ? payload.event : null;
+  if (embedded?.type === "message" && Array.isArray(embedded.blocks)) {
+    return embedded.blocks
+      .map((block: any) => (block?.type === "text" && typeof block.text === "string" ? block.text : ""))
+      .filter(Boolean)
+      .join("");
+  }
+  if (event.type === "message_end") {
+    return sessionMessageContentText(payload.message?.content);
+  }
+  if (event.type === "runtime.output" && typeof payload.content === "string") return payload.content;
+  if (typeof payload.text === "string") return payload.text;
+  if (typeof payload.message === "string") return payload.message;
+  return "";
+}
+
+function sessionMessageContentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
+    .filter(Boolean)
+    .join("");
+}
+
+function sessionEventToolSummary(event: any): string {
+  const payload = sessionEventPayload(event);
+  const embedded = payload.event && typeof payload.event === "object" ? payload.event : null;
+  const block = embedded?.block && typeof embedded.block === "object" ? embedded.block : null;
+  if (block?.type === "tool_use") return `${block.name ?? "tool"} ${JSON.stringify(block.input ?? {})}`;
+  if (block?.type === "tool_result") return `result ${block.error ? "error " : ""}${block.output ?? ""}`.trimEnd();
+  const name = payload.toolName ?? payload.name ?? payload.id ?? payload.toolCallId ?? "tool";
+  if (event.type === "tool_execution_end") return `${name} done${payload.isError ? " error" : ""}`;
+  return `${name}`;
+}
+
+export function formatSessionEvent(event: any, mode: "all" | "tool" | "assistant" = "all"): string {
+  if (mode === "assistant") return sessionEventAssistantText(event);
+  const sequence = event.sequence != null ? `#${event.sequence}`.padEnd(8) : "";
+  const type = String(event.type ?? "event").padEnd(24);
+  const role = event.role ? ` ${event.role}` : "";
+  if (mode === "tool") return `${sequence}${type}${role}  ${sessionEventToolSummary(event)}`.trimEnd();
+  const text = sessionEventAssistantText(event);
+  const summary = text ? `  ${text.replace(/\s+/g, " ").slice(0, 160)}` : "";
+  return `${sequence}${type}${role}${summary}`.trimEnd();
+}
+
 export function formatTaskNotes(notes: any[]): string {
   if (notes.length === 0) return "No notes.";
   return notes

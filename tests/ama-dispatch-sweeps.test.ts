@@ -693,6 +693,7 @@ describe("reconcileAmaBoundTasks", () => {
         annotations: {
           "ama.sessionId": sessionId,
           "ama.projectId": "project_123",
+          "ama.dispatch.result": "accepted",
         },
       },
     });
@@ -731,7 +732,7 @@ describe("reconcileAmaBoundTasks", () => {
     const row = await db.prepare("SELECT status, metadata FROM tasks WHERE id = ?").bind(task.id).first<{ status: string; metadata: string }>();
     expect(row!.status).toBe("todo");
     const meta = JSON.parse(row!.metadata ?? "{}");
-    expect(meta?.annotations?.["ama.sessionId"]).toBeNull();
+    expect(meta?.annotations?.["ama.sessionId"]).toBe(sessionId);
     expect(meta?.annotations?.["ama.dispatch.result"]).toBeNull();
   });
 
@@ -788,7 +789,7 @@ describe("reconcileAmaBoundTasks", () => {
 
     const row = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(task.id).first<{ metadata: string }>();
     const meta = JSON.parse(row!.metadata ?? "{}");
-    expect(meta?.annotations?.["ama.sessionId"]).toBeNull();
+    expect(meta?.annotations?.["ama.sessionId"]).toBe(sessionId);
     expect(stops.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -851,7 +852,7 @@ describe("reconcileAmaBoundTasks", () => {
     const row = await db.prepare("SELECT status, metadata FROM tasks WHERE id = ?").bind(task.id).first<{ status: string; metadata: string }>();
     expect(row!.status).toBe("todo");
     const meta = JSON.parse(row!.metadata ?? "{}");
-    expect(meta?.annotations?.["ama.sessionId"]).toBeNull();
+    expect(meta?.annotations?.["ama.sessionId"]).toBe(sessionId);
   });
 
   it("releases binding on a todo+assigned task whose AMA session is 'pending' and updated_at is older than 10 minutes", async () => {
@@ -882,8 +883,9 @@ describe("reconcileAmaBoundTasks", () => {
 
     const row = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(task.id).first<{ metadata: string }>();
     const meta = JSON.parse(row!.metadata ?? "{}");
-    // Binding annotations must be cleared so the dispatch sweep can re-dispatch
-    expect(meta?.annotations?.["ama.sessionId"]).toBeNull();
+    // Active binding annotations must be cleared so the dispatch sweep can re-dispatch.
+    // The AMA session id remains as a historical pointer for session event lookup.
+    expect(meta?.annotations?.["ama.sessionId"]).toBe(sessionId);
     expect(meta?.annotations?.["ama.dispatch.result"]).toBeNull();
   });
 
@@ -947,7 +949,7 @@ describe("reconcileAmaBoundTasks", () => {
     const row = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(task.id).first<{ metadata: string }>();
     const meta = JSON.parse(row!.metadata ?? "{}");
     // Binding should be cleared
-    expect(meta?.annotations?.["ama.sessionId"]).toBeNull();
+    expect(meta?.annotations?.["ama.sessionId"]).toBe(sessionId);
     expect(stops.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -1171,7 +1173,7 @@ describe("detectAndReleaseStaleAll with AMA binding", () => {
     const row = await db.prepare("SELECT status, metadata FROM tasks WHERE id = ?").bind(task.id).first<{ status: string; metadata: string }>();
     expect(row!.status).toBe("todo");
     const meta = JSON.parse(row!.metadata ?? "{}");
-    expect(meta?.annotations?.["ama.sessionId"]).toBeNull();
+    expect(meta?.annotations?.["ama.sessionId"]).toBe(sessionId);
     expect(stops.length).toBeGreaterThanOrEqual(1);
   });
 });
@@ -1277,8 +1279,8 @@ describe("POST /api/tasks/:id/reject AMA 409 handling", () => {
     // Task released back to todo, assigned_to kept
     expect(body.status).toBe("todo");
     expect(body.assigned_to).toBe(agent.id);
-    // Binding annotations cleared
-    expect(body.metadata?.annotations?.["ama.sessionId"]).toBeNull();
+    // Active binding annotations cleared; AMA session id remains queryable for history.
+    expect(body.metadata?.annotations?.["ama.sessionId"]).toBe(amaSessionId);
     expect(body.metadata?.annotations?.["ama.dispatch.result"]).toBeNull();
 
     // Verify task_action: actor should be machine/system (system-initiated recovery)
@@ -2816,6 +2818,7 @@ describe("re-dispatch backoff (Feature B)", () => {
         annotations: {
           "ama.sessionId": sessionId,
           "ama.projectId": "project_123",
+          "ama.dispatch.result": "accepted",
           "ama.dispatch.attempts": 3,
           "ama.dispatch.nextRetryAt": new Date(Date.now() + 60_000).toISOString(),
         },

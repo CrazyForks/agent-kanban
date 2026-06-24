@@ -29,7 +29,7 @@ import {
   updateAgent,
   upsertLatestAgent,
 } from "./agentRepo";
-import { closeSession, createSession, listSessions, reopenSession, updateSessionUsage } from "./agentSessionRepo";
+import { closeSession, createSession, getAmaAgentSession, listSessions, reopenSession, updateSessionUsage } from "./agentSessionRepo";
 import {
   createAmaCloudSandboxEnvironment,
   ensureAmaOwnerIntegration,
@@ -1334,21 +1334,45 @@ api.get("/api/tasks/:id", async (c) => {
   return c.json(task);
 });
 
-// The token-bearing AMA browser-socket URL the chat connects to directly: live
-// events pushed over one WebSocket, no poll loop. The token is the caller's own
-// AMA access token and the route is owner-scoped, so it only ever hands a user
-// their own session socket.
-api.get("/api/tasks/:id/runtime/socket", async (c) => {
-  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
-  if (!task) throw new HTTPException(404, { message: "Task not found" });
+async function taskAmaSessionBinding(db: D1, task: Task): Promise<{ sessionId: string; projectId?: string; akSessionId?: string }> {
   const annotations = task.metadata?.annotations;
   const taskAnnotations =
     annotations && typeof annotations === "object" && !Array.isArray(annotations) ? (annotations as Record<string, unknown>) : {};
   const sessionId = taskAnnotations["ama.sessionId"];
+  const projectId = typeof taskAnnotations["ama.projectId"] === "string" ? taskAnnotations["ama.projectId"] : undefined;
   if (typeof sessionId !== "string" || !sessionId) {
+    const annotatedAkSessionId = taskAnnotations.agentSessionId;
+    const activeSessionId = (task as Task & { active_session_id?: unknown }).active_session_id;
+    const akSessionId =
+      typeof annotatedAkSessionId === "string" && annotatedAkSessionId
+        ? annotatedAkSessionId
+        : typeof activeSessionId === "string" && activeSessionId
+          ? activeSessionId
+          : null;
+    if (akSessionId) {
+      const akSession = await getAmaAgentSession(db, akSessionId);
+      if (akSession?.ama_session_id) return { sessionId: akSession.ama_session_id, projectId, akSessionId };
+    }
     throw new HTTPException(404, { message: "Task is not bound to a session" });
   }
-  const projectId = typeof taskAnnotations["ama.projectId"] === "string" ? taskAnnotations["ama.projectId"] : undefined;
+  return { sessionId, projectId };
+}
+
+api.get("/api/tasks/:id/session", async (c) => {
+  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (!task) throw new HTTPException(404, { message: "Task not found" });
+  const { sessionId, projectId, akSessionId } = await taskAmaSessionBinding(c.env.DB, task);
+  const session = await readAmaSession(c.env, c.get("ownerId"), sessionId, projectId);
+  if (!session) throw new HTTPException(404, { message: "Session not found" });
+  return c.json({ task_id: task.id, session_id: sessionId, project_id: projectId ?? null, ak_session_id: akSessionId ?? null, session });
+});
+
+// The token-bearing AMA browser-socket URL the chat and CLI connect to directly:
+// history backfill and live events always flow over this WebSocket.
+api.get("/api/tasks/:id/session/ws", async (c) => {
+  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (!task) throw new HTTPException(404, { message: "Task not found" });
+  const { sessionId, projectId } = await taskAmaSessionBinding(c.env.DB, task);
   const url = await getAmaSessionSocketUrl(c.env, c.get("ownerId"), sessionId, projectId);
   return c.json({ url });
 });

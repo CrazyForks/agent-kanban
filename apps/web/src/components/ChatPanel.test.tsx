@@ -6,12 +6,12 @@ import { ChatPanel } from "./ChatPanel";
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
-const runtimeSocketMock = vi.fn();
+const sessionWsMock = vi.fn();
 
 vi.mock("../lib/api", () => ({
   api: {
     tasks: {
-      runtimeSocket: (...args: unknown[]) => runtimeSocketMock(...args),
+      sessionWs: (...args: unknown[]) => sessionWsMock(...args),
     },
   },
 }));
@@ -39,6 +39,7 @@ class FakeWebSocket {
   static CLOSED = 3;
 
   url: string;
+  onopen: (() => void) | null = null;
   onmessage: ((ev: { data: string }) => void) | null = null;
   onclose: (() => void) | null = null;
   onerror: ((ev: unknown) => void) | null = null;
@@ -48,6 +49,7 @@ class FakeWebSocket {
   constructor(url: string) {
     this.url = url;
     lastWebSocket = this;
+    queueMicrotask(() => this.onopen?.());
   }
 
   send(data: string) {
@@ -91,9 +93,9 @@ function renderPanel(props: Partial<React.ComponentProps<typeof ChatPanel>> = {}
 }
 
 // Waits for the FakeWebSocket to be constructed (i.e., for the async connect()
-// in AmaSessionChat to resolve the runtimeSocket promise and call `new WebSocket`).
+// in AmaSessionChat to resolve the sessionWs promise and call `new WebSocket`).
 async function waitForWebSocket(): Promise<FakeWebSocket> {
-  // Flush microtasks so runtimeSocket's resolved promise runs.
+  // Flush microtasks so sessionWs's resolved promise runs.
   await act(async () => {
     await Promise.resolve();
   });
@@ -103,7 +105,7 @@ async function waitForWebSocket(): Promise<FakeWebSocket> {
       await Promise.resolve();
     });
   }
-  if (!lastWebSocket) throw new Error("FakeWebSocket was never constructed — runtimeSocket may not have resolved");
+  if (!lastWebSocket) throw new Error("FakeWebSocket was never constructed — sessionWs may not have resolved");
   return lastWebSocket;
 }
 
@@ -123,7 +125,7 @@ describe("ChatPanel", () => {
     lastWebSocket = null;
 
     // Default: socket url for AMA branch.
-    runtimeSocketMock.mockResolvedValue({ url: "wss://test/socket" });
+    sessionWsMock.mockResolvedValue({ url: "wss://test/socket" });
 
     // Install the fake WebSocket globally so source code that does
     // `new WebSocket(url)` uses the fake instead of the real browser API.
@@ -137,10 +139,10 @@ describe("ChatPanel", () => {
       expect(screen.getByText("No agent assigned. Chat is available when an agent is working on this task.")).toBeInTheDocument();
     });
 
-    it("does not call api.tasks.runtimeSocket", () => {
+    it("does not call api.tasks.sessionWs", () => {
       renderPanel({ agentId: null });
 
-      expect(runtimeSocketMock).not.toHaveBeenCalled();
+      expect(sessionWsMock).not.toHaveBeenCalled();
     });
   });
 
@@ -154,12 +156,12 @@ describe("ChatPanel", () => {
       expect(screen.getByTestId("ama-runtime-provider")).toBeInTheDocument();
     });
 
-    it("calls api.tasks.runtimeSocket with the taskId", async () => {
+    it("calls api.tasks.sessionWs with the taskId", async () => {
       renderPanel({ amaSessionId: "session_x" });
 
       await deliverBackfill();
 
-      expect(runtimeSocketMock).toHaveBeenCalledWith(TASK_ID);
+      expect(sessionWsMock).toHaveBeenCalledWith(TASK_ID);
     });
 
     it("does not render the relay provider", async () => {
@@ -184,10 +186,10 @@ describe("ChatPanel", () => {
       expect(screen.getByTestId("relay-runtime-provider")).toHaveAttribute("data-session-id", "relay_x");
     });
 
-    it("does not call api.tasks.runtimeSocket", () => {
+    it("does not call api.tasks.sessionWs", () => {
       renderPanel({ amaSessionId: null, relaySessionId: "relay_x" });
 
-      expect(runtimeSocketMock).not.toHaveBeenCalled();
+      expect(sessionWsMock).not.toHaveBeenCalled();
     });
 
     it("does not render the AMA provider", () => {
@@ -214,16 +216,16 @@ describe("ChatPanel", () => {
 
   describe("AmaSessionChat internal states", () => {
     it("shows loading state before any backfill frame arrives", () => {
-      // Hold runtimeSocket so the WS is never constructed.
-      runtimeSocketMock.mockReturnValue(new Promise(() => {}));
+      // Hold sessionWs so the WS is never constructed.
+      sessionWsMock.mockReturnValue(new Promise(() => {}));
 
       renderPanel({ amaSessionId: "session_x" });
 
       expect(screen.getByText("Loading runtime history...")).toBeInTheDocument();
     });
 
-    it("shows error state when api.tasks.runtimeSocket rejects", async () => {
-      runtimeSocketMock.mockRejectedValue(new Error("network error"));
+    it("shows error state when api.tasks.sessionWs rejects", async () => {
+      sessionWsMock.mockRejectedValue(new Error("network error"));
 
       renderPanel({ amaSessionId: "session_x" });
 
@@ -238,20 +240,20 @@ describe("ChatPanel", () => {
       expect(screen.getByTestId("ama-runtime-provider")).toBeInTheDocument();
     });
 
-    it("calls api.tasks.runtimeSocket for a not-done AMA task", async () => {
+    it("calls api.tasks.sessionWs for a not-done AMA task", async () => {
       renderPanel({ amaSessionId: "session_x", taskDone: false });
 
       await deliverBackfill();
 
-      expect(runtimeSocketMock).toHaveBeenCalledWith(TASK_ID);
+      expect(sessionWsMock).toHaveBeenCalledWith(TASK_ID);
     });
 
-    it("calls api.tasks.runtimeSocket for a done AMA task (history view)", async () => {
+    it("calls api.tasks.sessionWs for a done AMA task (history view)", async () => {
       renderPanel({ amaSessionId: "session_x", taskDone: true });
 
       await deliverBackfill();
 
-      expect(runtimeSocketMock).toHaveBeenCalledWith(TASK_ID);
+      expect(sessionWsMock).toHaveBeenCalledWith(TASK_ID);
     });
 
     // ── Backfill rendering ────────────────────────────────────────────────────
@@ -269,28 +271,29 @@ describe("ChatPanel", () => {
 
       // Wait for WS to be constructed then deliver a paged backfill.
       await act(async () => {
-        // Allow runtimeSocket promise to resolve and WS to be created.
+        // Allow sessionWs promise to resolve and WS to be created.
         await Promise.resolve();
       });
 
       await deliverBackfill([makeEvent(1), makeEvent(2)], true, 2);
 
       // The component should have sent a backfill request for the next page.
-      expect(lastWebSocket!.sends.length).toBeGreaterThanOrEqual(1);
-      const sentFrame = JSON.parse(lastWebSocket!.sends[0]);
+      expect(lastWebSocket!.sends.length).toBeGreaterThanOrEqual(2);
+      const sentFrame = JSON.parse(lastWebSocket!.sends[1]);
       expect(sentFrame.type).toBe("backfill");
       expect(sentFrame.cursor).toBe(2);
     });
 
-    it("does not send a next-page request when hasMore=false", async () => {
+    it("sends only the initial backfill request when hasMore=false", async () => {
       renderPanel({ amaSessionId: "session_x" });
 
       await deliverBackfill([makeEvent(1)], false, null);
 
-      expect(lastWebSocket!.sends.length).toBe(0);
+      expect(lastWebSocket!.sends.length).toBe(1);
+      expect(JSON.parse(lastWebSocket!.sends[0])).toMatchObject({ type: "backfill", order: "asc", limit: 200 });
     });
 
-    it("does not send a next-page request when nextCursor is not a number", async () => {
+    it("sends only the initial backfill request when nextCursor is not a number", async () => {
       renderPanel({ amaSessionId: "session_x" });
 
       const ws = await waitForWebSocket();
@@ -298,7 +301,7 @@ describe("ChatPanel", () => {
         ws.emit({ type: "backfill", events: [makeEvent(1)], hasMore: true, nextCursor: null });
       });
 
-      expect(ws.sends.length).toBe(0);
+      expect(ws.sends.length).toBe(1);
     });
 
     // ── Live event appends ────────────────────────────────────────────────────
@@ -330,12 +333,12 @@ describe("ChatPanel", () => {
 
     // ── WebSocket construction ────────────────────────────────────────────────
 
-    it("constructs a WebSocket with the url returned by runtimeSocket", async () => {
-      runtimeSocketMock.mockResolvedValue({ url: "wss://example.com/socket" });
+    it("constructs a WebSocket with the url returned by sessionWs", async () => {
+      sessionWsMock.mockResolvedValue({ url: "wss://example.com/socket" });
 
       renderPanel({ amaSessionId: "session_x", taskDone: false });
 
-      // Allow runtimeSocket to resolve and WS to be constructed.
+      // Allow sessionWs to resolve and WS to be constructed.
       await act(async () => {
         await Promise.resolve();
       });
@@ -344,8 +347,8 @@ describe("ChatPanel", () => {
       expect(lastWebSocket!.url).toBe("wss://example.com/socket");
     });
 
-    it("does not open a WebSocket when runtimeSocket rejects", async () => {
-      runtimeSocketMock.mockRejectedValue(new Error("auth failed"));
+    it("does not open a WebSocket when sessionWs rejects", async () => {
+      sessionWsMock.mockRejectedValue(new Error("auth failed"));
 
       renderPanel({ amaSessionId: "session_x" });
 

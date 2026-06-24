@@ -362,8 +362,8 @@ describe("handleGithubPullRequestEvent", () => {
     expect(result.tasks).toContain(task.id);
     const row = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(task.id).first<{ metadata: string }>();
     const meta = JSON.parse(row!.metadata ?? "{}");
-    // Binding annotations cleared
-    expect(meta?.annotations?.["ama.sessionId"]).toBeNull();
+    // Active binding annotations cleared; AMA session id remains queryable for history.
+    expect(meta?.annotations?.["ama.sessionId"]).toBe(amaSessionId);
     expect(meta?.annotations?.["ama.dispatch.result"]).toBeNull();
     expect(stops.length).toBeGreaterThanOrEqual(1);
   });

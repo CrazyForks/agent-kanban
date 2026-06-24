@@ -489,6 +489,9 @@ function fallbackAmaAgentEvent(raw: Record<string, unknown>, payload: Record<str
 }
 
 function messageContentBlocks(message: Record<string, unknown> | null): AgentEvent extends { type: "message"; blocks: infer B } ? B : never {
+  if (typeof message?.content === "string") {
+    return [{ type: "text", text: message.content }] as AgentEvent extends { type: "message"; blocks: infer B } ? B : never;
+  }
   const content = Array.isArray(message?.content) ? message.content : [];
   const blocks = content
     .map((part) => {

@@ -590,9 +590,10 @@ describe("session usage accounting via releaseTaskRuntimeBinding", () => {
 
     // Should not throw; teardown still completes
     const updated = await releaseTaskRuntimeBinding(db, env, OWNER, task);
-    // Binding annotations cleared despite usage failure
+    // Active binding annotations are cleared despite usage failure; the AMA
+    // session id remains as a historical pointer for event lookup.
     const meta = (updated.metadata as any) ?? {};
-    expect(meta?.annotations?.["ama.sessionId"]).toBeNull();
+    expect(meta?.annotations?.["ama.sessionId"]).toBe(amaSessionId);
   });
 });
 
