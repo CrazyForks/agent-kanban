@@ -484,14 +484,15 @@ export async function getAgentAmaId(db: D1, agentId: string): Promise<string | n
   return row?.ama_agent_id ?? null;
 }
 
-// Latest, non-builtin agents that predate AMA and so have no backing AMA agent.
-// The connect/provision backfill creates one per row so old agents become
-// dispatchable. Snapshots share the username's ama_agent_id via setAgentAmaId,
-// and builtin agents are never given one (parity with the create-agent route),
-// so both are excluded.
+// Latest, non-builtin worker agents that predate AMA and so have no backing AMA
+// agent. Only workers are dispatchable; leaders authenticate/review inside AK
+// and do not mirror to AMA. Snapshots share the username's ama_agent_id via
+// setAgentAmaId, and builtin agents are never given one, so both are excluded.
 export async function listAgentsMissingAmaAgent(db: D1, ownerId: string): Promise<{ id: string; username: string; runtime: string }[]> {
   const result = await db
-    .prepare("SELECT id, username, runtime FROM agents WHERE owner_id = ? AND version = 'latest' AND builtin = 0 AND ama_agent_id IS NULL")
+    .prepare(
+      "SELECT id, username, runtime FROM agents WHERE owner_id = ? AND version = 'latest' AND builtin = 0 AND kind = 'worker' AND ama_agent_id IS NULL",
+    )
     .bind(ownerId)
     .all<{ id: string; username: string; runtime: string }>();
   return result.results;

@@ -6,8 +6,8 @@
  * at dispatch.
  *
  *  1. Connect → POST /api/ama/provision creates the project + session vault.
- *  2. POST /api/agents creates the AMA agent first, then persists; rolls back on
- *     AMA failure (no partial AK row).
+ *  2. POST /api/agents creates the AMA agent first for workers, then persists;
+ *     rolls back on AMA failure (no partial AK row). Leaders stay AK-only.
  *  3. POST /api/machines/cloud creates a cloud AMA environment + a cloud machine.
  *  4. Gating: create-agent, add-machine (local + cloud) require AMA connected.
  */
@@ -228,6 +228,34 @@ describe("create-agent-creates-ama-agent-first", () => {
 
     const res = await apiRequest(env, "POST", "/api/agents", { name: "Gated Agent", username: "gated-agent", runtime: "claude" }, token);
     expect(res.status).toBe(403);
+  });
+
+  it("creates leader agents without requiring or creating an AMA agent", async () => {
+    const env = makeEnv();
+    const { token } = await createSessionUser(env, "create-leader-no-ama@test.com");
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (reqUrl(input) === "https://auth.test/oauth/token") return oauthTokenResponse();
+      throw new Error(`Unexpected fetch: ${reqUrl(input)}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await apiRequest(
+      env,
+      "POST",
+      "/api/agents",
+      { name: "AK Leader", username: "ak-leader-no-ama", runtime: "claude", kind: "leader" },
+      token,
+    );
+    expect(res.status).toBe(201);
+    const created = (await res.json()) as any;
+    expect(created.kind).toBe("leader");
+
+    const row = await db.prepare("SELECT ama_agent_id FROM agents WHERE id = ?").bind(created.id).first<{ ama_agent_id: string | null }>();
+    expect(row?.ama_agent_id ?? null).toBeNull();
+    const agentPostCount = fetchMock.mock.calls.filter(
+      ([url, init]) => reqUrl(url) === "https://ama.test/api/v1/agents" && reqMethod(url, init) === "POST",
+    ).length;
+    expect(agentPostCount).toBe(0);
   });
 
   it("standalone AK (AMA not configured) creates agents without AMA", async () => {
@@ -539,6 +567,39 @@ describe("connect-backfills-pre-ama-agents", () => {
     const row = await db
       .prepare("SELECT ama_agent_id FROM agents WHERE username = ? AND owner_id = ?")
       .bind("builtin-soul-bf", userId)
+      .first<{ ama_agent_id: string | null }>();
+    expect(row?.ama_agent_id ?? null).toBeNull();
+  });
+
+  it("excludes leader agents: does not backfill kind=leader rows", async () => {
+    const env = makeEnv();
+    const { userId, token } = await createSessionUser(env, "backfill-leader@test.com");
+    await linkAmaAccount(db, userId);
+    await seedIntegration(userId);
+
+    const leader = await createTestAgent(
+      db,
+      userId,
+      { name: "Backfill Leader", username: "backfill-leader-bf", runtime: "claude", kind: "leader" },
+      false,
+    );
+    await db.prepare("UPDATE agents SET ama_agent_id = NULL WHERE id = ?").bind(leader.id).run();
+
+    const fetchMock = makeFetchMock([]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await apiRequest(env, "POST", "/api/ama/provision", undefined, token);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).agents_backfilled).toBe(0);
+
+    const agentPostCount = fetchMock.mock.calls.filter(
+      ([url, init]) => reqUrl(url) === "https://ama.test/api/v1/agents" && reqMethod(url, init) === "POST",
+    ).length;
+    expect(agentPostCount).toBe(0);
+
+    const row = await db
+      .prepare("SELECT ama_agent_id FROM agents WHERE username = ? AND owner_id = ?")
+      .bind("backfill-leader-bf", userId)
       .first<{ ama_agent_id: string | null }>();
     expect(row?.ama_agent_id ?? null).toBeNull();
   });

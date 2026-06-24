@@ -1038,9 +1038,10 @@ api.post("/api/agents", async (c) => {
   assertSubagentList(body.subagents);
   assertSubagentRuntime(body.runtime, body.subagents);
   const ownerId = c.get("ownerId");
-  // The agent subsystem is AMA-backed: every AK agent mirrors an AMA agent.
-  // Require AMA connected so we can create the AMA agent before persisting.
-  await requireAmaConnected(c.env.DB, c.env, ownerId);
+  const isWorker = (body.kind ?? "worker") === "worker";
+  // Worker agents are dispatch targets and need a backing AMA agent. Leaders
+  // only authenticate/review inside AK, so they do not mirror to AMA.
+  if (isWorker) await requireAmaConnected(c.env.DB, c.env, ownerId);
   await assertRegisteredSubagents(c.env.DB, ownerId, body.subagents);
 
   const existingUsername = await c.env.DB.prepare("SELECT owner_id FROM agents WHERE username = ? LIMIT 1")
@@ -1077,7 +1078,7 @@ api.post("/api/agents", async (c) => {
   // the request fails and no AK agent row is written. Standalone AK (AMA not
   // configured) skips this entirely — requireAmaConnected was a no-op above.
   let amaAgentId: string | null = null;
-  if (isAmaTaskDispatchConfigured(c.env)) {
+  if (isWorker && isAmaTaskDispatchConfigured(c.env)) {
     const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
     const amaAgent = await createAmaAgentForAkProfile(c.env.DB, c.env, ownerId, body as CreateAgentInput, amaProjectId, amaRuntimeName(body.runtime));
     amaAgentId = amaAgent.id;
@@ -1131,9 +1132,9 @@ api.patch("/api/agents/:id", async (c) => {
   assertSubagentRuntime(runtime, subagents);
   await assertRegisteredSubagents(c.env.DB, ownerId, subagents, existing.id);
   const agent = await updateAgent(c.env.DB, c.req.param("id"), updates);
-  // Keep the AMA agent in sync (eager model: AK edits drive AMA). Dispatch only
-  // reads the AMA agent now, so without this its config would go stale.
-  if (agent && isAmaTaskDispatchConfigured(c.env)) {
+  // Keep worker AMA agents in sync (eager model: AK edits drive AMA). Leaders
+  // are not dispatch targets and do not have backing AMA agents.
+  if (agent && agent.kind === "worker" && isAmaTaskDispatchConfigured(c.env)) {
     await requireAmaConnected(c.env.DB, c.env, ownerId);
     const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
     await ensureAmaAgentForAkAgent(c.env.DB, c.env, ownerId, agent.id, amaProjectId, amaRuntimeName(agent.runtime));
