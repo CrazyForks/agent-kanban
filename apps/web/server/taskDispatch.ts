@@ -770,12 +770,20 @@ async function clearDispatchBackoff(db: D1, task: Task): Promise<void> {
 function taskInitialPrompt(task: Task) {
   const prompt = [
     `You are assigned AK task ${task.id}: ${task.title}`,
-    task.description ? `Task detail:\n${task.description}` : null,
-    "Use the AK CLI/API for workflow state. First run:",
-    `ak task claim ${task.id}`,
-    "Inspect the task with:",
+    "",
+    "Follow the Agent Kanban worker lifecycle. Use the agent-kanban workflow; do not use the ak-task leader workflow.",
+    "The full task description is intentionally not included here. Get the authoritative task details, status, rejection history, logs, and messages with:",
     `ak describe task ${task.id}`,
-    "When the work is complete, submit for review with `ak task review` and a PR URL when applicable.",
+    "",
+    "Lifecycle rules:",
+    "- Start by running the describe command above before claiming or changing files.",
+    `- If the task status is todo, run \`ak task claim ${task.id}\` before doing any work. If claim fails, stop without changing files and report the error.`,
+    "- If the task is already in_progress because it was rejected or resumed, do not claim again. Read the rejection/log history and continue from there.",
+    "- If the task is already in_review, done, or cancelled, do not modify files; report the current state.",
+    "- Log meaningful progress with `ak create note --task` while working.",
+    "- Before submitting review, post a final note that starts with `Completion Summary:` and includes `Profile Decision:`.",
+    "- If you changed code, create a PR and submit review with `ak task review` using `--pr-url <PR URL>`. Never submit review without a PR URL after code changes.",
+    `- Before you stop working on this task for any reason, including blockers or partial completion, you must submit it for review with \`ak task review ${task.id}\` after documenting the result. Do not end the session without submitting review.`,
   ].filter(Boolean);
   return prompt.join("\n");
 }
@@ -789,26 +797,36 @@ function cloudTaskInitialPrompt(task: Task, resourceRefs: { owner: string; repo:
   const branch = `ak/${task.id}`;
   const prompt = [
     `You are assigned AK task ${task.id}: ${task.title}`,
-    task.description ? `Task detail:\n${task.description}` : null,
     "",
     "You work inside a cloud sandbox. Run every shell command with the sandbox.exec tool. Environment variables (AK_*, GH_TOKEN, GIT_*) are already set for those commands.",
     repo ? `The repository ${repo.owner}/${repo.repo} is already cloned at ${repoDir}; git push credentials are preconfigured.` : null,
+    "Follow the Agent Kanban worker lifecycle. Use the agent-kanban workflow; do not use the ak-task leader workflow.",
+    "The full task description is intentionally not included here. Get the authoritative task details, status, rejection history, logs, and messages with `ak describe task` after installing the AK CLI.",
     "",
     "Follow these steps in order, one sandbox.exec command at a time:",
     // npm is unusable inside the sandbox (orphaned workers hang the exec
     // pipe), so the CLI ships as a single-file bundle served by this server.
     `1. Install the AK CLI: curl -fsS "$AK_API_URL/cli/install.sh" | sh`,
-    `2. Claim the task: ak task claim ${task.id}`,
+    `2. Inspect the task: ak describe task ${task.id}`,
+    `3. If the task status is todo, claim it: ak task claim ${task.id}. If claim fails, stop without changing files and report the error. If it is already in_progress because it was rejected or resumed, do not claim again; continue from the rejection/log history.`,
     ...(repo && repoDir
       ? [
-          `3. Note the default branch: git -C ${repoDir} branch --show-current`,
-          `4. Create a work branch: git -C ${repoDir} checkout -b ${branch}`,
-          "5. Do the work described in the task detail (edit files under the repository).",
-          `6. Commit and push: git -C ${repoDir} add -A && git -C ${repoDir} commit -m "<summary>" && git -C ${repoDir} push -u origin ${branch}`,
-          `7. Create a pull request (replace <base> with the default branch from step 3): gh pr create --repo ${repo.owner}/${repo.repo} --head ${branch} --base <base> --title "${task.title.replaceAll('"', "'")}" --body "AK task ${task.id}" — the command prints the PR URL.`,
-          `8. Submit for review: ak task review ${task.id} --pr-url <PR URL>`,
+          `4. Note the default branch: git -C ${repoDir} branch --show-current`,
+          `5. Create a work branch: git -C ${repoDir} checkout -b ${branch}`,
+          "6. Do the work described by `ak describe task` (edit files under the repository).",
+          "7. Post progress notes with `ak create note --task` while working.",
+          `8. Commit and push: git -C ${repoDir} add -A && git -C ${repoDir} commit -m "<summary>" && git -C ${repoDir} push -u origin ${branch}`,
+          `9. Create a pull request (replace <base> with the default branch from step 4): gh pr create --repo ${repo.owner}/${repo.repo} --head ${branch} --base <base> --title "${task.title.replaceAll('"', "'")}" --body "AK task ${task.id}" - the command prints the PR URL.`,
+          "10. Post a final note that starts with `Completion Summary:` and includes `Profile Decision:`.",
+          `11. Submit for review before stopping: ak task review ${task.id} --pr-url <PR URL>`,
         ]
-      : ["3. Do the work described in the task detail.", `4. Submit for review: ak task review ${task.id}`]),
+      : [
+          "4. Do the work described by `ak describe task`.",
+          "5. Post a final note that starts with `Completion Summary:` and includes `Profile Decision:`.",
+          `6. Submit for review before stopping: ak task review ${task.id}`,
+        ]),
+    "Do not end the session without submitting review. If blocked, document the blocker in the final note and still submit review.",
+    "Never submit review without `--pr-url` after code changes.",
   ].filter((line): line is string => line !== null);
   return prompt.join("\n");
 }

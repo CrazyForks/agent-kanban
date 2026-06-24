@@ -1889,7 +1889,11 @@ describe("routes", () => {
         });
         expect(body.env.AK_SESSION_ID).toEqual(expect.any(String));
         expect(body.secretEnv).toEqual([{ name: "AK_AGENT_KEY", credentialRef: { credentialId: "vaultcred_123", versionId: "vaultver_123" } }]);
-        expect(body.initialPrompt).toContain(`Task detail:\n${taskDetail}`);
+        expect(body.initialPrompt).toContain(`ak describe task`);
+        expect(body.initialPrompt).toContain("do not use the ak-task leader workflow");
+        expect(body.initialPrompt.toLowerCase()).toContain("do not end the session without submitting review");
+        expect(body.initialPrompt).not.toContain(taskDetail);
+        expect(body.initialPrompt).not.toContain("Task detail:");
         expect(JSON.stringify(body)).not.toContain("board_");
         return jsonResponse(
           {
@@ -2199,6 +2203,8 @@ describe("routes", () => {
         expect(body.environmentId).toBe("env_release");
         expect(body.runtime).toBe("codex");
         expect(body.initialPrompt).toContain("AK task");
+        expect(body.initialPrompt).toContain("ak describe task");
+        expect(body.initialPrompt).toContain("do not use the ak-task leader workflow");
         sessionCreateCount += 1;
         return jsonResponse(
           {

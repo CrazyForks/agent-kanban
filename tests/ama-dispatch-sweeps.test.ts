@@ -1972,6 +1972,7 @@ describe("dispatchTaskToAma with cloud runtime (ama)", () => {
     });
     const task = await createTask(db, cloudRtOwner, {
       title: "Cloud rt task",
+      description: "Sensitive cloud task detail must be fetched with describe.",
       board_id: board.id,
       assigned_to: agent.id,
       skipRuntimeAvailability: true,
@@ -2019,6 +2020,11 @@ describe("dispatchTaskToAma with cloud runtime (ama)", () => {
     expect(sessionBody?.environmentId).toBe(cloudEnvId);
     // Cloud dispatch uses cloudTaskInitialPrompt — initial prompt differs from machine dispatch
     expect(sessionBody?.initialPrompt).toContain("cloud sandbox");
+    expect(sessionBody?.initialPrompt).toContain(`ak describe task ${task.id}`);
+    expect(sessionBody?.initialPrompt).toContain("do not use the ak-task leader workflow");
+    expect(sessionBody?.initialPrompt).toContain("Do not end the session without submitting review");
+    expect(sessionBody?.initialPrompt).not.toContain("Sensitive cloud task detail");
+    expect(sessionBody?.initialPrompt).not.toContain("Task detail:");
   });
 });
 
