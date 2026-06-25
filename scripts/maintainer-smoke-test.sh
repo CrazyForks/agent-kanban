@@ -22,7 +22,7 @@ set -euo pipefail
 #   - creates a second scheduled maintainer and waits for its marker task
 #
 # Usage:
-#   ./scripts/maintainer-smoke-test.sh [--live] [--runtime <runtime>] [--repo <repo_id>] [board_id]
+#   ./scripts/maintainer-smoke-test.sh [--live] [--keep-artifacts] [--runtime <runtime>] [--repo <repo_id>] [board_id]
 #
 # Missing board/repo arguments are discovered from the current AK account.
 # Defaults target a dev board named Demo, a repository named slink, and the
@@ -30,6 +30,7 @@ set -euo pipefail
 # runner from `ak start`.
 
 LIVE=0
+KEEP_ARTIFACTS=0
 RUNTIME="codex"
 REPO_ID=""
 ARGS=()
@@ -37,6 +38,10 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --live)
       LIVE=1
+      shift
+      ;;
+    --keep-artifacts)
+      KEEP_ARTIFACTS=1
       shift
       ;;
     --runtime)
@@ -89,8 +94,10 @@ cleanup() {
   if [ -n "$MAINTAINER_ID" ]; then ak delete maintainer "$MAINTAINER_ID" --board "$BOARD_ID" >/dev/null 2>&1 || true; fi
   if [ -n "$HTTP_MAINTAINER_ID" ]; then ak delete maintainer "$HTTP_MAINTAINER_ID" --board "$BOARD_ID" >/dev/null 2>&1 || true; fi
   if [ -n "$SCHEDULED_MAINTAINER_ID" ]; then ak delete maintainer "$SCHEDULED_MAINTAINER_ID" --board "$BOARD_ID" >/dev/null 2>&1 || true; fi
-  if [ -n "$HTTP_MARKER_TASK_ID" ]; then ak task cancel "$HTTP_MARKER_TASK_ID" >/dev/null 2>&1 || true; ak delete task "$HTTP_MARKER_TASK_ID" >/dev/null 2>&1 || true; fi
-  if [ -n "$SCHEDULED_MARKER_TASK_ID" ]; then ak task cancel "$SCHEDULED_MARKER_TASK_ID" >/dev/null 2>&1 || true; ak delete task "$SCHEDULED_MARKER_TASK_ID" >/dev/null 2>&1 || true; fi
+  if [ "$KEEP_ARTIFACTS" != 1 ]; then
+    if [ -n "$HTTP_MARKER_TASK_ID" ]; then ak task cancel "$HTTP_MARKER_TASK_ID" >/dev/null 2>&1 || true; ak delete task "$HTTP_MARKER_TASK_ID" >/dev/null 2>&1 || true; fi
+    if [ -n "$SCHEDULED_MARKER_TASK_ID" ]; then ak task cancel "$SCHEDULED_MARKER_TASK_ID" >/dev/null 2>&1 || true; ak delete task "$SCHEDULED_MARKER_TASK_ID" >/dev/null 2>&1 || true; fi
+  fi
   if [ -n "$BOARD_REPO_TASK_ID" ]; then ak task cancel "$BOARD_REPO_TASK_ID" >/dev/null 2>&1 || true; ak delete task "$BOARD_REPO_TASK_ID" >/dev/null 2>&1 || true; fi
   if [ -n "$AGENT_ID" ]; then ak delete agent "$AGENT_ID" >/dev/null 2>&1 || true; fi
   if [ -n "$TEMP_WORKER_HOME" ]; then rm -rf "$TEMP_WORKER_HOME"; fi
@@ -529,5 +536,9 @@ fi
 echo "==============================="
 echo "  Passed: $PASS"
 echo "  Failed: $FAIL"
+if [ "$KEEP_ARTIFACTS" = 1 ]; then
+  if [ -n "$HTTP_MARKER_TASK_ID" ]; then echo "  HTTP marker task:      $HTTP_MARKER_TASK_ID"; fi
+  if [ -n "$SCHEDULED_MARKER_TASK_ID" ]; then echo "  Scheduled marker task: $SCHEDULED_MARKER_TASK_ID"; fi
+fi
 echo "==============================="
 [ "$FAIL" -gt 0 ] && exit 1 || exit 0
