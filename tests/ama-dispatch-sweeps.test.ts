@@ -953,13 +953,7 @@ describe("reconcileAmaBoundTasks", () => {
     expect(stops.length).toBeGreaterThanOrEqual(1);
   });
 
-  // ─── Bug regression: recordDispatchFailure must receive a meaningful reason ───
-  // Previously reconcileAmaBoundTasks called recordDispatchFailure without a reason,
-  // producing a task_actions row with detail = "undefined". The fix passes
-  // new Error(deadReason) so the detail is always a non-empty string that
-  // matches /runtime session/.
-
-  it("records a dispatch_failed action with a non-empty detail when session is gone (404, past min-age)", async () => {
+  it("releases an in_progress task when session is gone (404, past min-age)", async () => {
     const { reconcileAmaBoundTasks } = await import("../apps/web/server/taskDispatch");
 
     const owner = `reconcile-df-null-owner-${randomUUID()}`;
@@ -986,16 +980,15 @@ describe("reconcileAmaBoundTasks", () => {
 
     const actionRow = await db
       .prepare(
-        "SELECT actor_type, actor_id, action, detail FROM task_actions WHERE task_id = ? AND action = 'dispatch_failed' ORDER BY created_at DESC LIMIT 1",
+        "SELECT actor_type, actor_id, action, detail FROM task_actions WHERE task_id = ? AND action = 'released' ORDER BY created_at DESC LIMIT 1",
       )
       .bind(task.id)
       .first<{ actor_type: string; actor_id: string; action: string; detail: string }>();
 
     expect(actionRow).toBeTruthy();
-    expect(actionRow!.action).toBe("dispatch_failed");
-    expect(actionRow!.actor_type).toBe("system");
-    expect(actionRow!.detail).not.toBe("undefined");
-    expect(actionRow!.detail).toMatch(/runtime session/);
+    expect(actionRow!.action).toBe("released");
+    expect(actionRow!.actor_type).toBe("machine");
+    expect(actionRow!.actor_id).toBe("system");
   });
 
   it("records a dispatch_failed action with a non-empty detail when idle session tears down a todo task", async () => {
@@ -1076,7 +1069,7 @@ describe("reconcileAmaBoundTasks", () => {
     expect(actionRow!.detail).toMatch(/runtime session/);
   });
 
-  it("records a dispatch_failed action with a non-empty detail when session is in a dead state (error)", async () => {
+  it("releases an in_progress task when session is in a dead state (error)", async () => {
     const { reconcileAmaBoundTasks } = await import("../apps/web/server/taskDispatch");
 
     const owner = `reconcile-df-error-owner-${randomUUID()}`;
@@ -1102,16 +1095,15 @@ describe("reconcileAmaBoundTasks", () => {
 
     const actionRow = await db
       .prepare(
-        "SELECT actor_type, actor_id, action, detail FROM task_actions WHERE task_id = ? AND action = 'dispatch_failed' ORDER BY created_at DESC LIMIT 1",
+        "SELECT actor_type, actor_id, action, detail FROM task_actions WHERE task_id = ? AND action = 'released' ORDER BY created_at DESC LIMIT 1",
       )
       .bind(task.id)
       .first<{ actor_type: string; actor_id: string; action: string; detail: string }>();
 
     expect(actionRow).toBeTruthy();
-    expect(actionRow!.action).toBe("dispatch_failed");
-    expect(actionRow!.actor_type).toBe("system");
-    expect(actionRow!.detail).not.toBe("undefined");
-    expect(actionRow!.detail).toMatch(/runtime session/);
+    expect(actionRow!.action).toBe("released");
+    expect(actionRow!.actor_type).toBe("machine");
+    expect(actionRow!.actor_id).toBe("system");
   });
 });
 
@@ -1183,7 +1175,7 @@ describe("detectAndReleaseStaleAll with AMA binding", () => {
 describe("POST /api/tasks/:id/reject AMA 409 handling", () => {
   const BETTER_AUTH_URL = "http://localhost:8788";
 
-  it("returns 200, releases task to todo with binding cleared when AMA command returns 409", async () => {
+  it("returns 409 and leaves the task untouched when AMA command returns 409", async () => {
     const { SignJWT } = await import("jose");
     const { createBoard } = await import("../apps/web/server/boardRepo");
     const { createTask } = await import("../apps/web/server/taskRepo");
@@ -1247,12 +1239,9 @@ describe("POST /api/tasks/:id/reject AMA 409 handling", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
       if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
-      // POST /messages — AMA returns 409: session already archived
+      // POST /messages — AMA returns 409 before accepting the reject prompt.
       if (url === `https://ama.test/api/v1/sessions/${amaSessionId}/messages` && reqMethod(input, init) === "POST")
         return jsonResponse({ error: "session archived" }, 409);
-      // PATCH /sessions/{id} — stop call from releaseTaskRuntimeBinding
-      if (url === `https://ama.test/api/v1/sessions/${amaSessionId}` && reqMethod(input, init) === "PATCH")
-        return jsonResponse({ id: amaSessionId, state: "stopped" }, 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1274,23 +1263,33 @@ describe("POST /api/tasks/:id/reject AMA 409 handling", () => {
       env,
     );
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(409);
     const body = (await res.json()) as any;
-    // Task released back to todo, assigned_to kept
-    expect(body.status).toBe("todo");
-    expect(body.assigned_to).toBe(agent.id);
-    // Active binding annotations cleared; AMA session id remains queryable for history.
-    expect(body.metadata?.annotations?.["ama.sessionId"]).toBe(amaSessionId);
-    expect(body.metadata?.annotations?.["ama.dispatch.result"]).toBeNull();
+    expect(body.error.message).toContain("session archived");
 
-    // Verify task_action: actor should be machine/system (system-initiated recovery)
-    const actionRow = await db
+    const taskRow = await db.prepare("SELECT status, assigned_to, metadata FROM tasks WHERE id = ?").bind(task.id).first<{
+      status: string;
+      assigned_to: string | null;
+      metadata: string;
+    }>();
+    expect(taskRow).toBeTruthy();
+    expect(taskRow!.status).toBe("in_review");
+    expect(taskRow!.assigned_to).toBe(agent.id);
+    const metadata = JSON.parse(taskRow!.metadata);
+    expect(metadata?.annotations?.["ama.sessionId"]).toBe(amaSessionId);
+    expect(metadata?.annotations?.["ama.dispatch.result"]).toBe("accepted");
+
+    const rejectedRow = await db
+      .prepare("SELECT action FROM task_actions WHERE task_id = ? AND action = 'rejected' ORDER BY created_at DESC LIMIT 1")
+      .bind(task.id)
+      .first<{ action: string }>();
+    expect(rejectedRow).toBeNull();
+
+    const releasedRow = await db
       .prepare("SELECT actor_type, actor_id, action FROM task_actions WHERE task_id = ? AND action = 'released' ORDER BY created_at DESC LIMIT 1")
       .bind(task.id)
       .first<{ actor_type: string; actor_id: string; action: string }>();
-    expect(actionRow).toBeTruthy();
-    expect(actionRow!.actor_type).toBe("machine");
-    expect(actionRow!.actor_id).toBe("system");
+    expect(releasedRow).toBeNull();
   });
 });
 

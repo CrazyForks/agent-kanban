@@ -2049,7 +2049,7 @@ describe("routes", () => {
     }
   });
 
-  it("clears assignment when AMA dispatch fails after assigning an existing task", async () => {
+  it("does not assign when AMA dispatch fails while assigning an existing task", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
       AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
@@ -2109,7 +2109,7 @@ describe("routes", () => {
       const action = await env.DB.prepare("SELECT action, detail FROM task_actions WHERE task_id = ? ORDER BY created_at DESC LIMIT 1")
         .bind(task.id)
         .first<{ action: string; detail: string }>();
-      expect(action).toMatchObject({ action: "released", detail: "Runtime dispatch failed; assignment was cleared." });
+      expect(action?.action).not.toBe("released");
     } finally {
       Object.assign(env, previousAma);
       vi.unstubAllGlobals();
@@ -2191,11 +2191,17 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
         return jsonResponse({ id: "vaultcred_release", activeVersionId: "vaultver_release" }, 201);
       }
+      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials/vaultcred_release" && reqMethod(input, init) === "PATCH") {
+        return jsonResponse({ id: "vaultcred_release", state: "revoked" });
+      }
       if (url === "https://ama.test/api/v1/sessions/session_release_old" && reqMethod(input, init) === "PATCH") {
         return jsonResponse({ id: "session_release_old", state: "stopped" });
       }
       if (url === "https://ama.test/api/v1/sessions/session_release_1" && reqMethod(input, init) === "PATCH") {
         return jsonResponse({ id: "session_release_1", state: "stopped" });
+      }
+      if (url.startsWith("https://ama.test/api/v1/usage-records?")) {
+        return jsonResponse({ data: [], pagination: { limit: 100, hasMore: false, nextCursor: null } });
       }
       if (url === "https://ama.test/api/v1/sessions") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
@@ -2573,8 +2579,8 @@ describe("routes", () => {
       const cancelRes = await apiRequest("POST", `/api/tasks/${cancelTask.id}/cancel`, {}, leaderJwt);
       expect(cancelRes.status).toBe(200);
       const cancelled = (await cancelRes.json()) as any;
-      // cancel does best-effort teardown: active binding annotations are cleared,
-      // no ama.lastCommand written, and AMA session id remains queryable.
+      // cancel stops AMA before mutating the task; after success the active
+      // binding annotations are cleared and the AMA session id remains queryable.
       expect(cancelled.status).toBe("cancelled");
       expect(cancelled.metadata.annotations["ama.sessionId"]).toBe("session_123");
       expect(cancelled.metadata.annotations["ama.dispatch.result"]).toBeNull();
@@ -2633,15 +2639,13 @@ describe("routes", () => {
       const leaderJwt = await signLeaderSessionJWT();
       const rejectRes = await apiRequest("POST", `/api/tasks/${rejectTarget.id}/reject`, { reason: "try again" }, leaderJwt);
       const cancelRes = await apiRequest("POST", `/api/tasks/${cancelTarget.id}/cancel`, {}, leaderJwt);
-      // reject: non-404/409 AMA failure → rollback to in_review, return 500
       expect(rejectRes.status).toBe(500);
-      // cancel: best-effort teardown → always 200 + cancelled, even when AMA stop fails
-      expect(cancelRes.status).toBe(200);
-      const cancelledBody = (await cancelRes.json()) as any;
-      expect(cancelledBody.status).toBe("cancelled");
+      expect(cancelRes.status).toBe(500);
 
       const rejectRow = await env.DB.prepare("SELECT status FROM tasks WHERE id = ?").bind(rejectTarget.id).first<{ status: string }>();
       expect(rejectRow?.status).toBe("in_review");
+      const cancelRow = await env.DB.prepare("SELECT status FROM tasks WHERE id = ?").bind(cancelTarget.id).first<{ status: string }>();
+      expect(cancelRow?.status).toBe("in_progress");
     } finally {
       Object.assign(env, previousAma);
       vi.unstubAllGlobals();
@@ -2661,6 +2665,20 @@ describe("routes", () => {
       AMA_OAUTH_CLIENT_ID: "ak-app",
       AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = reqUrl(input);
+      if (url === "https://auth.test/oauth/token") {
+        return jsonResponse({ access_token: "oauth-token" });
+      }
+      if (url.startsWith("https://ama.test/api/v1/usage-records?")) {
+        return jsonResponse({ data: [], pagination: { limit: 100, hasMore: false, nextCursor: null } });
+      }
+      if (url === "https://ama.test/api/v1/sessions/session_usage_123" && reqMethod(input, init) === "PATCH") {
+        return jsonResponse({ id: "session_usage_123", state: "stopped" });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     try {
       const { createAmaAgentSession } = await import("../apps/web/server/agentSessionRepo");
@@ -2710,6 +2728,7 @@ describe("routes", () => {
       expect(closed?.closed_at).toEqual(expect.any(String));
     } finally {
       Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
     }
   });
 

@@ -15,7 +15,7 @@ In QA mode, flag any code that doesn't match DESIGN.md.
 - Worker entry: apps/web/worker/index.ts — exports Hono app + TunnelRelay DO
 - Build: @cloudflare/vite-plugin — produces client assets + worker bundle
 - Database: Cloudflare D1 (SQLite)
-- Durable Objects: TunnelRelay (WebSocket relay for daemon ↔ browser)
+- Durable Objects: TunnelRelay (WebSocket relay for runtime sessions ↔ browser)
 - CLI: packages/cli/ — TypeScript, published to npm
 - Shared types: packages/shared/ — proper package with build step
 - Agent skill: skills/agent-kanban/ — installed via `npx skills add` to target repos
@@ -35,13 +35,14 @@ In QA mode, flag any code that doesn't match DESIGN.md.
 - Auth: Three identity types — **user** (Better Auth session), **machine** (@better-auth/api-key), **agent** (@better-auth/agent-auth Ed25519 JWT). Machines assign tasks; agents claim/review with own JWT. Data scoped by `owner_id`.
 - Agent identity: registered via `POST /api/agents` with Ed25519 public key. Each agent has a cryptographic identity (identicon, fingerprint). Daemon generates ephemeral keypair per spawn.
 - Agent status: idle → working (on claim/assign) → idle (on complete/release/cancel with no other active tasks) → offline (on stale timeout)
-- Task lifecycle: Todo → Todo+assigned (daemon assign) → In Progress (agent claim) → In Review (agent review+PR) → Done (reviewer complete) or Cancelled (cancel at any stage). Reviewer = human or lead agent.
+- Task lifecycle: Todo → Todo+assigned (AMA runtime dispatch) → In Progress (agent claim) → In Review (agent review+PR) → Done (reviewer complete) or Cancelled (cancel at any stage). Reviewer = human or lead agent.
 - Task dependencies: `depends_on` JSON array, cycle detection via recursive CTE (taskDeps.ts), `blocked` computed on read
 - Task origin: `created_from` for single-level subtask tracking
 - Stale detection: write-on-read in GET /api/boards/:id and inline before assign (taskStale.ts). 2h timeout, idempotent.
 - SSE: TransformStream-based, 2s poll for 25s (CF Workers limit), Last-Event-ID resume via log ID → timestamp resolution (sse.ts). Emits typed events (`event: log` for task_logs, `event: message` for messages).
-- Messages: `messages` table for human ↔ agent chat. `agent_id` = agent CLI session ID (used for `claude --resume`). D1 as message bus — daemon polls for human messages, browser reads via SSE.
-- Machine daemon: `ak start` — poll loop, auto-claim todo tasks, spawn agent CLI per task. PID lock, graceful shutdown, exponential backoff. `processManager.ts` handles spawn/monitor/kill/chat relay.
+- Messages: `messages` table for human ↔ agent chat. `agent_id` = agent runtime session ID. D1 as message bus — AMA/runtime sessions handle agent-side delivery, browser reads via SSE.
+- Runtime implementation: **AMA is the current source of truth** for runtime dispatch, quota/usage, health, and schedulability. Check `apps/web/server/amaRuntime.ts`, `apps/web/server/taskDispatch.ts`, AMA runner/provider data, and related API routes before considering any legacy local daemon behavior.
+- Legacy daemon: `ak start` and `packages/cli/src/daemon/` are deprecated runtime paths. Do not use daemon heartbeat, local provider availability, or daemon smoke behavior as the explanation for current runtime scheduling unless the task explicitly asks about legacy daemon support.
 - Repo management: `ak create repo` registers repo at tenant level. `ak get repo` lists registered repos.
 - Data model: Board is the workspace unit. Repositories belong to owner (tenant-level, like machines). Tasks belong to boards, optionally linked to a repository. Machines belong to owner (user/org).
 
@@ -65,7 +66,7 @@ After every significant code change, follow this sequence:
    - `pnpm build && pnpm typecheck && npx vitest run`
    - Use `pnpm typecheck`, NOT `tsc --noEmit` at the root: the root tsconfig is solution-style (`files: []` + `references`), so `tsc --noEmit` there checks nothing. `pnpm typecheck` runs `tsc --noEmit` per project (shared, cli, web/server/worker) and actually catches type errors.
    - Any failure → fix and re-run. If fix touches source code, go back to step 1.
-4. **Daemon smoke test** — if changes touch daemon code (`packages/cli/src/daemon/`), run `./scripts/daemon-smoke-test.sh` and ensure it passes before considering the task done.
+4. **Legacy daemon smoke test** — if changes explicitly touch deprecated daemon code (`packages/cli/src/daemon/`), run `./scripts/daemon-smoke-test.sh` and ensure it passes before considering that legacy path done.
    - Before smoke, always refresh the local CLI with `bash scripts/install-cli.sh`.
    - Smoke is mandatory. Missing arguments are not a reason to skip it: discover existing resources with `ak get board -o json`, `ak get repo -o json`, and `ak get agent -o json`, or create the missing resources.
    - The default smoke target is the Demo board with the `slink` repository. The smoke script auto-discovers these defaults when arguments are omitted.

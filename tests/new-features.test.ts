@@ -133,6 +133,28 @@ describe("amaRunnerCanRunRuntime", () => {
     expect(amaRunnerCanRunRuntime(runner, "claude-code")).toBe(true);
   });
 
+  it("returns false when runtime inventory reports the runtime as limited", async () => {
+    const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
+    const runner = {
+      id: "runner-limited",
+      environmentId: "env-limited",
+      status: "active",
+      capabilities: ["runtime-provider-model:claude-code:anthropic:claude-sonnet-4-6"],
+      currentLoad: 0,
+      maxConcurrent: 2,
+      lastHeartbeatAt: new Date().toISOString(),
+      runtimeUsage: [],
+      runtimeInventory: [
+        {
+          runtime: "claude-code",
+          state: "limited",
+          detail: "Claude Code quota usage unavailable",
+        },
+      ],
+    };
+    expect(amaRunnerCanRunRuntime(runner, "claude-code")).toBe(false);
+  });
+
   it("returns false when runner status is not active", async () => {
     const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
     const runner = {
@@ -533,7 +555,7 @@ describe("session usage accounting via releaseTaskRuntimeBinding", () => {
     expect(sessionRow!.cost_micro_usd).toBe(0);
   });
 
-  it("completes teardown even when usage endpoint fails", async () => {
+  it("fails teardown when usage endpoint fails", async () => {
     const { createBoard } = await import("../apps/web/server/boardRepo");
     const { createTask } = await import("../apps/web/server/taskRepo");
     const { createAmaAgentSession, bindAmaAgentSession } = await import("../apps/web/server/agentSessionRepo");
@@ -588,12 +610,11 @@ describe("session usage accounting via releaseTaskRuntimeBinding", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    // Should not throw; teardown still completes
-    const updated = await releaseTaskRuntimeBinding(db, env, OWNER, task);
-    // Active binding annotations are cleared despite usage failure; the AMA
-    // session id remains as a historical pointer for event lookup.
-    const meta = (updated.metadata as any) ?? {};
+    await expect(releaseTaskRuntimeBinding(db, env, OWNER, task)).rejects.toThrow(/AMA API request failed/);
+    const taskRow = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(task.id).first<{ metadata: string }>();
+    const meta = JSON.parse(taskRow!.metadata);
     expect(meta?.annotations?.["ama.sessionId"]).toBe(amaSessionId);
+    expect(meta?.annotations?.["ama.dispatch.result"]).toBe("accepted");
   });
 });
 

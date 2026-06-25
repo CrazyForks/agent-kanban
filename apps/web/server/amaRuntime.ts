@@ -149,6 +149,12 @@ export interface AmaRuntimeUsage {
   runtime: string;
   windows: AmaRuntimeUsageWindow[];
 }
+export interface AmaRuntimeInventory {
+  runtime: string;
+  version?: string;
+  state: string;
+  detail?: string;
+}
 export interface AmaRunner {
   id: string;
   environmentId: string | null;
@@ -158,6 +164,7 @@ export interface AmaRunner {
   maxConcurrent: number;
   lastHeartbeatAt: string | null;
   runtimeUsage?: AmaRuntimeUsage[];
+  runtimeInventory?: AmaRuntimeInventory[];
 }
 
 export interface AmaFederatedTenantInput {
@@ -591,6 +598,7 @@ export async function listAmaRunners(env: Env, ownerId: string, projectId: strin
       maxConcurrent: runner.maxConcurrent,
       lastHeartbeatAt: runner.lastHeartbeatAt,
       runtimeUsage: runner.runtimeUsage,
+      runtimeInventory: runner.runtimeInventory,
     })),
     pagination: page.pagination,
   };

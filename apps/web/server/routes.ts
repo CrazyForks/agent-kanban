@@ -14,6 +14,7 @@ import {
   type Task,
   type UsageInfo,
   type UsageWindow,
+  validateTransition,
 } from "@agent-kanban/shared";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -116,12 +117,14 @@ import {
   amaRunnerCanRunRuntime,
   amaRuntimeName,
   apiUrl,
+  clearAmaDispatchClaim,
   createAmaAgentForAkProfile,
   dispatchTaskToAma,
   ensureAmaAgentForAkAgent,
   releaseTaskRuntimeBinding,
   sendTaskMessageToAma,
   sendTaskRejectToAma,
+  syncAmaAgentForAkProfile,
 } from "./taskDispatch";
 import {
   addTaskAction,
@@ -129,7 +132,6 @@ import {
   assignTask,
   cancelTask,
   claimTask,
-  clearTaskAssignmentAfterFailedDispatch,
   completeTask,
   createTask,
   deleteTask,
@@ -140,7 +142,6 @@ import {
   rejectTask,
   releaseTask,
   reviewTask,
-  rollbackRejectedTask,
   updateTask,
 } from "./taskRepo";
 import type { Env } from "./types";
@@ -415,16 +416,61 @@ async function machineWithAmaRunnerStatus<T extends MachineRecord | MachineWithA
     ...machine,
     status: activeRunners.length > 0 ? "online" : "offline",
     last_heartbeat_at: lastHeartbeatAt ?? null,
-    runtimes: machineRuntimesFromAmaCapabilities(
-      activeRunners.flatMap((runner) => runner.capabilities),
-      lastHeartbeatAt ?? new Date().toISOString(),
-    ),
+    runtimes: machineRuntimesFromAmaRunners(activeRunners, lastHeartbeatAt ?? new Date().toISOString()),
     usage_info: machineUsageInfoFromRunners(runners.data) ?? machine.usage_info,
     runner_count: runners.data.length,
     active_runner_count: activeRunners.length,
     runner_capacity: activeRunners.reduce((sum, runner) => sum + runner.maxConcurrent, 0),
     ...("active_session_count" in machine ? { active_session_count: activeLoad } : {}),
   };
+}
+
+function machineRuntimesFromAmaRunners(runners: AmaRunner[], checkedAt: string): MachineRuntime[] {
+  const byRuntime = new Map<AgentRuntime, MachineRuntime>();
+  for (const runner of runners) {
+    if (!runner.runtimeInventory || runner.runtimeInventory.length === 0) {
+      for (const runtime of machineRuntimesFromAmaCapabilities(runner.capabilities, checkedAt)) {
+        mergeMachineRuntime(byRuntime, runtime);
+      }
+      continue;
+    }
+    for (const entry of runner.runtimeInventory) {
+      const runtime = akRuntimeFromAmaCapability(entry.runtime);
+      const status = machineRuntimeStatusFromAmaState(entry.state);
+      if (!runtime || !status) continue;
+      mergeMachineRuntime(byRuntime, {
+        name: runtime,
+        status,
+        ...(entry.detail ? { detail: entry.detail } : {}),
+        checked_at: checkedAt,
+      });
+    }
+  }
+  return AGENT_RUNTIMES.flatMap((runtime) => {
+    const entry = byRuntime.get(runtime);
+    return entry ? [entry] : [];
+  });
+}
+
+function mergeMachineRuntime(runtimes: Map<AgentRuntime, MachineRuntime>, next: MachineRuntime): void {
+  const current = runtimes.get(next.name);
+  if (!current || machineRuntimeStatusRank(next.status) > machineRuntimeStatusRank(current.status)) {
+    runtimes.set(next.name, next);
+  }
+}
+
+function machineRuntimeStatusRank(status: MachineRuntime["status"]): number {
+  if (status === "ready") return 5;
+  if (status === "limited") return 4;
+  if (status === "unauthorized") return 3;
+  if (status === "unhealthy") return 2;
+  return 1;
+}
+
+function machineRuntimeStatusFromAmaState(state: string): MachineRuntime["status"] | null {
+  if (state === "ready" || state === "limited" || state === "missing" || state === "unauthorized" || state === "unhealthy") return state;
+  if (state === "unauthenticated") return "unauthorized";
+  return null;
 }
 
 function machineRuntimesFromAmaCapabilities(capabilities: string[], checkedAt: string): MachineRuntime[] {
@@ -957,12 +1003,8 @@ async function backfillAgentAmaIds(db: D1, env: Env, ownerId: string, projectId:
   const pending = await listAgentsMissingAmaAgent(db, ownerId);
   let backfilled = 0;
   for (const agent of pending) {
-    try {
-      await ensureAmaAgentForAkAgent(db, env, ownerId, agent.id, projectId, amaRuntimeName(agent.runtime));
-      backfilled += 1;
-    } catch (err: unknown) {
-      logger.warn(`ama agent backfill failed for agent ${agent.username} (${agent.id}): ${err instanceof Error ? err.message : String(err)}`);
-    }
+    await ensureAmaAgentForAkAgent(db, env, ownerId, agent.id, projectId, amaRuntimeName(agent.runtime));
+    backfilled += 1;
   }
   if (pending.length > 0) logger.info(`ama agent backfill: ${backfilled}/${pending.length} for owner ${ownerId}`);
   return backfilled;
@@ -1131,14 +1173,27 @@ api.patch("/api/agents/:id", async (c) => {
   const subagents = updates.subagents ?? existing.subagents;
   assertSubagentRuntime(runtime, subagents);
   await assertRegisteredSubagents(c.env.DB, ownerId, subagents, existing.id);
-  const agent = await updateAgent(c.env.DB, c.req.param("id"), updates);
-  // Keep worker AMA agents in sync (eager model: AK edits drive AMA). Leaders
-  // are not dispatch targets and do not have backing AMA agents.
-  if (agent && agent.kind === "worker" && isAmaTaskDispatchConfigured(c.env)) {
+  if (existing.kind === "worker" && isAmaTaskDispatchConfigured(c.env)) {
     await requireAmaConnected(c.env.DB, c.env, ownerId);
     const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
-    await ensureAmaAgentForAkAgent(c.env.DB, c.env, ownerId, agent.id, amaProjectId, amaRuntimeName(agent.runtime));
+    const nextProfile = {
+      ...existing,
+      ...Object.fromEntries(Object.entries(updates).filter(([, value]) => value !== undefined)),
+      runtime,
+      subagents,
+    };
+    await syncAmaAgentForAkProfile(
+      c.env.DB,
+      c.env,
+      ownerId,
+      existing.id,
+      nextProfile,
+      existing.ama_agent_id ?? null,
+      amaProjectId,
+      amaRuntimeName(runtime),
+    );
   }
+  const agent = await updateAgent(c.env.DB, c.req.param("id"), updates);
   return c.json(agent);
 });
 
@@ -1430,41 +1485,31 @@ api.post("/api/tasks/:id/claim", async (c) => {
 
 api.post("/api/tasks/:id/complete", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
-
-  const task = await completeTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), sessionId);
+  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) return c.json(task);
-  // Best-effort runtime teardown: the task is done either way, and the
-  // reconcile sweep mops up if AMA is unreachable right now.
-  let unbound: Task | null = null;
-  try {
-    unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
-  } catch (error) {
-    logger.warn(`runtime teardown failed for completed task ${task.id}: ${error}`);
+  const transitionError = validateTransition("complete", task.status, c.get("identityType"));
+  if (transitionError) {
+    throw new HTTPException(transitionError.code === "FORBIDDEN" ? 403 : 409, { message: transitionError.message });
   }
-  return c.json(unbound ?? task);
+
+  await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
+  const completed = await completeTask(c.env.DB, task.id, actorType, actorId, c.get("identityType"), sessionId);
+  return c.json(completed);
 });
 
 api.post("/api/tasks/:id/release", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
-  const task = await releaseTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), "released", sessionId);
+  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) return c.json(task);
+  const transitionError = validateTransition("release", task.status, c.get("identityType"));
+  if (transitionError) {
+    throw new HTTPException(transitionError.code === "FORBIDDEN" ? 403 : 409, { message: transitionError.message });
+  }
 
-  // Best-effort teardown: the release already happened; if AMA is unreachable
-  // the reconcile sweep tears the leftover binding down later.
-  let unbound: Task;
-  try {
-    unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
-  } catch (error) {
-    logger.warn(`runtime teardown failed for released task ${task.id}: ${error}`);
-    return c.json(task);
-  }
-  try {
-    return c.json(await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), unbound, { apiOrigin: new URL(c.req.url).origin }));
-  } catch (error) {
-    // The release itself succeeded; the dispatch sweep retries the re-dispatch.
-    logger.warn(`re-dispatch after release failed for task ${task.id}: ${error}`);
-    return c.json(unbound);
-  }
+  const unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
+  await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), { ...unbound, status: "todo" }, { apiOrigin: new URL(c.req.url).origin });
+  const released = await releaseTask(c.env.DB, task.id, actorType, actorId, c.get("identityType"), "released", sessionId);
+  return c.json(released);
 });
 
 api.post("/api/tasks/:id/assign", async (c) => {
@@ -1480,40 +1525,53 @@ api.post("/api/tasks/:id/assign", async (c) => {
     const dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), existing, {
       apiOrigin: new URL(c.req.url).origin,
       takeover: true,
+      recordFailure: false,
     });
     return c.json(dispatched);
   }
 
+  if (existing.status !== "todo") throw new HTTPException(409, { message: "Can only assign tasks in todo status" });
+  if (existing.assigned_to) throw new HTTPException(409, { message: "Task is already assigned" });
+  const targetAgent = await getAgent(c.env.DB, targetAgentId, c.get("ownerId"));
+  if (!targetAgent) throw new HTTPException(404, { message: "Agent not found" });
+  if (targetAgent.kind !== "worker") throw new HTTPException(400, { message: "Tasks can only be assigned to worker agents" });
+
+  try {
+    await dispatchTaskToAma(
+      c.env.DB,
+      c.env,
+      c.get("ownerId"),
+      { ...existing, assigned_to: targetAgentId },
+      {
+        apiOrigin: new URL(c.req.url).origin,
+        takeover: true,
+        recordFailure: false,
+      },
+    );
+  } catch (error) {
+    await clearAmaDispatchClaim(c.env.DB, existing);
+    throw error;
+  }
   const task = await assignTask(c.env.DB, c.req.param("id"), targetAgentId, actorType, actorId, sessionId, {
     skipRuntimeAvailability: isAmaTaskDispatchConfigured(c.env),
   });
   if (!task) throw new HTTPException(404, { message: "Task not found" });
-  let dispatched: Task;
-  try {
-    dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), task, {
-      apiOrigin: new URL(c.req.url).origin,
-      takeover: true,
-    });
-  } catch (error) {
-    await clearTaskAssignmentAfterFailedDispatch(c.env.DB, task.id, actorType, actorId, sessionId);
-    throw error;
-  }
-  return c.json(dispatched);
+  return c.json(task);
 });
 
 api.post("/api/tasks/:id/cancel", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
-  const cancelled = await cancelTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), sessionId);
-  if (!cancelled) throw new HTTPException(404, { message: "Task not found" });
-  // Best-effort runtime teardown: the task is cancelled either way, and the
-  // reconcile sweep mops up if AMA is unreachable right now.
-  let unbound: Task | null = null;
-  try {
-    unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), cancelled);
-  } catch (error) {
-    logger.warn(`runtime teardown failed for cancelled task ${cancelled.id}: ${error}`);
+  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+  if (!task) throw new HTTPException(404, { message: "Task not found" });
+  const transitionError = validateTransition("cancel", task.status, c.get("identityType"));
+  if (transitionError) {
+    throw new HTTPException(transitionError.code === "FORBIDDEN" ? 403 : 409, { message: transitionError.message });
   }
-  return c.json(unbound ?? cancelled);
+
+  await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
+  const cancelled = await cancelTask(c.env.DB, task.id, actorType, actorId, c.get("identityType"), sessionId);
+  if (!cancelled) throw new HTTPException(404, { message: "Task not found" });
+  return c.json(cancelled);
 });
 
 api.post("/api/tasks/:id/review", async (c) => {
@@ -1527,25 +1585,29 @@ api.post("/api/tasks/:id/review", async (c) => {
 api.post("/api/tasks/:id/reject", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
   const body = await c.req.json<{ reason?: string }>().catch(() => ({}) as { reason?: string });
-  const task = await rejectTask(c.env.DB, c.req.param("id"), actorType, actorId, c.get("identityType"), body.reason, sessionId);
+  const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) throw new HTTPException(404, { message: "Task not found" });
+  const transitionError = validateTransition("reject", task.status, c.get("identityType"));
+  if (transitionError) {
+    throw new HTTPException(transitionError.code === "FORBIDDEN" ? 403 : 409, { message: transitionError.message });
+  }
+
   try {
-    return c.json(await sendTaskRejectToAma(c.env.DB, c.env, c.get("ownerId"), task, body.reason));
+    await sendTaskRejectToAma(c.env.DB, c.env, c.get("ownerId"), task, body.reason);
   } catch (error) {
     const status = (error as { status?: unknown }).status;
     if (status === 404 || status === 409) {
-      // The session died since review was submitted, so there is nothing to
-      // resume. Tear down the dead binding and release the task; the dispatch
-      // sweep starts a fresh session, and the rejection reason stays visible
-      // in the task notes.
-      const unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task, "runtime_error");
-      // System-initiated recovery release, not a reviewer action.
-      const released = await releaseTask(c.env.DB, task.id, "machine", "system", "machine", "released", sessionId);
-      return c.json(released ?? unbound);
+      const responseText = (error as { responseText?: unknown }).responseText;
+      const message =
+        typeof responseText === "string" && responseText ? responseText : error instanceof Error ? error.message : "AMA reject delivery failed";
+      throw new HTTPException(status, { message });
     }
-    await rollbackRejectedTask(c.env.DB, task.id);
     throw error;
   }
+
+  const rejected = await rejectTask(c.env.DB, task.id, actorType, actorId, c.get("identityType"), body.reason, sessionId);
+  if (!rejected) throw new HTTPException(404, { message: "Task not found" });
+  return c.json(rejected);
 });
 
 // ─── Task Notes ───
@@ -1558,10 +1620,10 @@ api.post("/api/tasks/:id/notes", async (c) => {
   if (!task) throw new HTTPException(404, { message: "Task not found" });
 
   const { actorType, actorId, sessionId } = resolveActor(c);
-  const action = await addTaskAction(c.env.DB, c.req.param("id"), actorType, actorId, "commented", body.detail, sessionId);
   if (actorType === "agent:leader" && task.status === "in_progress") {
     await sendTaskMessageToAma(c.env, c.get("ownerId"), task, body.detail);
   }
+  const action = await addTaskAction(c.env.DB, c.req.param("id"), actorType, actorId, "commented", body.detail, sessionId);
   return c.json(action, 201);
 });
 
@@ -1591,10 +1653,10 @@ api.post("/api/tasks/:id/messages", async (c) => {
   const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) throw new HTTPException(404, { message: "Task not found" });
 
-  const message = await createMessage(c.env.DB, c.req.param("id"), body.sender_type, senderId, body.content);
   if (body.sender_type === "user") {
     await sendTaskMessageToAma(c.env, c.get("ownerId"), task, body.content);
   }
+  const message = await createMessage(c.env.DB, c.req.param("id"), body.sender_type, senderId, body.content);
   return c.json(message, 201);
 });
 

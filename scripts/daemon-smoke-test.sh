@@ -116,12 +116,17 @@ task_status() {
   ak describe task "$1" 2>/dev/null | sed -n 's/^Status: *//p'
 }
 
-# The runtime binding lives in the task's metadata annotations server-side;
-# teardown clears ama.sessionId on complete/cancel/release.
+# The runtime binding lives in the task's metadata annotations server-side.
+# ama.sessionId is retained after terminal states so task history can still link
+# to the stopped AMA session and its events.
 task_runtime_binding() {
   local task_id="$1"
   ak get task "$task_id" -o json 2>/dev/null \
     | json_query 'data.metadata && data.metadata.annotations ? data.metadata.annotations["ama.sessionId"] : null' 2>/dev/null || true
+}
+
+task_session_state() {
+  ak get session "$1" 2>/dev/null | sed -n 's/^  State: *//p' | head -n 1
 }
 
 task_pr_url() {
@@ -251,13 +256,18 @@ wait_subagent_evidence() {
   return 1
 }
 
-# "cleaned up" means the server tore down the task's runtime binding:
-# the ama.sessionId annotation is cleared on complete/cancel/release.
-wait_session_cleanup() {
+# Terminal lifecycle checks should prove the runtime is no longer active, while
+# preserving ama.sessionId for historical session/event inspection.
+wait_session_stopped() {
   local task_id="$1" timeout_secs="${2:-120}"
   local elapsed=0
+  local state
   while [ "$elapsed" -lt "$timeout_secs" ]; do
     if [ -z "$(task_runtime_binding "$task_id")" ]; then
+      return 0
+    fi
+    state="$(task_session_state "$task_id")"
+    if [[ "$state" == stopped* ]]; then
       return 0
     fi
     sleep 2
@@ -371,10 +381,10 @@ run_complete_phase() {
     fail "[$label] expected done, got: $status_after"
   fi
 
-  if wait_session_cleanup "$task_id" 120; then
-    pass "[$label] session cleaned up after completion"
+  if wait_session_stopped "$task_id" 120; then
+    pass "[$label] session stopped after completion"
   else
-    fail "[$label] session still exists after completion timeout"
+    fail "[$label] session still active after completion timeout (state=$(task_session_state "$task_id"), binding=$(task_runtime_binding "$task_id"))"
   fi
 }
 
@@ -401,10 +411,10 @@ run_cancel_phase() {
     fail "[$label] expected cancelled, got: $status_after"
   fi
 
-  if wait_session_cleanup "$task_id" 60; then
-    pass "[$label] cancelled task session cleaned up"
+  if wait_session_stopped "$task_id" 60; then
+    pass "[$label] cancelled task session stopped"
   else
-    fail "[$label] cancelled task session not cleaned up after 60s (binding=$(task_runtime_binding "$task_id"))"
+    fail "[$label] cancelled task session still active after 60s (state=$(task_session_state "$task_id"), binding=$(task_runtime_binding "$task_id"))"
   fi
 }
 
@@ -483,7 +493,7 @@ if [ "$SMOKE_RUNTIME" = "mixed" ]; then
   run_dispatch_phase "cloud" "$TC" ""
   echo ""
 
-  echo "[Test 2/2] Complete both — runtime bindings torn down"
+  echo "[Test 2/2] Complete both — runtime sessions stopped"
   run_complete_phase "local" "$TL"
   run_complete_phase "cloud" "$TC"
   echo ""
@@ -506,11 +516,11 @@ else
   run_reject_phase "$RUN_LABEL" "$T1"
   echo ""
 
-  echo "[Test 3/4] Complete — mark task done, verify cleanup"
+  echo "[Test 3/4] Complete — mark task done, verify runtime stopped"
   run_complete_phase "$RUN_LABEL" "$T1"
   echo ""
 
-  echo "[Test 4/4] Cancel — create task, cancel while running, verify cleanup"
+  echo "[Test 4/4] Cancel — create task, cancel while running, verify runtime stopped"
   run_cancel_phase "$RUN_LABEL" "$RUN_AGENT_ID"
   echo ""
 fi

@@ -639,7 +639,7 @@ describe("connect-backfills-pre-ama-agents", () => {
     expect(row?.ama_agent_id ?? null).toBeNull();
   });
 
-  it("per-agent failure is non-fatal: one failing agent does not block the other", async () => {
+  it("fails provisioning when any agent backfill fails", async () => {
     const env = makeEnv();
     const { userId, token } = await createSessionUser(env, "backfill-partial@test.com");
     await linkAmaAccount(db, userId);
@@ -650,8 +650,8 @@ describe("connect-backfills-pre-ama-agents", () => {
     const agentB = await createTestAgent(db, userId, { name: "Agent B", username: "agent-b-bf", runtime: "claude" }, false);
     await db.prepare("UPDATE agents SET ama_agent_id = NULL WHERE id IN (?, ?)").bind(agentA.id, agentB.id).run();
 
-    // We don't know which agent is processed first (order depends on DB), so we
-    // make the mock fail on the FIRST call and succeed on the SECOND call.
+    // AMA backfill is part of provisioning. A failure must abort the request
+    // instead of silently persisting a partial AK/AMA state.
     const fetchMock = makeFetchMock([
       "error",
       jsonResponse({ id: "ama_agent_success", projectId: PROJECT_ID, name: "Agent", providerId: "anthropic" }, 201),
@@ -659,20 +659,12 @@ describe("connect-backfills-pre-ama-agents", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const res = await apiRequest(env, "POST", "/api/ama/provision", undefined, token);
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
 
-    const body = (await res.json()) as any;
-    expect(body.agents_backfilled).toBe(1);
-
-    // Exactly one of the two agents got an ama_agent_id.
     const rows = await db
       .prepare("SELECT id, ama_agent_id FROM agents WHERE id IN (?, ?) AND version = 'latest'")
       .bind(agentA.id, agentB.id)
       .all<{ id: string; ama_agent_id: string | null }>();
-    const withId = rows.results.filter((r) => r.ama_agent_id !== null);
-    const withoutId = rows.results.filter((r) => r.ama_agent_id === null);
-    expect(withId).toHaveLength(1);
-    expect(withoutId).toHaveLength(1);
-    expect(withId[0].ama_agent_id).toBe("ama_agent_success");
+    expect(rows.results.map((row) => row.ama_agent_id)).toEqual([null, null]);
   });
 });

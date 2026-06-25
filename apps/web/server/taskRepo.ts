@@ -339,24 +339,6 @@ export async function deleteTaskAfterFailedDispatch(db: D1, taskId: string): Pro
   await db.prepare("DELETE FROM tasks WHERE id = ?").bind(taskId).run();
 }
 
-export async function clearTaskAssignmentAfterFailedDispatch(
-  db: D1,
-  taskId: string,
-  actorType: string,
-  actorId: string,
-  sessionId: string | null = null,
-): Promise<void> {
-  const now = new Date().toISOString();
-  await db.batch([
-    db.prepare("UPDATE tasks SET assigned_to = NULL, updated_at = ? WHERE id = ?").bind(now, taskId),
-    db
-      .prepare(
-        "INSERT INTO task_actions (id, task_id, actor_type, actor_id, action, detail, session_id, created_at) VALUES (?, ?, ?, ?, 'released', ?, ?, ?)",
-      )
-      .bind(newLongId(), taskId, actorType, actorId, "Runtime dispatch failed; assignment was cleared.", sessionId, now),
-  ]);
-}
-
 export async function claimTask(
   db: D1,
   taskId: string,
@@ -555,18 +537,6 @@ export async function rejectTask(
   ]);
 
   return parseTask({ ...task, status: "in_progress" as const, updated_at: now });
-}
-
-export async function rollbackRejectedTask(db: D1, taskId: string): Promise<void> {
-  const now = new Date().toISOString();
-  await db.batch([
-    db.prepare("UPDATE tasks SET status = 'in_review', updated_at = ? WHERE id = ? AND status = 'in_progress'").bind(now, taskId),
-    db
-      .prepare(
-        "DELETE FROM task_actions WHERE id = (SELECT id FROM task_actions WHERE task_id = ? AND action = 'rejected' ORDER BY created_at DESC LIMIT 1)",
-      )
-      .bind(taskId),
-  ]);
 }
 
 export async function addTaskAction(

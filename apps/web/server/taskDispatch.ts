@@ -46,7 +46,7 @@ export async function dispatchTaskToAma(
   env: Env,
   ownerId: string,
   task: Task,
-  options: { apiOrigin: string; takeover?: boolean },
+  options: { apiOrigin: string; takeover?: boolean; recordFailure?: boolean },
 ): Promise<Task> {
   if (!task.assigned_to || !isAmaTaskDispatchConfigured(env)) {
     return task;
@@ -169,9 +169,13 @@ export async function dispatchTaskToAma(
       logger.warn(`failed to revoke session secret for ${sessionIdentity.sessionId}: ${revokeError}`);
     });
     await closeSession(db, sessionIdentity.sessionId);
-    await recordDispatchFailure(db, task, error).catch(() => {
-      // claim cleanup is best-effort; the stale-claim sweep recovers it
-    });
+    if (options.recordFailure === false) {
+      await annotateTask(db, task, { "ama.dispatch.result": null });
+    } else {
+      await recordDispatchFailure(db, task, error).catch(() => {
+        // claim cleanup is best-effort; the stale-claim sweep recovers it
+      });
+    }
     throw error;
   }
 
@@ -283,6 +287,32 @@ export async function ensureAmaAgentForAkAgent(
   return agent;
 }
 
+export async function syncAmaAgentForAkProfile(
+  db: D1,
+  env: Env,
+  ownerId: string,
+  akAgentId: string,
+  akAgent: AkAgentProfile,
+  existingAmaAgentId: string | null,
+  projectId: string,
+  runtime: string,
+  options: { memoryEnabled?: boolean } = {},
+) {
+  const amaAgentInput = await buildAmaAgentInput(db, ownerId, akAgent, projectId, runtime, options);
+  if (existingAmaAgentId) {
+    const live = await readAmaAgent(env, ownerId, projectId, existingAmaAgentId);
+    if (live) {
+      await updateAmaAgentConfig(env, ownerId, projectId, live.id, amaAgentInput);
+      await setAgentAmaId(db, ownerId, akAgentId, live.id);
+      return live;
+    }
+  }
+
+  const agent = await createAmaAgent(env, ownerId, amaAgentInput);
+  await setAgentAmaId(db, ownerId, akAgentId, agent.id);
+  return agent;
+}
+
 function amaAgentMemoryPolicy(enabled: boolean) {
   return enabled ? { enabled: true, mode: "notebook", scope: "project_agent" } : { enabled: false };
 }
@@ -348,6 +378,7 @@ export function amaRunnerCanRunRuntime(runner: AmaRunner, runtime: string, model
   if (runner.status !== "active" || runner.currentLoad >= runner.maxConcurrent || runtimeQuotaExhausted(runner, runtime)) {
     return false;
   }
+  if (!runnerRuntimeInventoryReady(runner, runtime)) return false;
   const runtimeCapable = runner.capabilities.some(
     (capability) => capability === runtime || capability.startsWith(`runtime-provider-model:${runtime}:`),
   );
@@ -357,6 +388,12 @@ export function amaRunnerCanRunRuntime(runner: AmaRunner, runtime: string, model
   // pinned to one of them. A bare runtime capability (no model declaration)
   // stays acceptable as a transitional fallback.
   return amaRunnerDeclaresModel(runner, runtime, model) || runner.capabilities.includes(runtime);
+}
+
+function runnerRuntimeInventoryReady(runner: AmaRunner, runtime: string): boolean {
+  const inventory = runner.runtimeInventory ?? [];
+  if (inventory.length === 0) return true;
+  return inventory.some((entry) => entry.runtime === runtime && entry.state === "ready");
 }
 
 export function amaRunnerDeclaresModel(runner: AmaRunner, runtime: string, model: string): boolean {
@@ -440,27 +477,14 @@ export async function releaseTaskRuntimeBinding(
   if (!sessionId && !akSessionId) return task;
 
   if (sessionId && projectId && isAmaRuntimeConfigured(env)) {
-    try {
-      await stopAmaSession(env, ownerId, projectId, sessionId, reason);
-    } catch (error) {
-      // 404: session no longer exists; 409: already archived. Both terminal.
-      const status = (error as { status?: unknown }).status;
-      if (status !== 404 && status !== 409) throw error;
-    }
+    await stopAmaSession(env, ownerId, projectId, sessionId, reason);
   }
   if (akSessionId) {
-    await collectAkAgentSessionUsage(db, env, akSessionId).catch((error) => {
-      logger.warn(`failed to collect session usage for ${akSessionId}: ${error}`);
-    });
-    await revokeAkAgentSessionSecret(db, env, akSessionId).catch((error) => {
-      logger.warn(`failed to revoke session secret for ${akSessionId}: ${error}`);
-    });
+    await collectAkAgentSessionUsage(db, env, akSessionId);
+    await revokeAkAgentSessionSecret(db, env, akSessionId);
     const ghCredentialId = stringAnnotation(annotations, "ama.ghCredentialId");
     if (ghCredentialId) {
-      // Best effort: the installation token expires within the hour anyway.
-      await revokeGithubTokenCredential(db, env, akSessionId, ghCredentialId).catch((error) => {
-        logger.warn(`failed to revoke GitHub token credential for ${akSessionId}: ${error}`);
-      });
+      await revokeGithubTokenCredential(db, env, akSessionId, ghCredentialId);
     }
     await closeSession(db, akSessionId);
   }
@@ -478,13 +502,7 @@ async function revokeGithubTokenCredential(db: D1, env: Env, akSessionId: string
   if (!session) return;
   const projectId = await resolveAmaProjectId(db, env, session.owner_id);
   const vaultId = await resolveAmaSessionSecretVaultId(db, env, session.owner_id);
-  try {
-    await revokeAmaVaultCredential(env, session.owner_id, projectId, vaultId, credentialId);
-  } catch (error) {
-    // 404: credential already gone; 400: already revoked.
-    const status = (error as { status?: unknown }).status;
-    if (status !== 404 && status !== 400) throw error;
-  }
+  await revokeAmaVaultCredential(env, session.owner_id, projectId, vaultId, credentialId);
 }
 
 // Copies the AMA usage summary for the session into ama_agent_sessions so AK
@@ -505,13 +523,7 @@ async function revokeAkAgentSessionSecret(db: D1, env: Env, akSessionId: string)
   if (!session?.secret_credential_id) return;
   const projectId = await resolveAmaProjectId(db, env, session.owner_id);
   const vaultId = await resolveAmaSessionSecretVaultId(db, env, session.owner_id);
-  try {
-    await revokeAmaVaultCredential(env, session.owner_id, projectId, vaultId, session.secret_credential_id);
-  } catch (error) {
-    // 404: credential already gone; 400: already revoked.
-    const status = (error as { status?: unknown }).status;
-    if (status !== 404 && status !== 400) throw error;
-  }
+  await revokeAmaVaultCredential(env, session.owner_id, projectId, vaultId, session.secret_credential_id);
   await setAmaAgentSessionSecretCredential(db, akSessionId, null);
 }
 
@@ -560,6 +572,10 @@ export async function releaseStaleDispatchClaims(db: D1): Promise<void> {
     if (!task) continue;
     await annotateTask(db, task, { "ama.dispatch.result": null });
   }
+}
+
+export async function clearAmaDispatchClaim(db: D1, task: Task): Promise<Task> {
+  return await annotateTask(db, task, { "ama.dispatch.result": null });
 }
 
 // Cron sweep: dispatch assigned todo tasks that have no runtime binding yet —
@@ -663,6 +679,7 @@ export async function reconcileAmaBoundTasks(db: D1, env: Env): Promise<void> {
       const released = await releaseTaskRuntimeBinding(db, env, row.owner_id, task, "runtime_error");
       if (row.status === "in_progress") {
         await releaseTask(db, task.id, "machine", "system", "machine", "released");
+        continue;
       }
       // The session died before the task progressed; arm the backoff so the
       // dispatch sweep does not immediately re-dispatch into the same failure.

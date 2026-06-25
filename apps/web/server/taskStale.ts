@@ -1,11 +1,8 @@
 import { STALE_TIMEOUT_MS } from "@agent-kanban/shared";
 import type { D1 } from "./db";
-import { createLogger } from "./logger";
 import { releaseTaskRuntimeBinding } from "./taskDispatch";
 import { getTask, releaseTask } from "./taskRepo";
 import type { Env } from "./types";
-
-const logger = createLogger("taskStale");
 
 export async function detectAndReleaseStale(db: D1, boardId: string): Promise<void> {
   const cutoff = new Date(Date.now() - STALE_TIMEOUT_MS).toISOString();
@@ -52,12 +49,8 @@ export async function detectAndReleaseStaleAll(db: D1, env: Env): Promise<void> 
   for (const stale of staleTasks.results) {
     // Stop the wedged runtime session before releasing, so it doesn't keep
     // burning quota against a task that is no longer running it.
-    try {
-      const task = await getTask(db, stale.id, stale.owner_id);
-      if (task) await releaseTaskRuntimeBinding(db, env, stale.owner_id, task, "timeout");
-    } catch (error) {
-      logger.warn(`runtime teardown failed for stale task ${stale.id}: ${error}`);
-    }
+    const task = await getTask(db, stale.id, stale.owner_id);
+    if (task) await releaseTaskRuntimeBinding(db, env, stale.owner_id, task, "timeout");
     await releaseTask(db, stale.id, "machine", "system", "machine", "timed_out");
   }
 }

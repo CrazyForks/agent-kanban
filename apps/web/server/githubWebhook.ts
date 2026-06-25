@@ -1,4 +1,3 @@
-import type { Task } from "@agent-kanban/shared";
 import type { D1 } from "./db";
 import {
   addInstallationRepositories,
@@ -62,7 +61,8 @@ export async function handleGithubPullRequestEvent(
 
   const transitioned: string[] = [];
   for (const row of rows.results) {
-    let task: Task | null = null;
+    const fresh = await getTask(db, row.id, row.owner_id);
+    if (!fresh) continue;
     if (merged) {
       if (row.status !== "in_review") {
         // PR merged while the task is still in_progress: the agent has not
@@ -71,18 +71,15 @@ export async function handleGithubPullRequestEvent(
         logger.warn(`PR merged for task ${row.id} while ${row.status}; skipping`);
         continue;
       }
-      task = await completeTask(db, row.id, "machine", "github", "machine");
+      await releaseTaskRuntimeBinding(db, env, row.owner_id, fresh);
+      const task = await completeTask(db, row.id, "machine", "github", "machine");
+      if (!task) continue;
     } else {
-      task = await cancelTask(db, row.id, "machine", "github", "machine");
+      await releaseTaskRuntimeBinding(db, env, row.owner_id, fresh);
+      const task = await cancelTask(db, row.id, "machine", "github", "machine");
+      if (!task) continue;
     }
-    if (!task) continue;
     transitioned.push(row.id);
-    try {
-      const fresh = await getTask(db, row.id, row.owner_id);
-      if (fresh) await releaseTaskRuntimeBinding(db, env, row.owner_id, fresh);
-    } catch (error) {
-      logger.warn(`runtime teardown failed for task ${row.id} after PR ${merged ? "merge" : "close"}: ${error}`);
-    }
   }
   return { handled: true, tasks: transitioned };
 }
