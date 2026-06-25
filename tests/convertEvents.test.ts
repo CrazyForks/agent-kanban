@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { convertEvents } from "../apps/web/src/components/RelayRuntimeProvider.js";
+import { amaEventToRelayEvent, convertEvents } from "../apps/web/src/components/RelayRuntimeProvider.js";
 import type { RelayEvent } from "../apps/web/src/hooks/useSessionRelay.js";
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
@@ -347,6 +347,86 @@ describe("convertEvents — edge cases", () => {
 
     expect(messages[0].id).toBe("custom-id");
     expect(messages[0].createdAt).toEqual(new Date(ts));
+  });
+});
+
+describe("amaEventToRelayEvent — message role mapping", () => {
+  it("maps AMA user message_end events to user chat messages", () => {
+    const relayEvent = amaEventToRelayEvent({
+      id: "ama-user-1",
+      type: "message_end",
+      createdAt: "2026-04-08T10:00:00.000Z",
+      payload: {
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Please update the PR" }],
+        },
+      },
+    });
+
+    const messages = convertEvents([relayEvent], "idle");
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].role).toBe("user");
+    expect((messages[0].content as any[])[0].text).toBe("Please update the PR");
+  });
+
+  it("keeps AMA assistant message_end events as agent chat messages", () => {
+    const relayEvent = amaEventToRelayEvent({
+      id: "ama-assistant-1",
+      type: "message_end",
+      createdAt: "2026-04-08T10:00:01.000Z",
+      payload: {
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "PR updated" }],
+        },
+      },
+    });
+
+    const messages = convertEvents([relayEvent], "idle");
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].role).toBe("assistant");
+    expect((messages[0].content as any[])[0].text).toBe("PR updated");
+  });
+
+  it("maps canonical AMA session rows with top-level user role", () => {
+    const relayEvent = amaEventToRelayEvent({
+      id: "ama-row-user-1",
+      type: "message_end",
+      role: "user",
+      createdAt: "2026-04-08T10:00:02.000Z",
+      payload: {
+        message: {
+          content: [{ type: "text", text: "Can you rerun the smoke test?" }],
+        },
+      },
+    });
+
+    const messages = convertEvents([relayEvent], "idle");
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].role).toBe("user");
+    expect((messages[0].content as any[])[0].text).toBe("Can you rerun the smoke test?");
+  });
+
+  it("maps canonical AMA user rows when content is stored on payload", () => {
+    const relayEvent = amaEventToRelayEvent({
+      id: "ama-row-user-2",
+      type: "message_end",
+      role: "user",
+      createdAt: "2026-04-08T10:00:03.000Z",
+      payload: {
+        content: "Please keep the same session.",
+      },
+    });
+
+    const messages = convertEvents([relayEvent], "idle");
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].role).toBe("user");
+    expect((messages[0].content as any[])[0].text).toBe("Please keep the same session.");
   });
 });
 

@@ -1,4 +1,4 @@
-import type { AgentEvent } from "@agent-kanban/shared";
+import type { AgentEvent, ContentBlock } from "@agent-kanban/shared";
 import { AssistantRuntimeProvider, type ThreadMessageLike, useExternalStoreRuntime } from "@assistant-ui/react";
 import { type ReactNode, useCallback, useMemo } from "react";
 import type { AgentStatus, RelayEvent } from "../hooks/useSessionRelay";
@@ -418,7 +418,7 @@ export function AmaRuntimeProvider({ events: rawEvents, taskDone, children }: Am
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>;
 }
 
-function amaEventToRelayEvent(raw: Record<string, unknown>): RelayEvent {
+export function amaEventToRelayEvent(raw: Record<string, unknown>): RelayEvent {
   const payload = objectValue(raw.payload);
   const embedded = objectValue(payload?.event);
   const event = embedded ? (embedded as AgentEvent) : fallbackAmaAgentEvent(raw, payload);
@@ -441,8 +441,14 @@ function fallbackAmaAgentEvent(raw: Record<string, unknown>, payload: Record<str
   }
 
   if (type === "message_end") {
-    const message = objectValue(payload?.message);
-    return { type: "message", blocks: messageContentBlocks(message) };
+    const messageValue = payload?.message;
+    const message = objectValue(messageValue);
+    const role = stringValue(raw.role) ?? stringValue(message?.role) ?? stringValue(payload?.role);
+    const blocks = messageContentBlocks(message, payload, messageValue);
+    if (role === "user") {
+      return { type: "message.user", text: textFromMessageBlocks(blocks) };
+    }
+    return { type: "message", blocks };
   }
 
   if (type === "tool_execution_start") {
@@ -488,21 +494,41 @@ function fallbackAmaAgentEvent(raw: Record<string, unknown>, payload: Record<str
   return { type: "message", blocks: [{ type: "text", text }] };
 }
 
-function messageContentBlocks(message: Record<string, unknown> | null): AgentEvent extends { type: "message"; blocks: infer B } ? B : never {
+function messageContentBlocks(
+  message: Record<string, unknown> | null,
+  payload?: Record<string, unknown> | null,
+  messageValue?: unknown,
+): ContentBlock[] {
   if (typeof message?.content === "string") {
-    return [{ type: "text", text: message.content }] as AgentEvent extends { type: "message"; blocks: infer B } ? B : never;
+    return [{ type: "text", text: message.content }];
+  }
+  if (typeof payload?.content === "string") {
+    return [{ type: "text", text: payload.content }];
+  }
+  if (typeof payload?.text === "string") {
+    return [{ type: "text", text: payload.text }];
+  }
+  if (typeof messageValue === "string") {
+    return [{ type: "text", text: messageValue }];
   }
   const content = Array.isArray(message?.content) ? message.content : [];
   const blocks = content
     .map((part) => {
       const item = objectValue(part);
       if (!item) return null;
-      const text = stringValue(item.text);
+      const text = stringValue(item.text) ?? stringValue(item.content);
       if (!text) return null;
       return { type: "text" as const, text };
     })
     .filter((block): block is { type: "text"; text: string } => block !== null);
-  return blocks as AgentEvent extends { type: "message"; blocks: infer B } ? B : never;
+  return blocks;
+}
+
+function textFromMessageBlocks(blocks: ContentBlock[]): string {
+  return blocks
+    .filter((block): block is { type: "text"; text: string } => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
 }
 
 function normalizeAmaToolName(toolName: string | null): string {

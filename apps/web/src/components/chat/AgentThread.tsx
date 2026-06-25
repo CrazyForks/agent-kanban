@@ -1,5 +1,5 @@
 import { AuiIf, ErrorPrimitive, MessagePrimitive, ThreadPrimitive, type ToolCallMessagePartComponent } from "@assistant-ui/react";
-import { ArrowDownIcon, Plug, Wrench } from "lucide-react";
+import { ArrowDownIcon, Bot, Plug, UserRound, Wrench } from "lucide-react";
 import { type FC, useRef } from "react";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
@@ -77,20 +77,26 @@ export const ChatToolFallback: ToolCallMessagePartComponent = ({ toolName, argsT
 const AgentMessage: FC = () => {
   return (
     <MessagePrimitive.Root className="aui-assistant-message-root relative w-full py-2">
-      <div className="flex flex-col gap-2 text-sm text-content-primary leading-relaxed [&_.aui-reasoning-root]:mb-1 [&_.aui-reasoning-root]:border-0 [&_.aui-reasoning-root]:px-0 [&_.aui-reasoning-root]:py-0">
-        <MessagePrimitive.Parts
-          components={{
-            Text: MarkdownText,
-            Reasoning: Reasoning,
-            ReasoningGroup: ReasoningGroup,
-            tools: { Fallback: ChatToolFallback },
-          }}
-        />
-        <MessagePrimitive.Error>
-          <ErrorPrimitive.Root className="mt-1 rounded-md border border-destructive bg-destructive/10 p-2 text-destructive text-xs">
-            <ErrorPrimitive.Message className="line-clamp-2" />
-          </ErrorPrimitive.Root>
-        </MessagePrimitive.Error>
+      <div className="mb-1.5 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide text-accent">
+        <Bot className="size-3" />
+        <span>Agent</span>
+      </div>
+      <div className="border-l-2 border-accent/60 bg-surface-secondary/60 px-3 py-2">
+        <div className="flex flex-col gap-2 text-sm text-content-primary leading-relaxed [&_.aui-reasoning-root]:mb-1 [&_.aui-reasoning-root]:border-0 [&_.aui-reasoning-root]:px-0 [&_.aui-reasoning-root]:py-0">
+          <MessagePrimitive.Parts
+            components={{
+              Text: MarkdownText,
+              Reasoning: Reasoning,
+              ReasoningGroup: ReasoningGroup,
+              tools: { Fallback: ChatToolFallback },
+            }}
+          />
+          <MessagePrimitive.Error>
+            <ErrorPrimitive.Root className="mt-1 rounded-md border border-destructive bg-destructive/10 p-2 text-destructive text-xs">
+              <ErrorPrimitive.Message className="line-clamp-2" />
+            </ErrorPrimitive.Root>
+          </MessagePrimitive.Error>
+        </div>
       </div>
     </MessagePrimitive.Root>
   );
@@ -100,9 +106,15 @@ const AgentMessage: FC = () => {
 
 const HumanMessage: FC = () => {
   return (
-    <MessagePrimitive.Root className="aui-user-message-root flex justify-end w-full py-2">
-      <div className="max-w-[80%] rounded-2xl bg-accent/10 border border-accent/20 px-4 py-2.5 text-sm text-content-primary">
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+    <MessagePrimitive.Root className="aui-user-message-root flex w-full justify-end py-2">
+      <div className="flex max-w-[80%] flex-col items-end">
+        <div className="mb-1.5 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide text-content-tertiary">
+          <UserRound className="size-3" />
+          <span>You</span>
+        </div>
+        <div className="rounded-md border border-border bg-surface-tertiary px-3 py-2 text-sm text-content-primary">
+          <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        </div>
       </div>
     </MessagePrimitive.Root>
   );
