@@ -99,7 +99,7 @@ cleanup() {
     if [ -n "$SCHEDULED_MARKER_TASK_ID" ]; then ak task cancel "$SCHEDULED_MARKER_TASK_ID" >/dev/null 2>&1 || true; ak delete task "$SCHEDULED_MARKER_TASK_ID" >/dev/null 2>&1 || true; fi
   fi
   if [ -n "$BOARD_REPO_TASK_ID" ]; then ak task cancel "$BOARD_REPO_TASK_ID" >/dev/null 2>&1 || true; ak delete task "$BOARD_REPO_TASK_ID" >/dev/null 2>&1 || true; fi
-  if [ -n "$AGENT_ID" ]; then ak delete agent "$AGENT_ID" >/dev/null 2>&1 || true; fi
+  if [ "$KEEP_ARTIFACTS" != 1 ] && [ -n "$AGENT_ID" ]; then ak delete agent "$AGENT_ID" >/dev/null 2>&1 || true; fi
   if [ -n "$TEMP_WORKER_HOME" ]; then rm -rf "$TEMP_WORKER_HOME"; fi
 }
 trap cleanup EXIT
@@ -250,6 +250,18 @@ wait_for_marker_task() {
     elapsed=$((elapsed + 10))
   done
   return 1
+}
+
+assert_marker_created_by_maintainer() {
+  local task_id="$1"
+  local label="$2"
+  local created_by
+  created_by="$(ak get task "$task_id" -o json | json_query "data.created_by")"
+  if [ "$created_by" = "$AGENT_ID" ]; then
+    pass "$label marker task was created by maintainer agent"
+  else
+    fail "$label marker task created_by=$created_by, expected maintainer agent $AGENT_ID"
+  fi
 }
 
 post_github_issue_event() {
@@ -507,6 +519,7 @@ if [ "$LIVE" = 1 ]; then
 
   if HTTP_MARKER_TASK_ID="$(wait_for_marker_task "$HTTP_MARKER_TITLE" 600)"; then
     pass "HTTP maintainer run created marker task ($HTTP_MARKER_TASK_ID)"
+    assert_marker_created_by_maintainer "$HTTP_MARKER_TASK_ID" "HTTP"
   else
     fail "HTTP maintainer run did not create marker task"
     echo "    latest HTTP run: $(latest_run_summary "$HTTP_MAINTAINER_ID")"
@@ -524,6 +537,7 @@ if [ "$LIVE" = 1 ]; then
 
   if SCHEDULED_MARKER_TASK_ID="$(wait_for_marker_task "$SCHEDULED_MARKER_TITLE" 720)"; then
     pass "scheduled maintainer run created marker task ($SCHEDULED_MARKER_TASK_ID)"
+    assert_marker_created_by_maintainer "$SCHEDULED_MARKER_TASK_ID" "scheduled"
   else
     fail "scheduled maintainer run did not create marker task"
     echo "    latest scheduled run: $(latest_run_summary "$SCHEDULED_MAINTAINER_ID")"
@@ -537,6 +551,7 @@ echo "==============================="
 echo "  Passed: $PASS"
 echo "  Failed: $FAIL"
 if [ "$KEEP_ARTIFACTS" = 1 ]; then
+  if [ -n "$AGENT_ID" ]; then echo "  Maintainer agent:      $AGENT_ID"; fi
   if [ -n "$HTTP_MARKER_TASK_ID" ]; then echo "  HTTP marker task:      $HTTP_MARKER_TASK_ID"; fi
   if [ -n "$SCHEDULED_MARKER_TASK_ID" ]; then echo "  Scheduled marker task: $SCHEDULED_MARKER_TASK_ID"; fi
 fi

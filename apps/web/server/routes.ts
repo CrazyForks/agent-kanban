@@ -30,13 +30,22 @@ import {
   updateAgent,
   upsertLatestAgent,
 } from "./agentRepo";
-import { closeSession, createSession, getAmaAgentSession, listSessions, reopenSession, updateSessionUsage } from "./agentSessionRepo";
+import {
+  closeSession,
+  createSession,
+  getAmaAgentSession,
+  listSessions,
+  reopenSession,
+  setAmaAgentSessionSecretCredential,
+  updateSessionUsage,
+} from "./agentSessionRepo";
 import {
   createAmaCloudSandboxEnvironment,
   ensureAmaOwnerIntegration,
   getAmaProjectId,
   hasAmaAccount,
   resolveAmaProjectId,
+  resolveAmaSessionSecretVaultId,
 } from "./amaOwnerIntegrationRepo";
 import {
   type AmaRunner,
@@ -49,6 +58,7 @@ import {
   createAmaMemoryStore,
   createAmaMemoryStoreMemory,
   createAmaScheduledAgentTrigger,
+  createAmaSessionSecret,
   deleteAmaScheduledAgentTrigger,
   deleteAmaTrigger,
   getAmaSessionSocketUrl,
@@ -127,10 +137,12 @@ import {
   amaRuntimeName,
   apiUrl,
   clearAmaDispatchClaim,
+  createAkAgentSessionIdentity,
   createAmaAgentForAkProfile,
   dispatchTaskToAma,
   ensureAmaAgentForAkAgent,
   releaseTaskRuntimeBinding,
+  secretReferenceName,
   sendTaskMessageToAma,
   sendTaskRejectToAma,
   syncAmaAgentForAkProfile,
@@ -1807,13 +1819,25 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     memoryEnabled: true,
   });
   const name = body.name?.trim() || `${board.name} maintainer`;
+  const sessionIdentity = await createAkAgentSessionIdentity(c.env.DB, c.env, ownerId, maintainerAgentId);
+  const vaultId = await resolveAmaSessionSecretVaultId(c.env.DB, c.env, ownerId);
+  const sessionSecret = await createAmaSessionSecret(c.env, ownerId, {
+    projectId: amaProjectId,
+    vaultId,
+    name: secretReferenceName(sessionIdentity.sessionId),
+    secretValue: JSON.stringify(sessionIdentity.privateKeyJwk),
+    metadata: { purpose: "board-maintainer-session", boardId, agentId: maintainerAgentId },
+  });
+  await setAmaAgentSessionSecretCredential(c.env.DB, sessionIdentity.sessionId, sessionSecret.credentialId);
   const runtimeEnv = {
     AK_WORKER: "1",
     AK_AGENT_ID: maintainerAgentId,
+    AK_SESSION_ID: sessionIdentity.sessionId,
     AK_BOARD_ID: boardId,
     AK_BOARD_REPOSITORIES: JSON.stringify(boardRepositories.map((repo) => ({ id: repo.id, full_name: repo.full_name, url: repo.url }))),
     AK_API_URL: apiUrl(c.env, new URL(c.req.url).origin),
   };
+  const runtimeSecretEnv = [{ name: "AK_AGENT_KEY", credentialId: sessionSecret.credentialId, versionId: sessionSecret.activeVersionId }];
   const memoryStore = await createAmaMemoryStore(c.env, ownerId, {
     projectId: amaProjectId,
     name: `${name} memory`,
@@ -1847,6 +1871,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     status: body.status ?? "active",
     resourceRefs,
     runtimeEnv,
+    runtimeSecretEnv,
   });
   const httpTrigger = await createAmaHttpAgentTrigger(c.env, ownerId, {
     projectId: amaProjectId,
@@ -1861,6 +1886,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     status: body.status ?? "active",
     resourceRefs,
     runtimeEnv,
+    runtimeSecretEnv,
   });
 
   const maintainer = await createBoardMaintainer(c.env.DB, ownerId, {
