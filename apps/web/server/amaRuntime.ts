@@ -105,6 +105,28 @@ export interface AmaScheduledTriggerUpdate {
   status?: "active" | "paused";
 }
 
+export interface AmaHttpTriggerInput {
+  projectId: string;
+  agentId: string;
+  environmentId?: string | null;
+  runtime: string;
+  name: string;
+  promptTemplate: string;
+  status?: "active" | "paused";
+  resourceRefs?: AmaResourceRef[];
+  runtimeEnv?: Record<string, string>;
+  runtimeSecretEnv?: AmaRuntimeSecretEnvRef[];
+}
+
+export interface AmaHttpTriggerUpdate {
+  agentId?: string;
+  environmentId?: string | null;
+  runtime?: string;
+  name?: string;
+  promptTemplate?: string;
+  status?: "active" | "paused";
+}
+
 export interface AmaScheduledTrigger {
   id: string;
   agentId: string;
@@ -117,18 +139,57 @@ export interface AmaScheduledTrigger {
   lastRunId: string | null;
 }
 
-export interface AmaScheduledTriggerRun {
+export interface AmaHttpTrigger {
+  id: string;
+  agentId: string;
+  environmentId: string | null;
+  name: string;
+  promptTemplate: string;
+  status: "active" | "paused" | "archived";
+  lastDispatchedAt: string | null;
+  lastRunId: string | null;
+}
+
+export interface AmaTriggerRun {
   id: string;
   projectId: string;
   triggerId: string;
-  scheduledFor: string;
-  heartbeatAt: string;
+  scheduledFor: string | null;
+  heartbeatAt: string | null;
+  triggeredAt: string;
   status: string;
   sessionId: string | null;
   errorMessage: string | null;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AmaMemoryStore {
+  id: string;
+  name: string;
+}
+
+export interface AmaMemoryStoreInput {
+  projectId: string;
+  name: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AmaMemoryInput {
+  projectId: string;
+  storeId: string;
+  path: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AmaHttpTriggerRunInput {
+  projectId: string;
+  triggerId: string;
+  body: Record<string, unknown>;
+  idempotencyKey?: string | null;
 }
 
 export interface AmaRuntimeCommandResult {
@@ -610,7 +671,7 @@ interface AmaTriggerResponse {
   environmentId: string | null;
   name: string;
   promptTemplate: string;
-  schedule: { intervalSeconds: number; windowSeconds?: number };
+  schedule: { intervalSeconds: number; windowSeconds?: number } | null;
   enabled: boolean;
   archivedAt: string | null;
   lastDispatchedAt: string | null;
@@ -621,8 +682,9 @@ interface AmaTriggerRunResponse {
   id: string;
   projectId: string;
   triggerId: string;
-  scheduledFor: string;
-  heartbeatAt: string;
+  scheduledFor: string | null;
+  heartbeatAt: string | null;
+  triggeredAt: string;
   state: string;
   sessionId: string | null;
   errorMessage: string | null;
@@ -639,6 +701,9 @@ function amaTriggerStatus(trigger: AmaTriggerResponse): AmaScheduledTrigger["sta
 }
 
 function toAmaScheduledTrigger(trigger: AmaTriggerResponse): AmaScheduledTrigger {
+  if (!trigger.schedule) {
+    throw new Error(`AMA trigger ${trigger.id} is not scheduled`);
+  }
   return {
     id: trigger.id,
     agentId: trigger.agentId,
@@ -652,13 +717,27 @@ function toAmaScheduledTrigger(trigger: AmaTriggerResponse): AmaScheduledTrigger
   };
 }
 
-function toAmaScheduledTriggerRun(run: AmaTriggerRunResponse): AmaScheduledTriggerRun {
+function toAmaHttpTrigger(trigger: AmaTriggerResponse): AmaHttpTrigger {
+  return {
+    id: trigger.id,
+    agentId: trigger.agentId,
+    environmentId: trigger.environmentId,
+    name: trigger.name,
+    promptTemplate: trigger.promptTemplate,
+    status: amaTriggerStatus(trigger),
+    lastDispatchedAt: trigger.lastDispatchedAt,
+    lastRunId: trigger.lastRunId,
+  };
+}
+
+function toAmaTriggerRun(run: AmaTriggerRunResponse): AmaTriggerRun {
   return {
     id: run.id,
     projectId: run.projectId,
     triggerId: run.triggerId,
     scheduledFor: run.scheduledFor,
     heartbeatAt: run.heartbeatAt,
+    triggeredAt: run.triggeredAt,
     status: run.state,
     sessionId: run.sessionId,
     errorMessage: run.errorMessage,
@@ -674,10 +753,20 @@ export async function listAmaScheduledTriggerRuns(
   projectId: string,
   triggerId: string,
   options: { limit?: number } = {},
-): Promise<AmaListResponse<AmaScheduledTriggerRun>> {
+): Promise<AmaListResponse<AmaTriggerRun>> {
+  return await listAmaTriggerRuns(env, ownerId, projectId, triggerId, options);
+}
+
+export async function listAmaTriggerRuns(
+  env: Env,
+  ownerId: string,
+  projectId: string,
+  triggerId: string,
+  options: { limit?: number } = {},
+): Promise<AmaListResponse<AmaTriggerRun>> {
   const client = await createAmaClient(env, ownerId, projectId);
   const page = await client.triggers.listRuns(triggerId, { limit: options.limit ?? 20 });
-  return { data: page.data.map(toAmaScheduledTriggerRun), pagination: page.pagination };
+  return { data: page.data.map(toAmaTriggerRun), pagination: page.pagination };
 }
 
 export async function stopAmaSession(
@@ -695,6 +784,7 @@ export async function stopAmaSession(
 export async function createAmaScheduledAgentTrigger(env: Env, ownerId: string, input: AmaScheduledTriggerInput): Promise<AmaScheduledTrigger> {
   const client = await createAmaClient(env, ownerId, input.projectId);
   const trigger = await client.triggers.create({
+    type: "scheduled",
     agentId: input.agentId,
     ...(input.environmentId ? { environmentId: input.environmentId } : {}),
     runtime: input.runtime as Runtime,
@@ -707,6 +797,24 @@ export async function createAmaScheduledAgentTrigger(env: Env, ownerId: string, 
     enabled: (input.status ?? "active") !== "paused",
   });
   return toAmaScheduledTrigger(trigger);
+}
+
+export async function createAmaHttpAgentTrigger(env: Env, ownerId: string, input: AmaHttpTriggerInput): Promise<AmaHttpTrigger> {
+  const client = await createAmaClient(env, ownerId, input.projectId);
+  const trigger = await client.triggers.create({
+    type: "http",
+    agentId: input.agentId,
+    ...(input.environmentId ? { environmentId: input.environmentId } : {}),
+    runtime: input.runtime as Runtime,
+    name: input.name,
+    promptTemplate: input.promptTemplate,
+    resourceRefs: input.resourceRefs ?? [],
+    env: input.runtimeEnv ?? {},
+    secretEnv: toAmaSecretEnv(input.runtimeSecretEnv ?? []),
+    schedule: null,
+    enabled: (input.status ?? "active") !== "paused",
+  });
+  return toAmaHttpTrigger(trigger);
 }
 
 export async function updateAmaScheduledAgentTrigger(
@@ -731,9 +839,64 @@ export async function updateAmaScheduledAgentTrigger(
   return toAmaScheduledTrigger(trigger);
 }
 
-export async function deleteAmaScheduledAgentTrigger(env: Env, ownerId: string, projectId: string, scheduleId: string): Promise<void> {
+export async function updateAmaHttpAgentTrigger(
+  env: Env,
+  ownerId: string,
+  projectId: string,
+  triggerId: string,
+  input: AmaHttpTriggerUpdate,
+): Promise<AmaHttpTrigger> {
+  const body: UpdateTriggerRequest = {};
+  if (input.agentId !== undefined) body.agentId = input.agentId;
+  if (input.environmentId !== undefined) body.environmentId = input.environmentId as string | undefined;
+  if (input.runtime !== undefined) body.runtime = input.runtime as Runtime;
+  if (input.name !== undefined) body.name = input.name;
+  if (input.promptTemplate !== undefined) body.promptTemplate = input.promptTemplate;
+  if (input.status !== undefined) body.enabled = input.status !== "paused";
   const client = await createAmaClient(env, ownerId, projectId);
-  await client.triggers.delete(scheduleId);
+  const trigger = await client.triggers.update(triggerId, body);
+  return toAmaHttpTrigger(trigger);
+}
+
+export async function deleteAmaScheduledAgentTrigger(env: Env, ownerId: string, projectId: string, scheduleId: string): Promise<void> {
+  await deleteAmaTrigger(env, ownerId, projectId, scheduleId);
+}
+
+export async function deleteAmaTrigger(env: Env, ownerId: string, projectId: string, triggerId: string): Promise<void> {
+  const client = await createAmaClient(env, ownerId, projectId);
+  await client.triggers.delete(triggerId);
+}
+
+export async function createAmaMemoryStore(env: Env, ownerId: string, input: AmaMemoryStoreInput): Promise<AmaMemoryStore> {
+  const client = await createAmaClient(env, ownerId, input.projectId);
+  const store = await client.memoryStores.create({
+    name: input.name,
+    description: input.description,
+    metadata: input.metadata ?? {},
+  });
+  return { id: store.id, name: store.name };
+}
+
+export async function createAmaMemoryStoreMemory(env: Env, ownerId: string, input: AmaMemoryInput): Promise<void> {
+  const client = await createAmaClient(env, ownerId, input.projectId);
+  await client.memoryStores.createMemory(input.storeId, {
+    path: input.path,
+    content: input.content,
+    metadata: input.metadata ?? {},
+  });
+}
+
+export async function archiveAmaMemoryStore(env: Env, ownerId: string, projectId: string, storeId: string): Promise<void> {
+  const client = await createAmaClient(env, ownerId, projectId);
+  await client.memoryStores.update(storeId, { archived: true });
+}
+
+export async function dispatchAmaHttpTriggerRun(env: Env, ownerId: string, input: AmaHttpTriggerRunInput): Promise<AmaTriggerRun> {
+  const client = await createAmaClient(env, ownerId, input.projectId);
+  const run = await client.triggers.createRun(input.triggerId, input.body, {
+    ...(input.idempotencyKey ? { headers: { "idempotency-key": input.idempotencyKey } } : {}),
+  });
+  return toAmaTriggerRun(run);
 }
 
 // Resolves the AMA access token for the linked AMA account of the AK user

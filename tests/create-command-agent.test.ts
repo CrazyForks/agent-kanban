@@ -3,12 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const createAgent = vi.fn();
 const createSubagent = vi.fn();
+const createBoardMaintainer = vi.fn();
 const output = vi.fn();
 
 vi.mock("../packages/cli/src/agent/leader.js", () => ({
   createClient: vi.fn(async () => ({
     createAgent,
     createSubagent,
+    createBoardMaintainer,
   })),
 }));
 
@@ -17,7 +19,7 @@ vi.mock("../packages/cli/src/output.js", () => ({
   output,
 }));
 
-type CommandAction = (opts: Record<string, string | undefined>) => Promise<void>;
+type CommandAction = (opts: Record<string, unknown>) => Promise<void>;
 
 type CapturedCommand = {
   action?: CommandAction;
@@ -66,10 +68,18 @@ async function registerCreateSubagent(): Promise<CapturedCommand> {
   return commands.get("subagent")!;
 }
 
+async function registerCreateMaintainer(): Promise<CapturedCommand> {
+  const { registerCreateCommand } = await import("../packages/cli/src/commands/create.js");
+  const commands = new Map<string, CapturedCommand>();
+  registerCreateCommand(buildProgram((name, command) => commands.set(name, command)));
+  return commands.get("maintainer")!;
+}
+
 describe("registerCreateCommand agent", () => {
   beforeEach(() => {
     createAgent.mockReset();
     createSubagent.mockReset();
+    createBoardMaintainer.mockReset();
     output.mockReset();
   });
 
@@ -143,5 +153,41 @@ describe("registerCreateCommand agent", () => {
       skills: ["saltbo/agent-kanban@agent-kanban"],
     });
     expect(output).toHaveBeenCalledWith({ id: "subagent-1", name: "Test Writer", role: "test-writer" }, "json", expect.any(Function));
+  });
+
+  it("creates a maintainer with repository scope", async () => {
+    const command = await registerCreateMaintainer();
+    createBoardMaintainer.mockResolvedValue({
+      id: "maintainer-1",
+      board_id: "board-1",
+      agent_id: "agent-1",
+      repository_id: "repo-1",
+      name: "Repo Maintainer",
+    });
+
+    await command.action!({
+      board: "board-1",
+      agent: "agent-1",
+      name: "Repo Maintainer",
+      prompt: "Watch incoming GitHub work",
+      repo: "repo-1",
+      intervalSeconds: "3600",
+      paused: true,
+      output: "json",
+    });
+
+    expect(createBoardMaintainer).toHaveBeenCalledWith("board-1", {
+      agent_id: "agent-1",
+      prompt: "Watch incoming GitHub work",
+      interval_seconds: 3600,
+      name: "Repo Maintainer",
+      repository_id: "repo-1",
+      status: "paused",
+    });
+    expect(output).toHaveBeenCalledWith(
+      { id: "maintainer-1", board_id: "board-1", agent_id: "agent-1", repository_id: "repo-1", name: "Repo Maintainer" },
+      "json",
+      expect.any(Function),
+    );
   });
 });

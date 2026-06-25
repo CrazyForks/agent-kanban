@@ -1,3 +1,6 @@
+import { getAmaProjectId } from "./amaOwnerIntegrationRepo";
+import { dispatchAmaHttpTriggerRun } from "./amaRuntime";
+import { listActiveBoardMaintainersForRepository } from "./boardMaintainerRepo";
 import type { D1 } from "./db";
 import {
   addInstallationRepositories,
@@ -92,11 +95,71 @@ type InstallationPayload = {
 };
 
 type WebhookRepo = { id?: number; full_name?: string };
+type MaintainerWebhookPayload = {
+  action?: string;
+  installation?: { id?: number };
+  repository?: {
+    id?: number;
+    full_name?: string;
+    html_url?: string;
+    default_branch?: string;
+  };
+  issue?: Record<string, unknown>;
+  pull_request?: Record<string, unknown>;
+  sender?: Record<string, unknown>;
+};
 
 function toRepoInputs(repos: WebhookRepo[] | undefined): { fullName: string; repoId: number | null }[] {
   return (repos ?? [])
     .filter((repo): repo is { id?: number; full_name: string } => Boolean(repo.full_name))
     .map((repo) => ({ fullName: repo.full_name, repoId: repo.id ?? null }));
+}
+
+export async function handleGithubMaintainerEvent(
+  db: D1,
+  env: Env,
+  input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload },
+): Promise<{ handled: boolean; maintainers: string[] }> {
+  if (input.event !== "issues" && input.event !== "pull_request") return { handled: false, maintainers: [] };
+  const fullName = input.payload.repository?.full_name?.toLowerCase();
+  const installationId = input.payload.installation?.id;
+  if (!fullName || !installationId) return { handled: false, maintainers: [] };
+
+  const maintainers = await listActiveBoardMaintainersForRepository(db, installationId, fullName);
+  if (maintainers.length === 0) return { handled: false, maintainers: [] };
+
+  const dispatched: string[] = [];
+  for (const maintainer of maintainers) {
+    if (!maintainer.ama_http_trigger_id) continue;
+    const projectId = await getAmaProjectId(db, maintainer.owner_id);
+    if (!projectId) {
+      throw new Error(`No AMA project for maintainer owner ${maintainer.owner_id}`);
+    }
+    await dispatchAmaHttpTriggerRun(env, maintainer.owner_id, {
+      projectId,
+      triggerId: maintainer.ama_http_trigger_id,
+      idempotencyKey: input.deliveryId ?? `${input.event}:${input.payload.action ?? "unknown"}:${fullName}`,
+      body: githubMaintainerRunBody(input),
+    });
+    dispatched.push(maintainer.id);
+  }
+  return { handled: dispatched.length > 0, maintainers: dispatched };
+}
+
+function githubMaintainerRunBody(input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload }): Record<string, unknown> {
+  const subject = input.event === "issues" ? input.payload.issue : input.payload.pull_request;
+  const body = {
+    event: input.event,
+    action: input.payload.action ?? "",
+    delivery_id: input.deliveryId ?? null,
+    repository: input.payload.repository ?? null,
+    subject,
+    sender: input.payload.sender ?? null,
+  };
+  return {
+    ...body,
+    event_json: JSON.stringify(body, null, 2),
+  };
 }
 
 // installation events: keep the installation row + its selected-repo snapshot in

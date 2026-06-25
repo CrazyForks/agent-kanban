@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@agent-kanban/shared": "workspace:*",
-    "@any-managed-agents/sdk": "github:saltbo/any-managed-agents#2ce8c56ab743bbfb7ccf63a5d6c58311de469f19&path:sdk/typescript",
+    "@any-managed-agents/sdk": "github:saltbo/any-managed-agents#7c7b7fd2eb4d73b5b5182065ff8e61743802a91e&path:sdk/typescript",
     "@assistant-ui/react": "^0.12.24",
     "@assistant-ui/react-markdown": "^0.12.8",
     "@base-ui/react": "^1.3.0",

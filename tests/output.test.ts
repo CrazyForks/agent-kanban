@@ -6,6 +6,8 @@ import {
   formatBoard,
   formatBoardList,
   formatLabelList,
+  formatMaintainer,
+  formatMaintainerList,
   formatModelList,
   formatRepositoryList,
   formatTask,
@@ -476,6 +478,40 @@ describe("formatRepositoryList", () => {
     expect(result).toContain("r1");
     expect(result).toContain("my-repo");
     expect(result).toContain("https://github.com/org/my-repo");
+  });
+});
+
+describe("formatMaintainer", () => {
+  it("includes repository_id when present", () => {
+    const result = formatMaintainer({
+      id: "maintainer-1",
+      name: "Repo Maintainer",
+      board_id: "board-1",
+      agent_id: "agent-1",
+      repository_id: "repo-1",
+      status: "active",
+      interval_seconds: 3600,
+    });
+
+    expect(result).toContain("Repository:");
+    expect(result).toContain("repo-1");
+  });
+});
+
+describe("formatMaintainerList", () => {
+  it("includes repository_id when present", () => {
+    const result = formatMaintainerList([
+      {
+        id: "maintainer-1",
+        name: "Repo Maintainer",
+        agent_id: "agent-1",
+        repository_id: "repo-1",
+        status: "active",
+        interval_seconds: 3600,
+      },
+    ]);
+
+    expect(result).toContain("repo=repo-1");
   });
 });
 

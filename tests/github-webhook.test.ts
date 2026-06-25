@@ -26,6 +26,9 @@ function reqUrl(input: RequestInfo | URL): string {
 function reqMethod(input: RequestInfo | URL, init?: RequestInit): string {
   return input instanceof Request ? input.method : ((init as any)?.method ?? "GET");
 }
+async function reqBody(input: RequestInfo | URL, init?: RequestInit): Promise<string> {
+  return input instanceof Request ? input.clone().text() : String((init as any)?.body ?? "");
+}
 
 // hey-api defaults to parseAs:'auto' which infers JSON only when Content-Type
 // is application/json. Always include it so the SDK parses the body correctly.
@@ -47,6 +50,10 @@ function makeEnv(overrides: Record<string, unknown> = {}): any {
     GITHUB_CLIENT_SECRET: "x",
     MAILS_ADMIN_TOKEN: "",
     GITHUB_APP_WEBHOOK_SECRET: WEBHOOK_SECRET,
+    AMA_ORIGIN: "https://ama.test",
+    AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+    AMA_OAUTH_CLIENT_ID: "ak-app",
+    AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     ...overrides,
   };
 }
@@ -181,6 +188,243 @@ describe("POST /api/webhooks/github-app route", () => {
     });
     // 200 is the only acceptable status for a valid webhook (no matching tasks is OK)
     expect(res.status).toBe(200);
+  });
+
+  it.each([
+    {
+      event: "issues",
+      subjectKey: "issue",
+      subject: { number: 42, title: "Webhook issue", html_url: "https://github.com/maintainer-org/maintainer-repo/issues/42" },
+    },
+    {
+      event: "pull_request",
+      subjectKey: "pull_request",
+      subject: { number: 77, title: "Webhook PR", html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77", merged: false },
+    },
+  ])("dispatches $event events to active maintainer HTTP trigger with event_json", async ({ event, subjectKey, subject }) => {
+    const ownerId = `webhook-maintainer-${event}-${randomUUID()}`;
+    const triggerSuffix = event.replace(/[^a-z_]/g, "_");
+    const httpTriggerId = `http_webhook_${triggerSuffix}_${randomUUID()}`;
+    const repoName = `maintainer-repo-${triggerSuffix}-${randomUUID()}`;
+    const repoFullName = `maintainer-org/${repoName}`;
+    const installationId = Math.floor(Math.random() * 1_000_000_000);
+    await seedUser(db, ownerId, `${ownerId}@test.com`);
+    await db
+      .prepare(
+        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
+         VALUES (?, 'project_webhook', ?, 'vault_webhook', '{}')`,
+      )
+      .bind(ownerId, ownerId)
+      .run();
+    await db
+      .prepare(
+        `INSERT INTO github_installations
+           (installation_id, owner_id, account_login, account_id, account_type, repository_selection, suspended_at)
+         VALUES (?, ?, 'maintainer-org', ?, 'Organization', 'selected', NULL)`,
+      )
+      .bind(installationId, ownerId, installationId + 1000)
+      .run();
+    await db
+      .prepare("INSERT INTO github_installation_repositories (installation_id, full_name, repo_id) VALUES (?, ?, ?)")
+      .bind(installationId, repoFullName.toLowerCase(), 123)
+      .run();
+
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createBoardMaintainer } = await import("../apps/web/server/boardMaintainerRepo");
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    const board = await createBoard(db, ownerId, `webhook-maintainer-board-${randomUUID()}`, "dev");
+    const repo = await createRepository(db, ownerId, { name: repoName, url: `https://github.com/${repoFullName}` });
+    const agent = await createTestAgent(db, ownerId, {
+      name: "Webhook maintainer",
+      username: `webhook-maintainer-${randomUUID()}`,
+      runtime: "codex",
+      kind: "leader",
+      role: "board-maintainer",
+    });
+    const maintainer = await createBoardMaintainer(db, ownerId, {
+      boardId: board.id,
+      agentId: agent.id,
+      repositoryId: repo.id,
+      amaScheduleId: `sched_webhook_${triggerSuffix}_${randomUUID()}`,
+      amaHttpTriggerId: httpTriggerId,
+      amaMemoryStoreId: `mem_webhook_${triggerSuffix}_${randomUUID()}`,
+      name: "Webhook maintainer",
+      prompt: "Watch GitHub events.",
+      intervalSeconds: 3600,
+      status: "active",
+    });
+
+    const dispatched: Array<{ url: string; headers: Record<string, string>; body: any }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = reqUrl(input);
+        if (url === `https://ama.test/api/v1/triggers/${httpTriggerId}/runs` && reqMethod(input, init) === "POST") {
+          const headers = input instanceof Request ? Object.fromEntries(input.headers.entries()) : { ...(init?.headers as Record<string, string>) };
+          const body = JSON.parse(await reqBody(input, init));
+          dispatched.push({ url, headers, body });
+          return jsonResponse(
+            {
+              id: "run_webhook",
+              projectId: "project_webhook",
+              triggerId: httpTriggerId,
+              scheduledFor: null,
+              heartbeatAt: null,
+              triggeredAt: "2026-06-09T01:02:03.000Z",
+              state: "session_created",
+              sessionId: "session_webhook",
+              errorMessage: null,
+              metadata: {},
+              createdAt: "2026-06-09T01:02:03.000Z",
+              updatedAt: "2026-06-09T01:02:03.000Z",
+            },
+            201,
+          );
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    const payload = {
+      action: "opened",
+      installation: { id: installationId },
+      repository: { id: 123, full_name: repoFullName, html_url: `https://github.com/${repoFullName}` },
+      [subjectKey]: {
+        ...subject,
+        html_url: `https://github.com/${repoFullName}/${event === "issues" ? "issues" : "pull"}/${subject.number}`,
+      },
+      sender: { login: "octocat" },
+    };
+    const body = JSON.stringify(payload);
+    const sig = await signWebhookBody(body);
+    const deliveryId = `delivery-${event}-${randomUUID()}`;
+    const res = await apiRequest("POST", "/api/webhooks/github-app", body, {
+      "x-hub-signature-256": sig,
+      "x-github-event": event,
+      "x-github-delivery": deliveryId,
+    });
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as any;
+    const maintainerDispatch = event === "pull_request" ? json.maintainer_dispatch : json;
+    expect(maintainerDispatch).toMatchObject({ handled: true, maintainers: [maintainer.id] });
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0].headers["idempotency-key"]).toBe(deliveryId);
+    expect(dispatched[0].headers["x-ama-project-id"]).toBe("project_webhook");
+    expect(dispatched[0].body).toMatchObject({
+      event,
+      action: "opened",
+      delivery_id: deliveryId,
+      repository: payload.repository,
+      subject: payload[subjectKey as keyof typeof payload],
+      sender: { login: "octocat" },
+    });
+    expect(JSON.parse(dispatched[0].body.event_json)).toMatchObject({
+      event,
+      action: "opened",
+      delivery_id: deliveryId,
+      repository: payload.repository,
+      subject: payload[subjectKey as keyof typeof payload],
+      sender: { login: "octocat" },
+    });
+  });
+
+  it("does not dispatch maintainer events without a matching installation", async () => {
+    const ownerId = `webhook-maintainer-scope-${randomUUID()}`;
+    const repoName = `maintainer-repo-scope-${randomUUID()}`;
+    const repoFullName = `maintainer-org/${repoName}`;
+    const installationId = Math.floor(Math.random() * 1_000_000_000);
+    const wrongInstallationId = installationId + 1;
+    const otherOwnerInstallationId = installationId + 2;
+    const httpTriggerId = `http_webhook_scope_${randomUUID()}`;
+
+    await seedUser(db, ownerId, `${ownerId}@test.com`);
+    await db
+      .prepare(
+        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
+         VALUES (?, 'project_webhook_scope', ?, 'vault_webhook_scope', '{}')`,
+      )
+      .bind(ownerId, ownerId)
+      .run();
+    await db
+      .prepare(
+        `INSERT INTO github_installations
+           (installation_id, owner_id, account_login, account_id, account_type, repository_selection, suspended_at)
+         VALUES (?, ?, 'maintainer-org', ?, 'Organization', 'selected', NULL)`,
+      )
+      .bind(installationId, ownerId, installationId + 1000)
+      .run();
+    await db
+      .prepare("INSERT INTO github_installation_repositories (installation_id, full_name, repo_id) VALUES (?, ?, ?)")
+      .bind(installationId, repoFullName.toLowerCase(), 456)
+      .run();
+    await db
+      .prepare(
+        `INSERT INTO github_installations
+           (installation_id, owner_id, account_login, account_id, account_type, repository_selection, suspended_at)
+         VALUES (?, ?, 'maintainer-org', ?, 'Organization', 'selected', NULL)`,
+      )
+      .bind(otherOwnerInstallationId, `other-owner-${randomUUID()}`, otherOwnerInstallationId + 1000)
+      .run();
+    await db
+      .prepare("INSERT INTO github_installation_repositories (installation_id, full_name, repo_id) VALUES (?, ?, ?)")
+      .bind(otherOwnerInstallationId, repoFullName.toLowerCase(), 456)
+      .run();
+
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createBoardMaintainer } = await import("../apps/web/server/boardMaintainerRepo");
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    const board = await createBoard(db, ownerId, `webhook-maintainer-scope-board-${randomUUID()}`, "dev");
+    const repo = await createRepository(db, ownerId, { name: repoName, url: `https://github.com/${repoFullName}` });
+    const agent = await createTestAgent(db, ownerId, {
+      name: "Webhook maintainer scope",
+      username: `webhook-maintainer-scope-${randomUUID()}`,
+      runtime: "codex",
+      kind: "leader",
+      role: "board-maintainer",
+    });
+    await createBoardMaintainer(db, ownerId, {
+      boardId: board.id,
+      agentId: agent.id,
+      repositoryId: repo.id,
+      amaScheduleId: `sched_webhook_scope_${randomUUID()}`,
+      amaHttpTriggerId: httpTriggerId,
+      amaMemoryStoreId: `mem_webhook_scope_${randomUUID()}`,
+      name: "Webhook maintainer scope",
+      prompt: "Watch GitHub events.",
+      intervalSeconds: 3600,
+      status: "active",
+    });
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      throw new Error(`Unexpected fetch: ${reqUrl(input)}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const basePayload = {
+      action: "opened",
+      repository: { id: 456, full_name: repoFullName, html_url: `https://github.com/${repoFullName}` },
+      issue: { number: 42, title: "Scoped issue", html_url: `https://github.com/${repoFullName}/issues/42` },
+      sender: { login: "octocat" },
+    };
+
+    for (const payload of [
+      basePayload,
+      { ...basePayload, installation: { id: wrongInstallationId } },
+      { ...basePayload, installation: { id: otherOwnerInstallationId } },
+    ]) {
+      const body = JSON.stringify(payload);
+      const sig = await signWebhookBody(body);
+      const res = await apiRequest("POST", "/api/webhooks/github-app", body, {
+        "x-hub-signature-256": sig,
+        "x-github-event": "issues",
+        "x-github-delivery": `delivery-scope-${randomUUID()}`,
+      });
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toMatchObject({ handled: false, maintainers: [] });
+    }
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

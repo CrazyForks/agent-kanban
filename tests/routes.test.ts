@@ -256,7 +256,7 @@ describe("routes", () => {
     expect(body.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("creates board maintainers through AMA scheduled triggers", async () => {
+  it("creates, updates, lists, and deletes board maintainers through AMA triggers and memory stores", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
       AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
@@ -274,7 +274,12 @@ describe("routes", () => {
     await configureAmaOwnerRuntime(userTokenOwnerId, "codex", "env_123");
 
     const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
     const maintainerBoard = await createBoard(env.DB, userTokenOwnerId, `maintainer-board-${crypto.randomUUID()}`, "ops");
+    const maintainerRepository = await createRepository(env.DB, userTokenOwnerId, {
+      name: `maintainer-repo-${crypto.randomUUID()}`,
+      url: "https://github.com/maintainer-org/maintainer-repo",
+    });
     const maintainerAgent = await createTestAgent(env.DB, userTokenOwnerId, {
       name: "Daily maintainer",
       username: `daily-maintainer-${crypto.randomUUID()}`,
@@ -287,11 +292,14 @@ describe("routes", () => {
     // The AMA agent is created eagerly at agent creation; the maintainer route
     // now reads the stored ama_agent_id and reconciles config (read + update).
     await setAgentAmaId(env.DB, maintainerAgent.id, "ama_agent_maintainer");
-    const scheduleRequests: any[] = [];
-    const updateRequests: any[] = [];
+    const memoryStoreRequests: any[] = [];
+    const memoryRequests: any[] = [];
+    const triggerRequests: any[] = [];
+    const updateRequests: Array<{ triggerId: string; body: any }> = [];
     const archiveRequests: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
+      const method = reqMethod(input, init);
       if (url === "https://auth.test/oauth/token") {
         return jsonResponse({ access_token: "oauth-token" });
       }
@@ -325,22 +333,62 @@ describe("routes", () => {
         expect(body.memoryPolicy).toEqual({ enabled: true, mode: "notebook", scope: "project_agent" });
         return jsonResponse({ id: "ama_agent_maintainer", projectId: "project_123", name: "agent" });
       }
-      if (url === "https://ama.test/api/v1/triggers") {
+      if (url === "https://ama.test/api/v1/memory-stores" && method === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        scheduleRequests.push(body);
+        memoryStoreRequests.push(body);
+        expect(body.name).toBe("Daily maintainer memory");
+        expect(body.metadata).toEqual({ purpose: "ak-board-maintainer", boardId: maintainerBoard.id, agentId: maintainerAgent.id });
+        return jsonResponse({ id: "mem_maintainer", name: body.name }, 201);
+      }
+      if (url === "https://ama.test/api/v1/memory-stores/mem_maintainer/memories" && method === "POST") {
+        const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
+        memoryRequests.push(body);
+        expect(body.path).toBe("ak-maintainer-heartbeat.md");
+        expect(body.content).toContain(`Board: ${maintainerBoard.name} (${maintainerBoard.id})`);
+        expect(body.content).toContain("Repository: maintainer-org/maintainer-repo");
+        expect(body.metadata).toEqual({ purpose: "ak-board-maintainer-heartbeat", boardId: maintainerBoard.id });
+        return jsonResponse({ id: "memory_heartbeat", ...body }, 201);
+      }
+      if (url === "https://ama.test/api/v1/triggers" && method === "POST") {
+        const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
+        triggerRequests.push(body);
         expect(body.metadata).toBeUndefined();
         expect(body.agentId).toBe("ama_agent_maintainer");
         expect(body.environmentId).toBeUndefined();
-        expect(body.resourceRefs).toEqual([]);
+        expect(body.resourceRefs).toEqual([{ type: "memory_store", storeId: "mem_maintainer", access: "read_write" }]);
         expect(body.env).toMatchObject({
           AK_WORKER: "1",
           AK_BOARD_ID: maintainerBoard.id,
+          AK_REPOSITORY_ID: maintainerRepository.id,
+          AK_REPOSITORY_FULL_NAME: "maintainer-org/maintainer-repo",
           AK_API_URL: "https://ak.test",
         });
         expect(body.env.AK_AGENT_ID).toBe(maintainerAgent.id);
         expect(body.env).not.toHaveProperty("AK_SESSION_ID");
         expect(body.secretEnv).toEqual([]);
         expect(body.promptTemplate).toContain(`AK board ${maintainerBoard.id}`);
+        if (body.type === "http") {
+          expect(body.schedule).toBeNull();
+          expect(body.name).toBe("Daily maintainer GitHub events");
+          expect(body.promptTemplate).toContain("{{ body.event_json }}");
+          return jsonResponse(
+            {
+              id: "http_maintainer",
+              agentId: "ama_agent_maintainer",
+              environmentId: "env_123",
+              name: body.name,
+              promptTemplate: body.promptTemplate,
+              schedule: null,
+              enabled: true,
+              archivedAt: null,
+              lastDispatchedAt: null,
+              lastRunId: null,
+            },
+            201,
+          );
+        }
+        expect(body.type).toBe("scheduled");
+        expect(body.schedule).toEqual({ type: "interval", intervalSeconds: 3600 });
         return jsonResponse(
           {
             id: "sched_maintainer",
@@ -357,21 +405,34 @@ describe("routes", () => {
           201,
         );
       }
-      if (url === "https://ama.test/api/v1/triggers/sched_maintainer" && reqMethod(input, init) === "DELETE") {
+      if (
+        (url === "https://ama.test/api/v1/triggers/sched_maintainer" || url === "https://ama.test/api/v1/triggers/http_maintainer") &&
+        method === "DELETE"
+      ) {
         archiveRequests.push(url);
         return new Response(null, { status: 204 });
       }
-      if (url === "https://ama.test/api/v1/triggers/sched_maintainer" && reqMethod(input, init) === "PATCH") {
+      if (url === "https://ama.test/api/v1/memory-stores/mem_maintainer" && method === "PATCH") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        updateRequests.push(body);
+        archiveRequests.push(url);
+        expect(body).toEqual({ archived: true });
+        return jsonResponse({ id: "mem_maintainer", name: "Daily maintainer memory", archived: true });
+      }
+      if (
+        (url === "https://ama.test/api/v1/triggers/sched_maintainer" || url === "https://ama.test/api/v1/triggers/http_maintainer") &&
+        method === "PATCH"
+      ) {
+        const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
+        const triggerId = url.endsWith("/http_maintainer") ? "http_maintainer" : "sched_maintainer";
+        updateRequests.push({ triggerId, body });
         expect(body.metadata).toBeUndefined();
         return jsonResponse({
-          id: "sched_maintainer",
+          id: triggerId,
           agentId: "ama_agent_maintainer",
           environmentId: "env_123",
           name: body.name ?? "Daily maintainer",
           promptTemplate: body.promptTemplate ?? "unchanged",
-          schedule: { intervalSeconds: body.schedule?.intervalSeconds ?? 3600, windowSeconds: 0 },
+          schedule: triggerId === "sched_maintainer" ? { intervalSeconds: body.schedule?.intervalSeconds ?? 3600, windowSeconds: 0 } : null,
           enabled: body.enabled ?? true,
           archivedAt: null,
           lastDispatchedAt: null,
@@ -388,12 +449,35 @@ describe("routes", () => {
               triggerId: "sched_maintainer",
               scheduledFor: "2026-06-08T12:00:00.000Z",
               heartbeatAt: "2026-06-08T12:00:03.000Z",
+              triggeredAt: "2026-06-08T12:00:00.000Z",
               state: "completed",
               sessionId: "session_maintainer_1",
               errorMessage: null,
               metadata: { attempt: 1 },
               createdAt: "2026-06-08T12:00:00.000Z",
               updatedAt: "2026-06-08T12:00:04.000Z",
+            },
+          ],
+          pagination: { limit, hasMore: false },
+        });
+      }
+      if (url.startsWith("https://ama.test/api/v1/triggers/http_maintainer/runs?")) {
+        const limit = Number(new URL(url).searchParams.get("limit") ?? 20);
+        return jsonResponse({
+          data: [
+            {
+              id: "run_maintainer_http_1",
+              projectId: "project_123",
+              triggerId: "http_maintainer",
+              scheduledFor: null,
+              heartbeatAt: null,
+              triggeredAt: "2026-06-08T12:10:00.000Z",
+              state: "session_created",
+              sessionId: "session_maintainer_http_1",
+              errorMessage: null,
+              metadata: { event: "issues" },
+              createdAt: "2026-06-08T12:09:59.000Z",
+              updatedAt: "2026-06-08T12:10:00.000Z",
             },
           ],
           pagination: { limit, hasMore: false },
@@ -422,6 +506,7 @@ describe("routes", () => {
         {
           agent_id: maintainerAgent.id,
           name: "Daily maintainer",
+          repository_id: maintainerRepository.id,
           prompt: "Inspect open work and create follow-up tasks when needed.",
           interval_seconds: 3600,
         },
@@ -432,39 +517,65 @@ describe("routes", () => {
       expect(maintainer).toMatchObject({
         board_id: maintainerBoard.id,
         agent_id: maintainerAgent.id,
+        repository_id: maintainerRepository.id,
         status: "active",
       });
       expect(maintainer).not.toHaveProperty("ama_schedule_id");
       expect(maintainer).not.toHaveProperty("last_ama_session_id");
       expect(maintainer).toMatchObject({
-        last_run_at: "2026-06-08T12:00:03.000Z",
-        last_session_id: "session_maintainer_1",
+        last_run_at: "2026-06-08T12:10:00.000Z",
+        last_session_id: "session_maintainer_http_1",
         latest_run: {
-          id: "run_maintainer_1",
-          scheduled_for: "2026-06-08T12:00:00.000Z",
-          heartbeat_at: "2026-06-08T12:00:03.000Z",
-          status: "completed",
-          session_id: "session_maintainer_1",
+          id: "run_maintainer_http_1",
+          scheduled_for: null,
+          heartbeat_at: null,
+          triggered_at: "2026-06-08T12:10:00.000Z",
+          status: "session_created",
+          session_id: "session_maintainer_http_1",
           error_message: null,
-          metadata: { attempt: 1 },
+          metadata: { event: "issues" },
         },
       });
       expect(maintainer.latest_run).not.toHaveProperty("sessionId");
       expect(maintainer.latest_run).not.toHaveProperty("scheduledFor");
-      expect(scheduleRequests).toHaveLength(1);
-      expect(scheduleRequests[0].env).toMatchObject({ AK_AGENT_ID: maintainerAgent.id, AK_BOARD_ID: maintainerBoard.id });
-      expect(scheduleRequests[0].env).not.toHaveProperty("AK_SESSION_ID");
+      expect(memoryStoreRequests).toHaveLength(1);
+      expect(memoryRequests).toHaveLength(1);
+      expect(triggerRequests).toHaveLength(2);
+      expect(triggerRequests.map((request) => request.type).sort()).toEqual(["http", "scheduled"]);
+      expect(triggerRequests[0].env).toMatchObject({ AK_AGENT_ID: maintainerAgent.id, AK_BOARD_ID: maintainerBoard.id });
+      expect(triggerRequests[0].env).not.toHaveProperty("AK_SESSION_ID");
+      const maintainerRow = await env.DB.prepare(
+        "SELECT repository_id, ama_schedule_id, ama_http_trigger_id, ama_memory_store_id FROM board_maintainers WHERE id = ?",
+      )
+        .bind(maintainer.id)
+        .first<{ repository_id: string; ama_schedule_id: string; ama_http_trigger_id: string; ama_memory_store_id: string }>();
+      expect(maintainerRow).toEqual({
+        repository_id: maintainerRepository.id,
+        ama_schedule_id: "sched_maintainer",
+        ama_http_trigger_id: "http_maintainer",
+        ama_memory_store_id: "mem_maintainer",
+      });
 
       const listRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers`, undefined, userToken);
       expect(listRes.status).toBe(200);
       await expect(listRes.json()).resolves.toEqual([
-        expect.objectContaining({ id: maintainer.id, last_run_at: "2026-06-08T12:00:03.000Z", last_session_id: "session_maintainer_1" }),
+        expect.objectContaining({
+          id: maintainer.id,
+          repository_id: maintainerRepository.id,
+          last_run_at: "2026-06-08T12:10:00.000Z",
+          last_session_id: "session_maintainer_http_1",
+        }),
       ]);
 
       const pauseRes = await apiRequest("PATCH", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`, { status: "paused" }, userToken);
       expect(pauseRes.status).toBe(200);
       await expect(pauseRes.json()).resolves.toEqual(expect.objectContaining({ id: maintainer.id, status: "paused" }));
-      expect(updateRequests.at(-1)).toEqual({ enabled: false });
+      expect(updateRequests.slice(-2)).toEqual(
+        expect.arrayContaining([
+          { triggerId: "sched_maintainer", body: { enabled: false } },
+          { triggerId: "http_maintainer", body: { enabled: false } },
+        ]),
+      );
 
       const updateRes = await apiRequest(
         "PATCH",
@@ -476,11 +587,24 @@ describe("routes", () => {
       await expect(updateRes.json()).resolves.toEqual(
         expect.objectContaining({ name: "Hourly maintainer", prompt: "Inspect stale work.", interval_seconds: 7200 }),
       );
-      expect(updateRequests.at(-1)).toMatchObject({
+      expect(
+        updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.name === "Hourly maintainer")?.body,
+      ).toMatchObject({
         name: "Hourly maintainer",
         schedule: { type: "interval", intervalSeconds: 7200 },
       });
-      expect(updateRequests.at(-1).promptTemplate).toContain(`AK board ${maintainerBoard.id}`);
+      expect(
+        updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.name === "Hourly maintainer")?.body.promptTemplate,
+      ).toContain(`AK board ${maintainerBoard.id}`);
+      expect(
+        updateRequests.find((request) => request.triggerId === "http_maintainer" && request.body.name === "Hourly maintainer GitHub events")?.body,
+      ).toMatchObject({
+        name: "Hourly maintainer GitHub events",
+      });
+      expect(
+        updateRequests.find((request) => request.triggerId === "http_maintainer" && request.body.name === "Hourly maintainer GitHub events")?.body
+          .promptTemplate,
+      ).toContain("{{ body.event_json }}");
 
       const runsRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/runs?limit=2`, undefined, userToken);
       expect(runsRes.status).toBe(200);
@@ -488,9 +612,20 @@ describe("routes", () => {
       expect(runs).toEqual({
         data: [
           expect.objectContaining({
+            id: "run_maintainer_http_1",
+            scheduled_for: null,
+            heartbeat_at: null,
+            triggered_at: "2026-06-08T12:10:00.000Z",
+            status: "session_created",
+            session_id: "session_maintainer_http_1",
+            error_message: null,
+            metadata: { event: "issues" },
+          }),
+          expect.objectContaining({
             id: "run_maintainer_1",
             scheduled_for: "2026-06-08T12:00:00.000Z",
             heartbeat_at: "2026-06-08T12:00:03.000Z",
+            triggered_at: expect.any(String),
             status: "completed",
             session_id: "session_maintainer_1",
             error_message: null,
@@ -507,7 +642,11 @@ describe("routes", () => {
       const archiveRes = await apiRequest("DELETE", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`, undefined, userToken);
       expect(archiveRes.status).toBe(200);
       await expect(archiveRes.json()).resolves.toEqual({ ok: true });
-      expect(archiveRequests).toEqual(["https://ama.test/api/v1/triggers/sched_maintainer"]);
+      expect(archiveRequests).toEqual([
+        "https://ama.test/api/v1/triggers/sched_maintainer",
+        "https://ama.test/api/v1/triggers/http_maintainer",
+        "https://ama.test/api/v1/memory-stores/mem_maintainer",
+      ]);
       // The maintainer row is hard-deleted.
       const goneRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers`, undefined, userToken);
       const remaining = (await goneRes.json()) as Array<{ id: string }>;
@@ -590,15 +729,23 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/agents/ama_agent_patch" && reqMethod(input, init) === "PATCH") {
         return jsonResponse({ id: "ama_agent_patch", projectId: amaProjectId, name: "agent" });
       }
+      if (url === "https://ama.test/api/v1/memory-stores" && reqMethod(input, init) === "POST") {
+        return jsonResponse({ id: "mem_patch", name: "Patch header agent memory" }, 201);
+      }
+      if (url === "https://ama.test/api/v1/memory-stores/mem_patch/memories" && reqMethod(input, init) === "POST") {
+        return jsonResponse({ id: "memory_patch" }, 201);
+      }
       if (url === "https://ama.test/api/v1/triggers" && reqMethod(input, init) === "POST") {
+        const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
+        const id = body.type === "http" ? "http_patch" : "sched_patch";
         return jsonResponse(
           {
-            id: "sched_patch",
+            id,
             agentId: "ama_agent_patch",
             environmentId: "env_patch_test",
             name: "Patch header agent",
             promptTemplate: "template",
-            schedule: { intervalSeconds: 3600, windowSeconds: 0 },
+            schedule: body.type === "http" ? null : { intervalSeconds: 3600, windowSeconds: 0 },
             enabled: true,
             archivedAt: null,
             lastDispatchedAt: null,
@@ -607,23 +754,29 @@ describe("routes", () => {
           201,
         );
       }
-      if (url === "https://ama.test/api/v1/triggers/sched_patch" && reqMethod(input, init) === "PATCH") {
+      if (
+        (url === "https://ama.test/api/v1/triggers/sched_patch" || url === "https://ama.test/api/v1/triggers/http_patch") &&
+        reqMethod(input, init) === "PATCH"
+      ) {
         const headersObj = input instanceof Request ? Object.fromEntries(input.headers.entries()) : { ...(init?.headers as Record<string, string>) };
         capturedPatchHeaders.push(headersObj);
         return jsonResponse({
-          id: "sched_patch",
+          id: url.endsWith("/http_patch") ? "http_patch" : "sched_patch",
           agentId: "ama_agent_patch",
           environmentId: "env_patch_test",
           name: "Patch header agent",
           promptTemplate: "template",
-          schedule: { intervalSeconds: 3600, windowSeconds: 0 },
+          schedule: url.endsWith("/http_patch") ? null : { intervalSeconds: 3600, windowSeconds: 0 },
           enabled: false,
           archivedAt: null,
           lastDispatchedAt: null,
           lastRunId: null,
         });
       }
-      if (url.startsWith("https://ama.test/api/v1/triggers/sched_patch/runs?")) {
+      if (
+        url.startsWith("https://ama.test/api/v1/triggers/sched_patch/runs?") ||
+        url.startsWith("https://ama.test/api/v1/triggers/http_patch/runs?")
+      ) {
         return jsonResponse({ data: [], pagination: { limit: 20, hasMore: false } });
       }
       throw new Error(`Unexpected fetch: ${url}`);
@@ -648,8 +801,8 @@ describe("routes", () => {
       const patchRes = await apiRequest("PATCH", `/api/boards/${patchBoard.id}/maintainers/${maintainer.id}`, { status: "paused" }, patchToken);
       expect(patchRes.status).toBe(200);
 
-      expect(capturedPatchHeaders).toHaveLength(1);
-      expect(capturedPatchHeaders[0]["x-ama-project-id"]).toBe(amaProjectId);
+      expect(capturedPatchHeaders).toHaveLength(2);
+      expect(capturedPatchHeaders.every((headers) => headers["x-ama-project-id"] === amaProjectId)).toBe(true);
     } finally {
       Object.assign(env, previousAma);
       vi.unstubAllGlobals();
@@ -728,15 +881,23 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/agents/ama_agent_delete" && reqMethod(input, init) === "PATCH") {
         return jsonResponse({ id: "ama_agent_delete", projectId: amaProjectId, name: "agent" });
       }
+      if (url === "https://ama.test/api/v1/memory-stores" && reqMethod(input, init) === "POST") {
+        return jsonResponse({ id: "mem_delete", name: "Delete header agent memory" }, 201);
+      }
+      if (url === "https://ama.test/api/v1/memory-stores/mem_delete/memories" && reqMethod(input, init) === "POST") {
+        return jsonResponse({ id: "memory_delete" }, 201);
+      }
       if (url === "https://ama.test/api/v1/triggers" && reqMethod(input, init) === "POST") {
+        const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
+        const id = body.type === "http" ? "http_delete" : "sched_delete";
         return jsonResponse(
           {
-            id: "sched_delete",
+            id,
             agentId: "ama_agent_delete",
             environmentId: "env_delete_test",
             name: "Delete header agent",
             promptTemplate: "template",
-            schedule: { intervalSeconds: 3600, windowSeconds: 0 },
+            schedule: body.type === "http" ? null : { intervalSeconds: 3600, windowSeconds: 0 },
             enabled: true,
             archivedAt: null,
             lastDispatchedAt: null,
@@ -745,12 +906,21 @@ describe("routes", () => {
           201,
         );
       }
-      if (url === "https://ama.test/api/v1/triggers/sched_delete" && reqMethod(input, init) === "DELETE") {
+      if (
+        (url === "https://ama.test/api/v1/triggers/sched_delete" || url === "https://ama.test/api/v1/triggers/http_delete") &&
+        reqMethod(input, init) === "DELETE"
+      ) {
         const headersObj = input instanceof Request ? Object.fromEntries(input.headers.entries()) : { ...(init?.headers as Record<string, string>) };
         capturedDeleteHeaders.push(headersObj);
         return new Response(null, { status: 204 });
       }
-      if (url.startsWith("https://ama.test/api/v1/triggers/sched_delete/runs?")) {
+      if (url === "https://ama.test/api/v1/memory-stores/mem_delete" && reqMethod(input, init) === "PATCH") {
+        return jsonResponse({ id: "mem_delete", name: "Delete header agent memory", archived: true });
+      }
+      if (
+        url.startsWith("https://ama.test/api/v1/triggers/sched_delete/runs?") ||
+        url.startsWith("https://ama.test/api/v1/triggers/http_delete/runs?")
+      ) {
         return jsonResponse({ data: [], pagination: { limit: 20, hasMore: false } });
       }
       throw new Error(`Unexpected fetch: ${url}`);
@@ -776,8 +946,8 @@ describe("routes", () => {
       expect(archiveRes.status).toBe(200);
       await expect(archiveRes.json()).resolves.toEqual({ ok: true });
 
-      expect(capturedDeleteHeaders).toHaveLength(1);
-      expect(capturedDeleteHeaders[0]["x-ama-project-id"]).toBe(amaProjectId);
+      expect(capturedDeleteHeaders).toHaveLength(2);
+      expect(capturedDeleteHeaders.every((headers) => headers["x-ama-project-id"] === amaProjectId)).toBe(true);
     } finally {
       Object.assign(env, previousAma);
       vi.unstubAllGlobals();

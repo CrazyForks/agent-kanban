@@ -5,7 +5,10 @@ export interface BoardMaintainer {
   owner_id: string;
   board_id: string;
   agent_id: string;
+  repository_id: string | null;
   ama_schedule_id: string;
+  ama_http_trigger_id: string | null;
+  ama_memory_store_id: string | null;
   name: string;
   prompt: string;
   interval_seconds: number;
@@ -20,7 +23,10 @@ export interface BoardMaintainer {
 export interface CreateBoardMaintainerInput {
   boardId: string;
   agentId: string;
+  repositoryId?: string | null;
   amaScheduleId: string;
+  amaHttpTriggerId: string;
+  amaMemoryStoreId: string;
   name: string;
   prompt: string;
   intervalSeconds: number;
@@ -44,11 +50,26 @@ export async function createBoardMaintainer(db: D1, ownerId: string, input: Crea
   await db
     .prepare(
       `INSERT INTO board_maintainers (
-        id, owner_id, board_id, agent_id, ama_schedule_id,
+        id, owner_id, board_id, agent_id, repository_id, ama_schedule_id, ama_http_trigger_id, ama_memory_store_id,
         name, prompt, interval_seconds, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(id, ownerId, input.boardId, input.agentId, input.amaScheduleId, input.name, input.prompt, input.intervalSeconds, input.status, now, now)
+    .bind(
+      id,
+      ownerId,
+      input.boardId,
+      input.agentId,
+      input.repositoryId ?? null,
+      input.amaScheduleId,
+      input.amaHttpTriggerId,
+      input.amaMemoryStoreId,
+      input.name,
+      input.prompt,
+      input.intervalSeconds,
+      input.status,
+      now,
+      now,
+    )
     .run();
   const maintainer = await getBoardMaintainer(db, ownerId, input.boardId, id);
   if (!maintainer) throw new Error("Board maintainer was not persisted");
@@ -111,4 +132,27 @@ export async function deleteBoardMaintainer(db: D1, ownerId: string, boardId: st
     .bind(ownerId, boardId, maintainerId)
     .run();
   return (result.meta?.changes ?? 0) > 0;
+}
+
+export async function listActiveBoardMaintainersForRepository(db: D1, installationId: number, fullName: string): Promise<BoardMaintainer[]> {
+  const canonicalFullName = fullName.toLowerCase();
+  const result = await db
+    .prepare(
+      `
+      SELECT DISTINCT bm.*
+      FROM board_maintainers bm
+      JOIN repositories r ON r.id = bm.repository_id AND r.owner_id = bm.owner_id
+      JOIN github_installations gi ON gi.owner_id = bm.owner_id AND gi.installation_id = ? AND gi.suspended_at IS NULL
+      LEFT JOIN github_installation_repositories gir
+        ON gir.installation_id = gi.installation_id AND gir.full_name = ?
+      WHERE bm.status = 'active'
+        AND bm.ama_http_trigger_id IS NOT NULL
+        AND replace(replace(lower(r.url), 'https://github.com/', ''), 'http://github.com/', '') = ?
+        AND (gi.repository_selection = 'all' OR gir.full_name IS NOT NULL)
+      ORDER BY bm.created_at DESC
+    `,
+    )
+    .bind(installationId, canonicalFullName, canonicalFullName)
+    .all<BoardMaintainer>();
+  return result.results;
 }
