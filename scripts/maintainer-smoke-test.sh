@@ -18,7 +18,7 @@ set -euo pipefail
 #
 # Layer B (--live, minutes): real AMA maintainer runs.
 #   - sends a signed GitHub issues webhook for the board repository
-#   - waits for the event-triggered maintainer to create a deterministic marker task
+#   - waits for the event-triggered maintainer to triage the issue into a repo task
 #   - creates a second scheduled maintainer and waits for its marker task
 #
 # Usage:
@@ -77,13 +77,17 @@ ORIGINAL_HOME="${HOME:-}"
 export AK_WORKER=1
 
 AGENT_ID=""
+CALLER_AGENT_ID=""
 MAINTAINER_ID=""
 HTTP_MAINTAINER_ID=""
 SCHEDULED_MAINTAINER_ID=""
 REPO_FULL_NAME=""
 INSTALLATION_ID=""
 BOARD_REPO_TASK_ID=""
-HTTP_MARKER_TASK_ID=""
+HTTP_TRIAGE_TASK_ID=""
+HTTP_ISSUE_NUMBER=""
+HTTP_ISSUE_TITLE=""
+HTTP_ISSUE_URL=""
 SCHEDULED_MARKER_TASK_ID=""
 TEMP_WORKER_HOME=""
 
@@ -95,7 +99,7 @@ cleanup() {
   if [ -n "$HTTP_MAINTAINER_ID" ]; then ak delete maintainer "$HTTP_MAINTAINER_ID" --board "$BOARD_ID" >/dev/null 2>&1 || true; fi
   if [ -n "$SCHEDULED_MAINTAINER_ID" ]; then ak delete maintainer "$SCHEDULED_MAINTAINER_ID" --board "$BOARD_ID" >/dev/null 2>&1 || true; fi
   if [ "$KEEP_ARTIFACTS" != 1 ]; then
-    if [ -n "$HTTP_MARKER_TASK_ID" ]; then ak task cancel "$HTTP_MARKER_TASK_ID" >/dev/null 2>&1 || true; ak delete task "$HTTP_MARKER_TASK_ID" >/dev/null 2>&1 || true; fi
+    if [ -n "$HTTP_TRIAGE_TASK_ID" ]; then ak task cancel "$HTTP_TRIAGE_TASK_ID" >/dev/null 2>&1 || true; ak delete task "$HTTP_TRIAGE_TASK_ID" >/dev/null 2>&1 || true; fi
     if [ -n "$SCHEDULED_MARKER_TASK_ID" ]; then ak task cancel "$SCHEDULED_MARKER_TASK_ID" >/dev/null 2>&1 || true; ak delete task "$SCHEDULED_MARKER_TASK_ID" >/dev/null 2>&1 || true; fi
   fi
   if [ -n "$BOARD_REPO_TASK_ID" ]; then ak task cancel "$BOARD_REPO_TASK_ID" >/dev/null 2>&1 || true; ak delete task "$BOARD_REPO_TASK_ID" >/dev/null 2>&1 || true; fi
@@ -235,6 +239,14 @@ console.log(task.id);
 " || true
 }
 
+max_task_seq() {
+  ak get task --board "$BOARD_ID" -o json 2>/dev/null \
+    | node -e "
+const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+console.log(Math.max(0, ...data.map((item) => Number(item.seq) || 0)));
+"
+}
+
 wait_for_marker_task() {
   local title="$1"
   local timeout="${2:-600}"
@@ -252,11 +264,63 @@ wait_for_marker_task() {
   return 1
 }
 
+assert_no_caller_created_tasks_since() {
+  local baseline_seq="$1"
+  local label="$2"
+  local offenders
+  if [ -z "$CALLER_AGENT_ID" ]; then
+    fail "$label could not verify caller-created task leakage because caller identity is unknown"
+    return
+  fi
+  offenders="$(ak get task --board "$BOARD_ID" -o json 2>/dev/null \
+    | BASELINE_SEQ="$baseline_seq" CALLER_AGENT_ID="$CALLER_AGENT_ID" node -e "
+const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const baseline = Number(process.env.BASELINE_SEQ) || 0;
+const caller = process.env.CALLER_AGENT_ID;
+const offenders = data
+  .filter((item) => (Number(item.seq) || 0) > baseline && item.created_by === caller)
+  .map((item) => '#' + item.seq + ' ' + item.id + ' ' + item.title);
+if (offenders.length > 0) console.log(offenders.join('\\n'));
+")"
+  if [ -z "$offenders" ]; then
+    pass "$label created no tasks as caller/leader identity"
+  else
+    fail "$label created tasks as caller/leader identity"
+    printf '%s\n' "$offenders" | sed 's/^/    /'
+  fi
+}
+
+task_value() {
+  local task_id="$1"
+  local field="$2"
+  ak get task "$task_id" -o json | FIELD="$field" node -e "
+const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const task = data.data || data;
+const value = task[process.env.FIELD];
+if (value === undefined || value === null) process.exit(1);
+if (typeof value === 'object') console.log(JSON.stringify(value));
+else console.log(value);
+"
+}
+
+task_optional_value() {
+  local task_id="$1"
+  local field="$2"
+  ak get task "$task_id" -o json | FIELD="$field" node -e "
+const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const task = data.data || data;
+const value = task[process.env.FIELD];
+if (value === undefined || value === null) process.exit(0);
+if (typeof value === 'object') console.log(JSON.stringify(value));
+else console.log(value);
+"
+}
+
 assert_marker_created_by_maintainer() {
   local task_id="$1"
   local label="$2"
   local created_by
-  created_by="$(ak get task "$task_id" -o json | json_query "data.created_by")"
+  created_by="$(task_value "$task_id" "created_by")"
   if [ "$created_by" = "$AGENT_ID" ]; then
     pass "$label marker task was created by maintainer agent"
   else
@@ -264,8 +328,51 @@ assert_marker_created_by_maintainer() {
   fi
 }
 
+assert_issue_triage_task() {
+  local task_id="$1"
+  local created_by repo_id status assigned_to description
+  created_by="$(task_value "$task_id" "created_by")"
+  repo_id="$(task_value "$task_id" "repository_id")"
+  status="$(task_value "$task_id" "status")"
+  assigned_to="$(task_optional_value "$task_id" "assigned_to")"
+  description="$(task_optional_value "$task_id" "description")"
+
+  if [ "$created_by" = "$AGENT_ID" ]; then
+    pass "HTTP issue triage task was created by maintainer agent"
+  else
+    fail "HTTP issue triage task created_by=$created_by, expected maintainer agent $AGENT_ID"
+  fi
+
+  if [ "$repo_id" = "$REPO_ID" ]; then
+    pass "HTTP issue triage task is linked to repository $REPO_ID"
+  else
+    fail "HTTP issue triage task repository_id=$repo_id, expected $REPO_ID"
+  fi
+
+  if [ "$status" = "todo" ]; then
+    pass "HTTP issue triage task remains todo for downstream assignment"
+  else
+    fail "HTTP issue triage task status=$status, expected todo"
+  fi
+
+  if [ -z "$assigned_to" ]; then
+    pass "HTTP issue triage task is unassigned"
+  else
+    fail "HTTP issue triage task assigned_to=$assigned_to, expected unassigned"
+  fi
+
+  if [[ "$description" == *"Issue Number: #$HTTP_ISSUE_NUMBER"* ]] && [[ "$description" == *"$HTTP_ISSUE_URL"* ]] && [[ "$description" == *"$HTTP_ISSUE_TITLE"* ]]; then
+    pass "HTTP issue triage task description carries webhook issue context"
+  else
+    fail "HTTP issue triage task description is missing issue context"
+    echo "    description: $description"
+  fi
+}
+
 post_github_issue_event() {
   local suffix="$1"
+  local issue_number="$2"
+  local issue_title="$3"
   local base_url secret payload signature delivery
   base_url="$(api_url)"
   secret="$(dev_var GITHUB_APP_WEBHOOK_SECRET)"
@@ -277,14 +384,14 @@ const payload = {
   repository: { id: 1, full_name: process.argv[2] },
   issue: {
     id: Date.now(),
-    number: 1,
-    title: 'Maintainer smoke issue',
-    html_url: 'https://github.com/' + process.argv[2] + '/issues/1',
+    number: Number(process.argv[3]),
+    title: process.argv[4],
+    html_url: 'https://github.com/' + process.argv[2] + '/issues/' + process.argv[3],
     user: { login: 'agent-kanban-smoke' },
   },
 };
 process.stdout.write(JSON.stringify(payload));
-" "$INSTALLATION_ID" "$REPO_FULL_NAME")
+" "$INSTALLATION_ID" "$REPO_FULL_NAME" "$issue_number" "$issue_title")
   signature=$(node -e "
 const crypto = require('crypto');
 const secret = process.argv[1];
@@ -354,10 +461,12 @@ fi
 REPO_FULL_NAME="$(repo_field "$REPO_ID" full_name)"
 
 AGENT_ID="$(create_smoke_agent "$RUNTIME")"
+CALLER_AGENT_ID="$(ak whoami 2>/dev/null | awk '/Agent ID:/ {print $3; exit}' || true)"
 
 echo "  Board:   $BOARD_ID"
 echo "  Repo:    $REPO_ID ($REPO_FULL_NAME)"
 echo "  Agent:   $AGENT_ID ($RUNTIME, role=board-maintainer)"
+[ -n "$CALLER_AGENT_ID" ] && echo "  Caller:  $CALLER_AGENT_ID"
 echo ""
 
 # ── Layer A: contract ────────────────────────────────────────────────────────
@@ -494,10 +603,14 @@ if [ "$LIVE" = 1 ]; then
   fi
   echo "  GitHub installation: $INSTALLATION_ID"
 
-  HTTP_MARKER_TITLE="maintainer-smoke-http-$TIMESTAMP"
+  HTTP_TRIAGE_TITLE="maintainer-smoke-triage-$TIMESTAMP"
+  HTTP_ISSUE_NUMBER="${TIMESTAMP: -6}"
+  HTTP_ISSUE_TITLE="Maintainer smoke issue $TIMESTAMP"
+  HTTP_ISSUE_URL="https://github.com/$REPO_FULL_NAME/issues/$HTTP_ISSUE_NUMBER"
   SCHEDULED_MARKER_TITLE="maintainer-smoke-scheduled-$TIMESTAMP"
+  LIVE_BASELINE_SEQ="$(max_task_seq)"
 
-  HTTP_PROMPT="This is a maintainer smoke test. First run: ak get repo --board $BOARD_ID -o json. Confirm repository $REPO_ID ($REPO_FULL_NAME) is present. Then run: ak github auth $REPO_ID --print-token. Do not print or store the token. After both commands succeed, create exactly one unassigned marker task with: ak create task --board $BOARD_ID --repo $REPO_ID --title \"$HTTP_MARKER_TITLE\" --description \"HTTP maintainer smoke marker\". Do not modify any repository."
+  HTTP_PROMPT="This is a maintainer issue triage smoke test. The system prompt includes a GitHub webhook event JSON. Treat only an issues.opened event as actionable. First run: ak get repo --board $BOARD_ID -o json. Confirm repository $REPO_ID ($REPO_FULL_NAME) is present. Then run: ak github auth $REPO_ID --print-token. Do not print or store the token. After both commands succeed, extract issue.number, issue.title, and issue.html_url from the webhook event JSON. Create exactly one unassigned triage task with: ak create task --board $BOARD_ID --repo $REPO_ID --title \"$HTTP_TRIAGE_TITLE\" --description \"Source: GitHub issues.opened maintainer smoke. Issue Number: #<issue.number>. Issue Title: <issue.title>. Issue URL: <issue.html_url>. Requested Action: triage the issue and decide the implementation path.\" Use the values from the event JSON in the description. Do not modify GitHub or the repository."
   HTTP_MAINTAINER_ID=$(ak create maintainer \
     --board "$BOARD_ID" \
     --agent "$AGENT_ID" \
@@ -508,7 +621,7 @@ if [ "$LIVE" = 1 ]; then
   echo "  HTTP maintainer: $HTTP_MAINTAINER_ID"
 
   HTTP_BASELINE="$(maintainer_runs_count "$HTTP_MAINTAINER_ID")"
-  post_github_issue_event "issue"
+  post_github_issue_event "issue" "$HTTP_ISSUE_NUMBER" "$HTTP_ISSUE_TITLE"
   sleep 5
   HTTP_AFTER="$(maintainer_runs_count "$HTTP_MAINTAINER_ID")"
   if [ "${HTTP_AFTER:-0}" -gt "${HTTP_BASELINE:-0}" ]; then
@@ -517,13 +630,14 @@ if [ "$LIVE" = 1 ]; then
     fail "GitHub issues webhook did not dispatch an HTTP maintainer run"
   fi
 
-  if HTTP_MARKER_TASK_ID="$(wait_for_marker_task "$HTTP_MARKER_TITLE" 600)"; then
-    pass "HTTP maintainer run created marker task ($HTTP_MARKER_TASK_ID)"
-    assert_marker_created_by_maintainer "$HTTP_MARKER_TASK_ID" "HTTP"
+  if HTTP_TRIAGE_TASK_ID="$(wait_for_marker_task "$HTTP_TRIAGE_TITLE" 600)"; then
+    pass "HTTP maintainer run created issue triage task ($HTTP_TRIAGE_TASK_ID)"
+    assert_issue_triage_task "$HTTP_TRIAGE_TASK_ID"
   else
-    fail "HTTP maintainer run did not create marker task"
+    fail "HTTP maintainer run did not create issue triage task"
     echo "    latest HTTP run: $(latest_run_summary "$HTTP_MAINTAINER_ID")"
   fi
+  assert_no_caller_created_tasks_since "$LIVE_BASELINE_SEQ" "HTTP maintainer event window"
 
   SCHEDULED_PROMPT="This is a scheduled maintainer smoke test. First run: ak get repo --board $BOARD_ID -o json. Confirm repository $REPO_ID ($REPO_FULL_NAME) is present. Then run: ak github auth $REPO_ID --print-token. Do not print or store the token. After both commands succeed, create exactly one unassigned marker task with: ak create task --board $BOARD_ID --repo $REPO_ID --title \"$SCHEDULED_MARKER_TITLE\" --description \"Scheduled maintainer smoke marker\". Do not modify any repository."
   SCHEDULED_MAINTAINER_ID=$(ak create maintainer \
@@ -542,6 +656,7 @@ if [ "$LIVE" = 1 ]; then
     fail "scheduled maintainer run did not create marker task"
     echo "    latest scheduled run: $(latest_run_summary "$SCHEDULED_MAINTAINER_ID")"
   fi
+  assert_no_caller_created_tasks_since "$LIVE_BASELINE_SEQ" "live maintainer run window"
   echo ""
 fi
 
@@ -552,7 +667,7 @@ echo "  Passed: $PASS"
 echo "  Failed: $FAIL"
 if [ "$KEEP_ARTIFACTS" = 1 ]; then
   if [ -n "$AGENT_ID" ]; then echo "  Maintainer agent:      $AGENT_ID"; fi
-  if [ -n "$HTTP_MARKER_TASK_ID" ]; then echo "  HTTP marker task:      $HTTP_MARKER_TASK_ID"; fi
+  if [ -n "$HTTP_TRIAGE_TASK_ID" ]; then echo "  HTTP triage task:      $HTTP_TRIAGE_TASK_ID"; fi
   if [ -n "$SCHEDULED_MARKER_TASK_ID" ]; then echo "  Scheduled marker task: $SCHEDULED_MARKER_TASK_ID"; fi
 fi
 echo "==============================="

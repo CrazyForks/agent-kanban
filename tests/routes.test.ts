@@ -597,12 +597,25 @@ describe("routes", () => {
       const pauseRes = await apiRequest("PATCH", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`, { status: "paused" }, userToken);
       expect(pauseRes.status).toBe(200);
       await expect(pauseRes.json()).resolves.toEqual(expect.objectContaining({ id: maintainer.id, status: "paused" }));
-      expect(updateRequests.slice(-2)).toEqual(
-        expect.arrayContaining([
-          { triggerId: "sched_maintainer", body: { enabled: false } },
-          { triggerId: "http_maintainer", body: { enabled: false } },
-        ]),
-      );
+      for (const request of updateRequests.slice(-2)) {
+        expect(request.body).toMatchObject({
+          agentId: "ama_agent_maintainer",
+          runtime: "codex",
+          enabled: false,
+          resourceRefs: [{ type: "memory_store", storeId: "mem_maintainer", access: "read_write" }],
+          env: {
+            AK_WORKER: "1",
+            AK_AGENT_ID: maintainerAgent.id,
+            AK_BOARD_ID: maintainerBoard.id,
+            AK_API_URL: "https://ak.test",
+          },
+          secretEnv: [{ name: "AK_AGENT_KEY", credentialRef: { credentialId: "vaultcred_maintainer", versionId: "vaultver_maintainer" } }],
+        });
+        expect(request.body.env.AK_SESSION_ID).toEqual(expect.any(String));
+        expect(JSON.parse(request.body.env.AK_BOARD_REPOSITORIES)).toEqual([
+          { id: maintainerRepository.id, full_name: "maintainer-org/maintainer-repo", url: "https://github.com/maintainer-org/maintainer-repo" },
+        ]);
+      }
 
       const updateRes = await apiRequest(
         "PATCH",

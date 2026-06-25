@@ -1926,19 +1926,57 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
     throw new HTTPException(400, { message: "status must be active or paused" });
   }
   const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
-  const boardRepositories = body.prompt ? await listBoardRepositories(c.env.DB, ownerId, boardId) : [];
+  const boardRepositories = await listBoardRepositories(c.env.DB, ownerId, boardId);
   const boardRepositoryNames = boardRepositories.map((repo) => repo.full_name);
+  const maintainerAgent = await getAgent(c.env.DB, maintainer.agent_id, ownerId);
+  if (!maintainerAgent) throw new HTTPException(404, { message: "Agent not found" });
+  const amaRuntime = amaRuntimeName(maintainerAgent.runtime);
+  const amaAgent = await ensureAmaAgentForAkAgent(c.env.DB, c.env, ownerId, maintainer.agent_id, amaProjectId, amaRuntime, {
+    memoryEnabled: true,
+  });
+  const sessionIdentity = await createAkAgentSessionIdentity(c.env.DB, c.env, ownerId, maintainer.agent_id);
+  const vaultId = await resolveAmaSessionSecretVaultId(c.env.DB, c.env, ownerId);
+  const sessionSecret = await createAmaSessionSecret(c.env, ownerId, {
+    projectId: amaProjectId,
+    vaultId,
+    name: secretReferenceName(sessionIdentity.sessionId),
+    secretValue: JSON.stringify(sessionIdentity.privateKeyJwk),
+    metadata: { purpose: "board-maintainer-session", boardId, agentId: maintainer.agent_id },
+  });
+  await setAmaAgentSessionSecretCredential(c.env.DB, sessionIdentity.sessionId, sessionSecret.credentialId);
+  const runtimeEnv = {
+    AK_WORKER: "1",
+    AK_AGENT_ID: maintainer.agent_id,
+    AK_SESSION_ID: sessionIdentity.sessionId,
+    AK_BOARD_ID: boardId,
+    AK_BOARD_REPOSITORIES: JSON.stringify(boardRepositories.map((repo) => ({ id: repo.id, full_name: repo.full_name, url: repo.url }))),
+    AK_API_URL: apiUrl(c.env, new URL(c.req.url).origin),
+  };
+  const runtimeSecretEnv = [{ name: "AK_AGENT_KEY", credentialId: sessionSecret.credentialId, versionId: sessionSecret.activeVersionId }];
+  const resourceRefs = maintainer.ama_memory_store_id
+    ? [{ type: "memory_store", storeId: maintainer.ama_memory_store_id, access: "read_write" }]
+    : [];
   const schedule = await updateAmaScheduledAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_schedule_id, {
+    agentId: amaAgent.id,
+    runtime: amaRuntime,
     name: body.name,
     promptTemplate: body.prompt ? boardMaintainerScheduledPrompt(boardId, body.prompt, boardRepositoryNames) : undefined,
     intervalSeconds: body.interval_seconds,
     status: body.status,
+    resourceRefs,
+    runtimeEnv,
+    runtimeSecretEnv,
   });
   if (maintainer.ama_http_trigger_id) {
     await updateAmaHttpAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_http_trigger_id, {
+      agentId: amaAgent.id,
+      runtime: amaRuntime,
       name: body.name ? `${body.name} GitHub events` : undefined,
       promptTemplate: body.prompt ? boardMaintainerHttpPrompt(boardId, body.prompt, boardRepositoryNames) : undefined,
       status: body.status,
+      resourceRefs,
+      runtimeEnv,
+      runtimeSecretEnv,
     });
   }
   const updated = await updateBoardMaintainer(c.env.DB, ownerId, boardId, maintainer.id, {

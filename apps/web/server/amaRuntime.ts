@@ -103,6 +103,9 @@ export interface AmaScheduledTriggerUpdate {
   promptTemplate?: string;
   intervalSeconds?: number;
   status?: "active" | "paused";
+  resourceRefs?: AmaResourceRef[];
+  runtimeEnv?: Record<string, string>;
+  runtimeSecretEnv?: AmaRuntimeSecretEnvRef[];
 }
 
 export interface AmaHttpTriggerInput {
@@ -125,6 +128,9 @@ export interface AmaHttpTriggerUpdate {
   name?: string;
   promptTemplate?: string;
   status?: "active" | "paused";
+  resourceRefs?: AmaResourceRef[];
+  runtimeEnv?: Record<string, string>;
+  runtimeSecretEnv?: AmaRuntimeSecretEnvRef[];
 }
 
 export interface AmaScheduledTrigger {
@@ -836,6 +842,9 @@ export async function updateAmaScheduledAgentTrigger(
   if (input.runtime !== undefined) body.runtime = input.runtime as Runtime;
   if (input.name !== undefined) body.name = input.name;
   if (input.promptTemplate !== undefined) body.promptTemplate = input.promptTemplate;
+  if (input.resourceRefs !== undefined) body.resourceRefs = input.resourceRefs;
+  if (input.runtimeEnv !== undefined) body.env = input.runtimeEnv;
+  if (input.runtimeSecretEnv !== undefined) body.secretEnv = toAmaSecretEnv(input.runtimeSecretEnv);
   if (input.intervalSeconds !== undefined) body.schedule = { type: "interval", intervalSeconds: input.intervalSeconds };
   if (input.status !== undefined) body.enabled = input.status !== "paused";
   const client = await createAmaClient(env, ownerId, projectId);
@@ -856,6 +865,9 @@ export async function updateAmaHttpAgentTrigger(
   if (input.runtime !== undefined) body.runtime = input.runtime as Runtime;
   if (input.name !== undefined) body.name = input.name;
   if (input.promptTemplate !== undefined) body.promptTemplate = input.promptTemplate;
+  if (input.resourceRefs !== undefined) body.resourceRefs = input.resourceRefs;
+  if (input.runtimeEnv !== undefined) body.env = input.runtimeEnv;
+  if (input.runtimeSecretEnv !== undefined) body.secretEnv = toAmaSecretEnv(input.runtimeSecretEnv);
   if (input.status !== undefined) body.enabled = input.status !== "paused";
   const client = await createAmaClient(env, ownerId, projectId);
   const trigger = await withAmaErrorDetails("update HTTP trigger", () => client.triggers.update(triggerId, body));
