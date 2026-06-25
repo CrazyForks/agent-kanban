@@ -122,6 +122,11 @@ export const api = {
       request<any>("PATCH", `/boards/${id}/labels/${encodeURIComponent(name)}`, body),
     deleteLabel: (id: string, name: string) => request<any>("DELETE", `/boards/${id}/labels/${encodeURIComponent(name)}`),
     maintainers: (id: string) => request<any[]>("GET", `/boards/${id}/maintainers`),
+    getMaintainer: (id: string, maintainerId: string) => request<any>("GET", `/boards/${id}/maintainers/${maintainerId}`),
+    maintainerRuns: (id: string, maintainerId: string, limit = 100) =>
+      request<{ data: any[]; pagination: any }>("GET", `/boards/${id}/maintainers/${maintainerId}/runs?limit=${limit}`),
+    maintainerMemories: (id: string, maintainerId: string, limit = 100) =>
+      request<{ data: any[]; pagination: any }>("GET", `/boards/${id}/maintainers/${maintainerId}/memories?limit=${limit}`),
     createMaintainer: (id: string, body: Record<string, unknown>) => request<any>("POST", `/boards/${id}/maintainers`, body),
     updateMaintainer: (id: string, maintainerId: string, body: Record<string, unknown>) =>
       request<any>("PATCH", `/boards/${id}/maintainers/${maintainerId}`, body),

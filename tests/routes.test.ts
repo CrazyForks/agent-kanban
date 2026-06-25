@@ -504,6 +504,35 @@ describe("routes", () => {
           pagination: { limit, hasMore: false },
         });
       }
+      if (url.startsWith("https://ama.test/api/v1/memory-stores/mem_maintainer/memories?") && method === "GET") {
+        const requestUrl = new URL(url);
+        const limit = Number(requestUrl.searchParams.get("limit") ?? 100);
+        return jsonResponse({
+          data: [
+            {
+              id: "memory_heartbeat",
+              storeId: "mem_maintainer",
+              projectId: "project_123",
+              path: "HEARTBEAT.md",
+              content: "# Maintainer Scheduled Heartbeat\n\nReview open work.",
+              metadata: { purpose: "ak-board-maintainer-heartbeat", boardId: maintainerBoard.id },
+              createdAt: "2026-06-08T11:00:00.000Z",
+              updatedAt: "2026-06-08T11:30:00.000Z",
+            },
+            {
+              id: "memory_notes",
+              storeId: "mem_maintainer",
+              projectId: "project_123",
+              path: "notes/2026-06-08.md",
+              content: "Follow up on stale issues.",
+              metadata: { purpose: "ak-board-maintainer-note" },
+              createdAt: "2026-06-08T11:10:00.000Z",
+              updatedAt: "2026-06-08T11:40:00.000Z",
+            },
+          ],
+          pagination: { limit, hasMore: false },
+        });
+      }
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -567,6 +596,24 @@ describe("routes", () => {
       expect(triggerRequests[0].env.AK_SESSION_ID).toEqual(expect.any(String));
       expect(triggerRequests[1].env.AK_SESSION_ID).toBe(triggerRequests[0].env.AK_SESSION_ID);
       expect(triggerRequests[0].secretEnv).toEqual(triggerRequests[1].secretEnv);
+
+      const duplicateRes = await apiRequest(
+        "POST",
+        `/api/boards/${maintainerBoard.id}/maintainers`,
+        {
+          agent_id: maintainerAgent.id,
+          name: "Duplicate maintainer",
+          prompt: "Inspect the same board twice.",
+          interval_seconds: 3600,
+        },
+        userToken,
+      );
+      expect(duplicateRes.status).toBe(409);
+      await expect(duplicateRes.json()).resolves.toMatchObject({ error: { message: "Board already has a maintainer" } });
+      expect(memoryStoreRequests).toHaveLength(1);
+      expect(memoryRequests).toHaveLength(1);
+      expect(triggerRequests).toHaveLength(2);
+
       const maintainerSession = await env.DB.prepare(
         "SELECT agent_id, status, secret_credential_id FROM ama_agent_sessions WHERE id = ? AND owner_id = ?",
       )
@@ -593,6 +640,20 @@ describe("routes", () => {
           last_session_id: "session_maintainer_http_1",
         }),
       ]);
+
+      const detailRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`, undefined, userToken);
+      expect(detailRes.status).toBe(200);
+      const detail = (await detailRes.json()) as any;
+      expect(detail).toEqual(
+        expect.objectContaining({
+          id: maintainer.id,
+          last_run_at: "2026-06-08T12:10:00.000Z",
+          last_session_id: "session_maintainer_http_1",
+        }),
+      );
+      expect(detail).not.toHaveProperty("ama_schedule_id");
+      expect(detail).not.toHaveProperty("ama_http_trigger_id");
+      expect(detail).not.toHaveProperty("ama_memory_store_id");
 
       const pauseRes = await apiRequest("PATCH", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`, { status: "paused" }, userToken);
       expect(pauseRes.status).toBe(200);
@@ -678,6 +739,38 @@ describe("routes", () => {
       expect(runs.data[0]).not.toHaveProperty("triggerId");
       expect(runs.data[0]).not.toHaveProperty("sessionId");
       expect(runs.data[0]).not.toHaveProperty("scheduledFor");
+
+      const memoriesRes = await apiRequest(
+        "GET",
+        `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/memories?limit=2`,
+        undefined,
+        userToken,
+      );
+      expect(memoriesRes.status).toBe(200);
+      const memories = (await memoriesRes.json()) as any;
+      expect(memories).toEqual({
+        data: [
+          {
+            id: "memory_heartbeat",
+            path: "HEARTBEAT.md",
+            content: "# Maintainer Scheduled Heartbeat\n\nReview open work.",
+            metadata: { purpose: "ak-board-maintainer-heartbeat", boardId: maintainerBoard.id },
+            created_at: "2026-06-08T11:00:00.000Z",
+            updated_at: "2026-06-08T11:30:00.000Z",
+          },
+          {
+            id: "memory_notes",
+            path: "notes/2026-06-08.md",
+            content: "Follow up on stale issues.",
+            metadata: { purpose: "ak-board-maintainer-note" },
+            created_at: "2026-06-08T11:10:00.000Z",
+            updated_at: "2026-06-08T11:40:00.000Z",
+          },
+        ],
+        pagination: { limit: 2, hasMore: false },
+      });
+      expect(memories.data[0]).not.toHaveProperty("storeId");
+      expect(memories.data[0]).not.toHaveProperty("projectId");
 
       const archiveRes = await apiRequest("DELETE", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`, undefined, userToken);
       expect(archiveRes.status).toBe(200);

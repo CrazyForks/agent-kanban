@@ -19,6 +19,7 @@ import { BoardSettingsPage } from "./routes/BoardSettingsPage";
 import { LandingPage } from "./routes/LandingPage";
 import { MachineDetailPage } from "./routes/MachineDetailPage";
 import { MachinesPage } from "./routes/MachinesPage";
+import { MaintainerDetailPage } from "./routes/MaintainerDetailPage";
 import { MockChatPage } from "./routes/MockChatPage";
 import { NewBoardPage } from "./routes/NewBoardPage";
 import { OnboardingPage } from "./routes/OnboardingPage";
@@ -90,6 +91,14 @@ export function App() {
           element={
             <ProtectedRoute>
               <BoardSettingsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/boards/:boardId/maintainers/:maintainerId"
+          element={
+            <ProtectedRoute>
+              <MaintainerDetailPage />
             </ProtectedRoute>
           }
         />

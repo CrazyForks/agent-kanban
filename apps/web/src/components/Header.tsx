@@ -1,10 +1,12 @@
-import { Settings, Tags } from "lucide-react";
-import { useState } from "react";
+import { CircleDotDashed, Settings, Tags } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { useBoards } from "../hooks/useBoard";
+import { useBoardMaintainers, useBoards } from "../hooks/useBoard";
 import { api } from "../lib/api";
 import { clearAuthToken, signOut, useSession } from "../lib/auth-client";
 import { getTheme, setTheme, type Theme } from "../lib/theme";
+import { AgentIdenticon } from "./AgentIdenticon";
+import { BoardMaintainerDialog } from "./BoardMaintainerDialog";
 import { BoardSwitcher } from "./BoardSwitcher";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { Button, buttonVariants } from "./ui/button";
@@ -112,6 +114,7 @@ export function Header() {
                 />
                 <TooltipContent>Board settings</TooltipContent>
               </Tooltip>
+              <MaintainerControl boardId={activeBoard.id} />
               <Tooltip>
                 <TooltipTrigger
                   render={
@@ -260,5 +263,75 @@ export function Header() {
         />
       )}
     </>
+  );
+}
+
+function MaintainerControl({ boardId }: { boardId: string }) {
+  const navigate = useNavigate();
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [agent, setAgent] = useState<any | null>(null);
+  const { maintainers } = useBoardMaintainers(boardId);
+  const maintainer = maintainers[0] as { id: string; name: string; agent_id?: string; status?: string } | undefined;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!maintainer?.agent_id) {
+      setAgent(null);
+      return;
+    }
+    api.agents
+      .list()
+      .then((agents) => {
+        if (!cancelled) setAgent((agents ?? []).find((candidate: any) => candidate.id === maintainer.agent_id) ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setAgent(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [maintainer?.agent_id]);
+
+  if (!maintainer) {
+    return (
+      <>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button variant="ghost" size="icon-sm" className="relative" aria-label="Add maintainer" onClick={() => setDialogOpen(true)}>
+                <CircleDotDashed className="size-3.5" />
+              </Button>
+            }
+          />
+          <TooltipContent>Add maintainer</TooltipContent>
+        </Tooltip>
+        <BoardMaintainerDialog boardId={boardId} open={dialogOpen} onOpenChange={setDialogOpen} />
+      </>
+    );
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="relative rounded-md"
+            aria-label={`View maintainer ${maintainer.name}`}
+            onClick={() => navigate(`/boards/${boardId}/maintainers/${maintainer.id}`)}
+          >
+            {agent?.public_key ? (
+              <AgentIdenticon publicKey={agent.public_key} size={22} glow={maintainer.status === "active"} />
+            ) : (
+              <Avatar size="sm">
+                <AvatarFallback>{(agent?.name ?? maintainer.name ?? "?")[0].toUpperCase()}</AvatarFallback>
+              </Avatar>
+            )}
+          </Button>
+        }
+      />
+      <TooltipContent>{maintainer.name}</TooltipContent>
+    </Tooltip>
   );
 }

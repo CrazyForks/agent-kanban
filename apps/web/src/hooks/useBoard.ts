@@ -107,6 +107,51 @@ export function useBoardMaintainers(boardId: string | undefined) {
   return { maintainers, loading, refresh: refetch };
 }
 
+export function useBoardMaintainer(boardId: string | undefined, maintainerId: string | undefined) {
+  const {
+    data: maintainer = null,
+    isLoading: loading,
+    refetch,
+  } = useQuery({
+    queryKey: ["board-maintainer", boardId, maintainerId],
+    queryFn: () => api.boards.getMaintainer(boardId!, maintainerId!),
+    enabled: !!boardId && !!maintainerId,
+    refetchInterval: 30_000,
+  });
+
+  return { maintainer, loading, refresh: refetch };
+}
+
+export function useBoardMaintainerRuns(boardId: string | undefined, maintainerId: string | undefined) {
+  const {
+    data = { data: [], pagination: { limit: 100, hasMore: false } },
+    isLoading: loading,
+    refetch,
+  } = useQuery({
+    queryKey: ["board-maintainer-runs", boardId, maintainerId],
+    queryFn: () => api.boards.maintainerRuns(boardId!, maintainerId!, 100),
+    enabled: !!boardId && !!maintainerId,
+    refetchInterval: 30_000,
+  });
+
+  return { runs: data.data, pagination: data.pagination, loading, refresh: refetch };
+}
+
+export function useBoardMaintainerMemories(boardId: string | undefined, maintainerId: string | undefined) {
+  const {
+    data = { data: [], pagination: { limit: 100, hasMore: false } },
+    isLoading: loading,
+    refetch,
+    error,
+  } = useQuery({
+    queryKey: ["board-maintainer-memories", boardId, maintainerId],
+    queryFn: () => api.boards.maintainerMemories(boardId!, maintainerId!, 100),
+    enabled: !!boardId && !!maintainerId,
+  });
+
+  return { memories: data.data, pagination: data.pagination, loading, error, refresh: refetch };
+}
+
 export function useCreateBoardMaintainer(boardId: string) {
   const queryClient = useQueryClient();
   return useMutation({

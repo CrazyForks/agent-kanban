@@ -1,4 +1,4 @@
-import { createAmaClient as createSdkClient, type Runtime, type UpdateTriggerRequest } from "@any-managed-agents/sdk";
+import { createAmaClient as createSdkClient, type MemoryStoreMemory, type Runtime, type UpdateTriggerRequest } from "@any-managed-agents/sdk";
 import { createAuth } from "./betterAuth";
 import type { Env } from "./types";
 
@@ -189,6 +189,17 @@ export interface AmaMemoryInput {
   path: string;
   content: string;
   metadata?: Record<string, unknown>;
+}
+
+export interface AmaMemoryStoreMemory {
+  id: string;
+  storeId: string;
+  projectId: string;
+  path: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AmaHttpTriggerRunInput {
@@ -906,6 +917,23 @@ export async function createAmaMemoryStoreMemory(env: Env, ownerId: string, inpu
   );
 }
 
+export async function listAmaMemoryStoreMemories(
+  env: Env,
+  ownerId: string,
+  projectId: string,
+  storeId: string,
+  options: { limit?: number; cursor?: string } = {},
+): Promise<AmaListResponse<AmaMemoryStoreMemory>> {
+  const client = await createAmaClient(env, ownerId, projectId);
+  const page = await withAmaErrorDetails("list memories", () =>
+    client.memoryStores.listMemories(storeId, {
+      limit: options.limit ?? 100,
+      ...(options.cursor ? { cursor: options.cursor } : {}),
+    }),
+  );
+  return { data: page.data.map(toAmaMemoryStoreMemory), pagination: page.pagination };
+}
+
 export async function archiveAmaMemoryStore(env: Env, ownerId: string, projectId: string, storeId: string): Promise<void> {
   const client = await createAmaClient(env, ownerId, projectId);
   await withAmaErrorDetails("archive memory store", () => client.memoryStores.update(storeId, { archived: true }));
@@ -989,4 +1017,17 @@ function requireEnv(value: string | undefined, name: string): string {
     throw new Error(`${name} is required`);
   }
   return value;
+}
+
+function toAmaMemoryStoreMemory(memory: MemoryStoreMemory): AmaMemoryStoreMemory {
+  return {
+    id: memory.id,
+    storeId: memory.storeId,
+    projectId: memory.projectId,
+    path: memory.path,
+    content: memory.content,
+    metadata: memory.metadata,
+    createdAt: memory.createdAt,
+    updatedAt: memory.updatedAt,
+  };
 }

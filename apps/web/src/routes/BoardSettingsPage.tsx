@@ -1,10 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { BoardSettingsNav } from "../components/BoardSettingsNav";
 import { Header } from "../components/Header";
-import { formatRelative } from "../components/TaskDetailFields";
 import { Button } from "../components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "../components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog";
@@ -13,16 +11,7 @@ import { Label } from "../components/ui/label";
 import { Skeleton } from "../components/ui/skeleton";
 import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
-import {
-  useBoard,
-  useBoardMaintainers,
-  useCreateBoardMaintainer,
-  useDeleteBoard,
-  useDeleteBoardMaintainer,
-  useUpdateBoard,
-  useUpdateBoardMaintainer,
-} from "../hooks/useBoard";
-import { api } from "../lib/api";
+import { useBoard, useDeleteBoard, useUpdateBoard } from "../hooks/useBoard";
 
 interface BoardSettingsBoard {
   id: string;
@@ -30,24 +19,6 @@ interface BoardSettingsBoard {
   description?: string | null;
   visibility: "private" | "public";
   share_slug: string | null;
-}
-
-interface BoardMaintainer {
-  id: string;
-  name: string;
-  prompt: string;
-  status: "active" | "paused" | "archived";
-  agent_id?: string;
-  interval_seconds: number;
-  last_run_at: string | null;
-}
-
-interface MaintainerAgent {
-  id: string;
-  name?: string;
-  username?: string;
-  role?: string;
-  model?: string;
 }
 
 const BADGE_TYPES = [
@@ -83,7 +54,6 @@ function BoardSettingsContent({ board, boardId }: { board: BoardSettingsBoard; b
 
         <BoardDetailsSection board={board} boardId={boardId} />
         <BoardSharingSection board={board} boardId={boardId} />
-        <BoardMaintainersSection boardId={boardId} />
         <BoardDangerSection board={board} />
       </main>
     </div>
@@ -199,240 +169,6 @@ function BoardSharingSection({ board, boardId }: { board: BoardSettingsBoard; bo
   );
 }
 
-function BoardMaintainersSection({ boardId }: { boardId: string }) {
-  const { maintainers, loading } = useBoardMaintainers(boardId);
-  const updateMaintainer = useUpdateBoardMaintainer(boardId);
-  const deleteMaintainer = useDeleteBoardMaintainer(boardId);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [editMaintainer, setEditMaintainer] = useState<BoardMaintainer | null>(null);
-
-  async function toggleStatus(maintainer: BoardMaintainer) {
-    const status = maintainer.status === "active" ? "paused" : "active";
-    try {
-      await updateMaintainer.mutateAsync({ maintainerId: maintainer.id, body: { status } });
-      toast.success(status === "active" ? "Maintainer resumed" : "Maintainer paused");
-    } catch {
-      toast.error("Failed to update maintainer");
-    }
-  }
-
-  async function remove(maintainer: BoardMaintainer) {
-    if (!window.confirm(`Delete maintainer "${maintainer.name}"? This permanently removes it and its schedule.`)) return;
-    try {
-      await deleteMaintainer.mutateAsync(maintainer.id);
-      toast.success("Maintainer deleted");
-    } catch {
-      toast.error("Failed to delete maintainer");
-    }
-  }
-
-  return (
-    <Card className="mt-6" size="sm">
-      <CardHeader>
-        <CardTitle>
-          <h2>Maintainers</h2>
-        </CardTitle>
-        <CardDescription>Scheduled agents that inspect this board and act through AK commands.</CardDescription>
-        <CardAction>
-          <Button size="xs" onClick={() => setCreateOpen(true)}>
-            Add maintainer
-          </Button>
-        </CardAction>
-      </CardHeader>
-      <CardContent>
-        {loading ? (
-          <div className="space-y-2">
-            <Skeleton className="h-12 w-full" />
-            <Skeleton className="h-12 w-full" />
-          </div>
-        ) : maintainers.length === 0 ? (
-          <p className="text-sm text-content-tertiary">No maintainers configured.</p>
-        ) : (
-          <div className="divide-y divide-border">
-            {(maintainers as BoardMaintainer[]).map((maintainer) => (
-              <div key={maintainer.id} className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className={`size-1.5 rounded-full ${maintainer.status === "active" ? "bg-accent" : "bg-content-tertiary"}`} />
-                    <p className="truncate text-sm font-medium text-content-primary">{maintainer.name}</p>
-                    <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-content-tertiary">{maintainer.status}</span>
-                  </div>
-                  <p className="mt-1 truncate font-mono text-[11px] text-content-tertiary">
-                    agent={maintainer.agent_id ?? "unbound"} · every {formatInterval(maintainer.interval_seconds)}
-                  </p>
-                  <p className="mt-1 text-xs text-content-secondary">
-                    Last run {maintainer.last_run_at ? formatRelative(maintainer.last_run_at) : "never"}
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <Button variant="outline" size="xs" onClick={() => setEditMaintainer(maintainer)}>
-                    Edit
-                  </Button>
-                  <Button variant="outline" size="xs" onClick={() => toggleStatus(maintainer)} disabled={updateMaintainer.isPending}>
-                    {maintainer.status === "active" ? "Pause" : "Resume"}
-                  </Button>
-                  <Button variant="destructive" size="xs" onClick={() => remove(maintainer)} disabled={deleteMaintainer.isPending}>
-                    Delete
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </CardContent>
-
-      <MaintainerDialog boardId={boardId} open={createOpen} onOpenChange={setCreateOpen} />
-      {editMaintainer && (
-        <MaintainerDialog
-          boardId={boardId}
-          maintainer={editMaintainer}
-          open
-          onOpenChange={(open) => {
-            if (!open) setEditMaintainer(null);
-          }}
-        />
-      )}
-    </Card>
-  );
-}
-
-function MaintainerDialog({
-  boardId,
-  maintainer,
-  open,
-  onOpenChange,
-}: {
-  boardId: string;
-  maintainer?: BoardMaintainer;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const isEditing = !!maintainer;
-  const createMaintainer = useCreateBoardMaintainer(boardId);
-  const updateMaintainer = useUpdateBoardMaintainer(boardId);
-  const agentQuery = useQuery({ queryKey: ["agents", { kind: "worker" }], queryFn: () => api.agents.list(), enabled: open && !isEditing });
-  const [name, setName] = useState("");
-  const [prompt, setPrompt] = useState("");
-  const [agentId, setAgentId] = useState("");
-  const [intervalSeconds, setIntervalSeconds] = useState("86400");
-
-  useEffect(() => {
-    if (!open) return;
-    setName(maintainer?.name ?? "");
-    setPrompt(maintainer?.prompt ?? "");
-    setAgentId(maintainer?.agent_id ?? "");
-    setIntervalSeconds(String(maintainer?.interval_seconds ?? 86400));
-  }, [open, maintainer?.id]);
-
-  const agents = (agentQuery.data ?? []) as MaintainerAgent[];
-  const pending = createMaintainer.isPending || updateMaintainer.isPending;
-
-  async function save() {
-    const seconds = Number.parseInt(intervalSeconds, 10);
-    if (!Number.isInteger(seconds) || seconds < 60) {
-      toast.error("Interval must be at least 60 seconds");
-      return;
-    }
-    if (!prompt.trim()) {
-      toast.error("Prompt is required");
-      return;
-    }
-    try {
-      if (maintainer) {
-        await updateMaintainer.mutateAsync({
-          maintainerId: maintainer.id,
-          body: { name: name.trim() || undefined, prompt: prompt.trim(), interval_seconds: seconds },
-        });
-        toast.success("Maintainer updated");
-      } else {
-        if (!agentId) {
-          toast.error("Agent is required");
-          return;
-        }
-        await createMaintainer.mutateAsync({
-          name: name.trim() || undefined,
-          prompt: prompt.trim(),
-          agent_id: agentId,
-          interval_seconds: seconds,
-        });
-        toast.success("Maintainer created");
-      }
-      onOpenChange(false);
-    } catch (err: any) {
-      toast.error(err.message ?? "Failed to save maintainer");
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>{isEditing ? "Edit maintainer" : "Add maintainer"}</DialogTitle>
-          <DialogDescription>Maintainers run on a schedule and use AK commands to inspect and operate this board.</DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="maintainer-name">Name</Label>
-            <Input id="maintainer-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Daily maintainer" />
-          </div>
-
-          {!isEditing && (
-            <div className="space-y-1.5">
-              <Label htmlFor="maintainer-agent">Agent</Label>
-              <select
-                id="maintainer-agent"
-                value={agentId}
-                onChange={(event) => setAgentId(event.target.value)}
-                className="h-9 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary"
-              >
-                <option value="">Select an agent</option>
-                {agents.map((agent) => (
-                  <option key={agent.id} value={agent.id}>
-                    {agent.name ?? agent.username ?? agent.id}
-                    {agent.role ? ` (${agent.role})` : ""}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          <div className="space-y-1.5">
-            <Label htmlFor="maintainer-interval">Interval seconds</Label>
-            <Input
-              id="maintainer-interval"
-              value={intervalSeconds}
-              onChange={(event) => setIntervalSeconds(event.target.value)}
-              inputMode="numeric"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="maintainer-prompt">Prompt</Label>
-            <Textarea
-              id="maintainer-prompt"
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              rows={6}
-              placeholder="Inspect open work, create follow-up tasks when needed, and escalate proposals for human review."
-              className="resize-none"
-            />
-          </div>
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>
-            Cancel
-          </Button>
-          <Button onClick={save} disabled={pending}>
-            {pending ? "Saving..." : isEditing ? "Save changes" : "Create maintainer"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 function ShareLinks({ badgeBaseUrl, shareUrl, onCopy }: { badgeBaseUrl: string; shareUrl: string; onCopy: (type: "link" | BadgeType) => void }) {
   return (
     <div className="space-y-3">
@@ -477,13 +213,6 @@ function badgeMarkdown(shareUrl: string, baseUrl: string, type: BadgeType) {
 
 function badgeLabel(type: BadgeType) {
   return BADGE_TYPES.find((badge) => badge.type === type)!.label;
-}
-
-function formatInterval(seconds: number) {
-  if (seconds % 86400 === 0) return `${seconds / 86400}d`;
-  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
-  if (seconds % 60 === 0) return `${seconds / 60}m`;
-  return `${seconds}s`;
 }
 
 async function copyTextToClipboard(text: string) {

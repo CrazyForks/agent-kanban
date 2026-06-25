@@ -63,6 +63,7 @@ import {
   deleteAmaTrigger,
   getAmaSessionSocketUrl,
   isAmaTaskDispatchConfigured,
+  listAmaMemoryStoreMemories,
   listAmaRunners,
   listAmaTriggerRuns,
   readAmaSession,
@@ -428,6 +429,24 @@ function publicMaintainerRun(run: {
     metadata: run.metadata ?? {},
     ...(run.createdAt ? { created_at: run.createdAt } : {}),
     ...(run.updatedAt ? { updated_at: run.updatedAt } : {}),
+  };
+}
+
+function publicMaintainerMemory(memory: {
+  id: string;
+  path: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}) {
+  return {
+    id: memory.id,
+    path: memory.path,
+    content: memory.content,
+    metadata: memory.metadata ?? {},
+    created_at: memory.createdAt,
+    updated_at: memory.updatedAt,
   };
 }
 
@@ -1806,6 +1825,10 @@ api.post("/api/boards/:id/maintainers", async (c) => {
 
   const board = await getOwnedBoard(c.env.DB, ownerId, boardId);
   if (!board) throw new HTTPException(404, { message: "Board not found" });
+  const existingMaintainers = await listBoardMaintainers(c.env.DB, ownerId, boardId);
+  if (existingMaintainers.length > 0) {
+    throw new HTTPException(409, { message: "Board already has a maintainer" });
+  }
   const boardRepositories = await listBoardRepositories(c.env.DB, ownerId, boardId);
 
   const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
@@ -1910,6 +1933,14 @@ api.get("/api/boards/:id/maintainers", async (c) => {
   return c.json(await listPublicMaintainersWithAmaStatus(c.env.DB, c.env, c.get("ownerId"), maintainers));
 });
 
+api.get("/api/boards/:id/maintainers/:maintainerId", async (c) => {
+  const ownerId = c.get("ownerId");
+  const boardId = c.req.param("id");
+  const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
+  if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
+  return c.json(await publicBoardMaintainerWithAmaStatus(c.env.DB, c.env, ownerId, maintainer));
+});
+
 api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   if (!isAmaTaskDispatchConfigured(c.env)) {
     throw new HTTPException(500, { message: "Task dispatch runtime is not configured" });
@@ -2009,6 +2040,31 @@ api.get("/api/boards/:id/maintainers/:maintainerId/runs", async (c) => {
   return c.json({
     data: runs.map(publicMaintainerRun),
     pagination: { limit: normalizedLimit, hasMore: allRuns.length > normalizedLimit || pages.some((page) => page.pagination?.hasMore === true) },
+  });
+});
+
+api.get("/api/boards/:id/maintainers/:maintainerId/memories", async (c) => {
+  if (!isAmaTaskDispatchConfigured(c.env)) {
+    throw new HTTPException(500, { message: "Task dispatch runtime is not configured" });
+  }
+  const ownerId = c.get("ownerId");
+  const boardId = c.req.param("id");
+  const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
+  if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
+  const limit = Number.parseInt(c.req.query("limit") ?? "100", 10);
+  const normalizedLimit = Number.isFinite(limit) && limit > 0 ? Math.min(limit, 100) : 100;
+  const cursor = c.req.query("cursor");
+  if (!maintainer.ama_memory_store_id) {
+    return c.json({ data: [], pagination: { limit: normalizedLimit, hasMore: false } });
+  }
+  const projectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
+  const page = await listAmaMemoryStoreMemories(c.env, ownerId, projectId, maintainer.ama_memory_store_id, {
+    limit: normalizedLimit,
+    cursor,
+  });
+  return c.json({
+    data: page.data.map(publicMaintainerMemory),
+    pagination: { limit: normalizedLimit, hasMore: page.pagination?.hasMore === true },
   });
 });
 
