@@ -67,6 +67,7 @@ const ROUTE_RULES: { method: string; pattern: RegExp; rule: RouteRule }[] = [
 
   // Repositories — user and leader
   { method: "POST", pattern: /^\/api\/repositories$/, rule: { allow: ["user", "agent:leader"] } },
+  { method: "POST", pattern: /^\/api\/repositories\/[^/]+\/github-token$/, rule: { allow: ["user", "agent:worker", "agent:leader"] } },
   { method: "DELETE", pattern: /^\/api\/repositories\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
 
   // Sessions — machine reopen
@@ -205,7 +206,7 @@ async function handleAgentIdentity(c: Context<{ Bindings: Env }>, identity: any,
      UNION ALL
      SELECT s.agent_id, a.kind, s.owner_id, 'ama' AS source
      FROM ama_agent_sessions s
-     JOIN agents a ON s.agent_id = a.id
+     JOIN agents a ON s.agent_id = a.id AND a.owner_id = s.owner_id
      WHERE s.id = ? AND s.status = 'active'
      LIMIT 1`,
   )

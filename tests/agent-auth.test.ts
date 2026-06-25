@@ -129,6 +129,29 @@ describe("agent-auth bridge", () => {
     expect(row!.private_key).toBeTruthy();
   });
 
+  it("rejects AMA sessions when the agent does not belong to the owner", async () => {
+    const { createAmaAgentSession } = await import("../apps/web/server/agentSessionRepo");
+    const otherOwnerId = `other-owner-${randomUUID()}`;
+    const now = new Date().toISOString();
+    await db
+      .prepare("INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES (?, ?, ?, 1, ?, ?)")
+      .bind(otherOwnerId, "Other Owner", `${otherOwnerId}@example.com`, now, now)
+      .run();
+    const { publicKey } = await crypto.subtle.generateKey({ name: "Ed25519" } as any, true, ["sign", "verify"]);
+    const pubJwk = await crypto.subtle.exportKey("jwk", publicKey);
+    const env = { DB: db, AUTH_SECRET, ALLOWED_HOSTS: "localhost:8788", GITHUB_CLIENT_ID: "x", GITHUB_CLIENT_SECRET: "x" };
+
+    await expect(
+      createAmaAgentSession(db, env, {
+        ownerId: otherOwnerId,
+        agentId,
+        sessionId: randomUUID(),
+        sessionPublicKey: pubJwk.x!,
+        amaSessionId: `ama-${randomUUID()}`,
+      }),
+    ).rejects.toThrow("Agent does not belong to owner");
+  });
+
   it("creates a session with delegation proof via CSR", async () => {
     const { createSession } = await import("../apps/web/server/agentSessionRepo");
     const env = { DB: db, AUTH_SECRET, ALLOWED_HOSTS: "localhost:8788", GITHUB_CLIENT_ID: "x", GITHUB_CLIENT_SECRET: "x" };

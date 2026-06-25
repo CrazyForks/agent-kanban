@@ -262,14 +262,21 @@ export abstract class ApiClient {
   createRepository(input: { name: string; url: string }) {
     return this.request("POST", "/api/repositories", input);
   }
-  listRepositories(filters?: { url?: string }) {
+  listRepositories(filters?: { url?: string; board_id?: string }) {
     const params = new URLSearchParams();
     if (filters?.url) params.set("url", filters.url);
+    if (filters?.board_id) params.set("board_id", filters.board_id);
     const qs = params.toString();
     return this.request<any[]>("GET", `/api/repositories${qs ? `?${qs}` : ""}`);
   }
   getRepository(repoId: string) {
     return this.request("GET", `/api/repositories/${repoId}`);
+  }
+  createRepositoryGithubToken(repoId: string) {
+    return this.request<{ repository_id: string; full_name: string; token: string; expires_at: string }>(
+      "POST",
+      `/api/repositories/${repoId}/github-token`,
+    );
   }
   deleteRepository(repoId: string) {
     return this.request("DELETE", `/api/repositories/${repoId}`);

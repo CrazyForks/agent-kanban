@@ -155,22 +155,20 @@ describe("registerCreateCommand agent", () => {
     expect(output).toHaveBeenCalledWith({ id: "subagent-1", name: "Test Writer", role: "test-writer" }, "json", expect.any(Function));
   });
 
-  it("creates a maintainer with repository scope", async () => {
+  it("creates a board maintainer", async () => {
     const command = await registerCreateMaintainer();
     createBoardMaintainer.mockResolvedValue({
       id: "maintainer-1",
       board_id: "board-1",
       agent_id: "agent-1",
-      repository_id: "repo-1",
-      name: "Repo Maintainer",
+      name: "Board Maintainer",
     });
 
     await command.action!({
       board: "board-1",
       agent: "agent-1",
-      name: "Repo Maintainer",
+      name: "Board Maintainer",
       prompt: "Watch incoming GitHub work",
-      repo: "repo-1",
       intervalSeconds: "3600",
       paused: true,
       output: "json",
@@ -180,12 +178,11 @@ describe("registerCreateCommand agent", () => {
       agent_id: "agent-1",
       prompt: "Watch incoming GitHub work",
       interval_seconds: 3600,
-      name: "Repo Maintainer",
-      repository_id: "repo-1",
+      name: "Board Maintainer",
       status: "paused",
     });
     expect(output).toHaveBeenCalledWith(
-      { id: "maintainer-1", board_id: "board-1", agent_id: "agent-1", repository_id: "repo-1", name: "Repo Maintainer" },
+      { id: "maintainer-1", board_id: "board-1", agent_id: "agent-1", name: "Board Maintainer" },
       "json",
       expect.any(Function),
     );

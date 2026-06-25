@@ -8,6 +8,7 @@ import { registerCreateCommand } from "./commands/create.js";
 import { registerDeleteCommand } from "./commands/delete.js";
 import { registerDescribeCommand } from "./commands/describe.js";
 import { registerGetCommand } from "./commands/get.js";
+import { registerGithubCommand } from "./commands/github.js";
 import { registerLogsCommand, registerRestartCommand, registerStartCommand, registerStatusCommand, registerStopCommand } from "./commands/start.js";
 import { registerUpdateCommand } from "./commands/update.js";
 import { registerUpgradeCommand } from "./commands/upgrade.js";
@@ -36,6 +37,7 @@ const helpSections: [string, [string, string][]][] = [
       ["update maintainer <id> --board <id>", "Update or pause/resume a maintainer"],
       ["delete maintainer <id> --board <id>", "Delete (archive) a maintainer"],
       ["get session <task-id>", "Show task session state and events"],
+      ["github auth <repo-id>", "Configure git and gh auth for a repository"],
     ],
   ],
   [
@@ -211,6 +213,7 @@ taskCmd
 
 registerAgentCommand(program);
 registerGetCommand(program);
+registerGithubCommand(program);
 registerDescribeCommand(program);
 registerCreateCommand(program);
 registerUpdateCommand(program);

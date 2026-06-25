@@ -79,6 +79,51 @@ describe("boardRepo", () => {
     expect(taskB!.blocked).toBe(true);
   });
 
+  it("records board repository mappings from dev tasks", async () => {
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { listBoardRepositories } = await import("../apps/web/server/boardRepositoryRepo");
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    const { createTask, updateTask } = await import("../apps/web/server/taskRepo");
+    const board = await createBoard(env.DB, "board-test-user", "Repo Mapping Board", "dev");
+    const repoA = await createRepository(env.DB, "board-test-user", {
+      name: "repo-mapping-a",
+      url: "https://github.com/board-test/repo-mapping-a",
+    });
+    const repoB = await createRepository(env.DB, "board-test-user", {
+      name: "repo-mapping-b",
+      url: "https://github.com/board-test/repo-mapping-b",
+    });
+
+    const task = await createTask(env.DB, "board-test-user", { title: "Repo task", board_id: board.id, repository_id: repoA.id });
+    await updateTask(env.DB, task.id, { repository_id: repoB.id });
+
+    const repos = await listBoardRepositories(env.DB, "board-test-user", board.id);
+    expect(repos.map((repo) => repo.id).sort()).toEqual([repoA.id, repoB.id].sort());
+  });
+
+  it("rejects task repository mappings across owners", async () => {
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    const { createTask } = await import("../apps/web/server/taskRepo");
+    const board = await createBoard(env.DB, "board-test-user", "Cross Owner Repo Board", "dev");
+    const otherRepo = await createRepository(env.DB, "board-test-user-2", {
+      name: "cross-owner-repo",
+      url: "https://github.com/other-owner/cross-owner-repo",
+    });
+
+    await expect(createTask(env.DB, "board-test-user", { title: "Bad repo", board_id: board.id, repository_id: otherRepo.id })).rejects.toThrow(
+      "Repository not found",
+    );
+  });
+
+  it("rejects task creation on boards owned by another owner", async () => {
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createTask } = await import("../apps/web/server/taskRepo");
+    const otherBoard = await createBoard(env.DB, "board-test-user-2", "Cross Owner Board", "ops");
+
+    await expect(createTask(env.DB, "board-test-user", { title: "Bad board", board_id: otherBoard.id })).rejects.toThrow("Board not found");
+  });
+
   it("getDefaultBoard returns the first board for a user", async () => {
     const { getDefaultBoard } = await import("../apps/web/server/boardRepo");
     const board = await getDefaultBoard(env.DB, "board-test-user");

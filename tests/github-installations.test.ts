@@ -19,9 +19,10 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { SignJWT } from "jose";
 import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { seedUser, setupMiniflare, signUpVerifiedUser } from "./helpers/db";
+import { createTestAgent, seedUser, setupMiniflare, signUpVerifiedUser } from "./helpers/db";
 
 const WEBHOOK_SECRET = "test-webhook-secret-xyz";
 
@@ -110,6 +111,25 @@ async function createVerifiedUserToken(): Promise<{ token: string; userId: strin
   const email = `config-test-${randomUUID()}@test.local`;
   const result = await signUpVerifiedUser(db, auth, { name: "Config Test User", email, password: "test-password-123" });
   return { token: result.token, userId: result.user.id };
+}
+
+async function createWorkerSessionToken(ownerId: string, agentId: string): Promise<string> {
+  const { createAmaAgentSession } = await import("../apps/web/server/agentSessionRepo");
+  const sessionId = randomUUID();
+  const keypair = await crypto.subtle.generateKey({ name: "Ed25519" } as any, true, ["sign", "verify"]);
+  const pubJwk = await crypto.subtle.exportKey("jwk", (keypair as any).publicKey);
+  await createAmaAgentSession(db, makeEnv(), {
+    ownerId,
+    agentId,
+    sessionId,
+    sessionPublicKey: pubJwk.x!,
+    amaSessionId: `ama-session-${sessionId}`,
+  });
+  return await new SignJWT({ sub: sessionId, aid: agentId, jti: randomUUID(), aud: "http://localhost:8788" })
+    .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
+    .setIssuedAt()
+    .setExpirationTime("60s")
+    .sign((keypair as any).privateKey);
 }
 
 // Seed a github account row so backfill can join on it.
@@ -1418,6 +1438,251 @@ describe("recordInstallationFromSetup", () => {
 
     const env = makeEnv({ GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey, GITHUB_APP_SLUG: "agent-kanban" });
     await expect(listInstallationRepositories(env, installId)).rejects.toThrow(/500/);
+  });
+
+  it("POST /api/repositories/:id/github-token returns a repo-scoped installation token", async () => {
+    const { token, userId } = await createVerifiedUserToken();
+    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    await upsertInstallation(db, {
+      installationId: 7_777,
+      ownerId: userId,
+      accountLogin: "auth-org",
+      accountId: 7_777,
+      accountType: "Organization",
+      repositorySelection: "all",
+    });
+    const repo = await createRepository(db, userId, {
+      name: `auth-repo-${randomUUID()}`,
+      url: "https://github.com/auth-org/auth-repo",
+    });
+    const requests: Array<{ url: string; method: string; body: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        const method = input instanceof Request ? input.method : ((init as any)?.method ?? "GET");
+        const body = input instanceof Request ? await input.clone().text() : String((init as any)?.body ?? "");
+        requests.push({ url, method, body });
+        if (url === "https://api.github.com/repos/auth-org/auth-repo/installation") {
+          return new Response(JSON.stringify({ id: 7_777 }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        if (url === "https://api.github.com/app/installations/7777/access_tokens") {
+          return new Response(JSON.stringify({ token: "ghs_repo_scoped", expires_at: "2026-06-25T13:00:00Z" }), {
+            status: 201,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    const res = await apiRequest(
+      "POST",
+      `/api/repositories/${repo.id}/github-token`,
+      undefined,
+      {},
+      { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
+      token,
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body).toEqual({
+      repository_id: repo.id,
+      full_name: "auth-org/auth-repo",
+      token: "ghs_repo_scoped",
+      expires_at: "2026-06-25T13:00:00Z",
+    });
+    const tokenRequest = requests.find((request) => request.url.endsWith("/access_tokens"));
+    expect(tokenRequest?.method).toBe("POST");
+    expect(JSON.parse(tokenRequest?.body ?? "{}")).toEqual({
+      repositories: ["auth-repo"],
+      permissions: { contents: "write", pull_requests: "write" },
+    });
+  });
+
+  it("POST /api/repositories/:id/github-token allows an active maintainer worker for its board repository", async () => {
+    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createBoardMaintainer } = await import("../apps/web/server/boardMaintainerRepo");
+    const { recordBoardRepository } = await import("../apps/web/server/boardRepositoryRepo");
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    const ownerId = `maintainer-token-owner-${randomUUID()}`;
+    await seedUser(db, ownerId, `${ownerId}@test.local`);
+    await upsertInstallation(db, {
+      installationId: 8_001,
+      ownerId,
+      accountLogin: "maintainer-auth-org",
+      accountId: 8_001,
+      accountType: "Organization",
+      repositorySelection: "all",
+    });
+    const board = await createBoard(db, ownerId, `maintainer-token-board-${randomUUID()}`, "dev");
+    const repo = await createRepository(db, ownerId, {
+      name: `maintainer-token-repo-${randomUUID()}`,
+      url: "https://github.com/maintainer-auth-org/maintainer-auth-repo",
+    });
+    await recordBoardRepository(db, board.id, repo.id);
+    const agent = await createTestAgent(db, ownerId, {
+      name: "Maintainer worker",
+      username: `maintainer-worker-${randomUUID()}`,
+      runtime: "claude",
+      role: "board-maintainer",
+    });
+    await createBoardMaintainer(db, ownerId, {
+      boardId: board.id,
+      agentId: agent.id,
+      amaScheduleId: `sched-${randomUUID()}`,
+      amaHttpTriggerId: `http-${randomUUID()}`,
+      amaMemoryStoreId: `mem-${randomUUID()}`,
+      name: "Maintainer worker",
+      prompt: "Maintain the board",
+      intervalSeconds: 3600,
+      status: "active",
+    });
+    const jwt = await createWorkerSessionToken(ownerId, agent.id);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url === "https://api.github.com/repos/maintainer-auth-org/maintainer-auth-repo/installation") {
+          return new Response(JSON.stringify({ id: 8_001 }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        if (url === "https://api.github.com/app/installations/8001/access_tokens") {
+          const body = input instanceof Request ? await input.clone().text() : String((init as any)?.body ?? "");
+          expect(JSON.parse(body)).toEqual({
+            repositories: ["maintainer-auth-repo"],
+            permissions: { contents: "write", pull_requests: "write" },
+          });
+          return new Response(JSON.stringify({ token: "ghs_maintainer_worker", expires_at: "2026-06-25T14:00:00Z" }), {
+            status: 201,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    const res = await apiRequest(
+      "POST",
+      `/api/repositories/${repo.id}/github-token`,
+      undefined,
+      {},
+      { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
+      jwt,
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      repository_id: repo.id,
+      full_name: "maintainer-auth-org/maintainer-auth-repo",
+      token: "ghs_maintainer_worker",
+    });
+  });
+
+  it("POST /api/repositories/:id/github-token rejects a worker that is not an active maintainer for the repository", async () => {
+    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { recordBoardRepository } = await import("../apps/web/server/boardRepositoryRepo");
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    const ownerId = `plain-worker-token-owner-${randomUUID()}`;
+    await seedUser(db, ownerId, `${ownerId}@test.local`);
+    await upsertInstallation(db, {
+      installationId: 8_002,
+      ownerId,
+      accountLogin: "plain-worker-org",
+      accountId: 8_002,
+      accountType: "Organization",
+      repositorySelection: "all",
+    });
+    const board = await createBoard(db, ownerId, `plain-worker-board-${randomUUID()}`, "dev");
+    const repo = await createRepository(db, ownerId, {
+      name: `plain-worker-repo-${randomUUID()}`,
+      url: "https://github.com/plain-worker-org/plain-worker-repo",
+    });
+    await recordBoardRepository(db, board.id, repo.id);
+    const worker = await createTestAgent(db, ownerId, {
+      name: "Plain worker",
+      username: `plain-worker-${randomUUID()}`,
+      runtime: "claude",
+    });
+    const jwt = await createWorkerSessionToken(ownerId, worker.id);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await apiRequest(
+      "POST",
+      `/api/repositories/${repo.id}/github-token`,
+      undefined,
+      {},
+      { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
+      jwt,
+    );
+
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as any;
+    expect(body.error.message).toBe("Worker agent is not an active maintainer for this repository");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/repositories/:id/github-token rejects repos not covered by this owner's GitHub App installation", async () => {
+    const { token, userId } = await createVerifiedUserToken();
+    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    await upsertInstallation(db, {
+      installationId: 7_778,
+      ownerId: "another-owner",
+      accountLogin: "cross-token-org",
+      accountId: 7_778,
+      accountType: "Organization",
+      repositorySelection: "all",
+    });
+    const repo = await createRepository(db, userId, {
+      name: `cross-token-repo-${randomUUID()}`,
+      url: "https://github.com/cross-token-org/auth-repo",
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await apiRequest(
+      "POST",
+      `/api/repositories/${repo.id}/github-token`,
+      undefined,
+      {},
+      { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
+      token,
+    );
+
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as any;
+    expect(body.error.message).toBe("GitHub App is not installed for this owner and repository");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/repositories/:id/github-token rejects non-GitHub repositories before fetching GitHub", async () => {
+    const { token, userId } = await createVerifiedUserToken();
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    const repo = await createRepository(db, userId, {
+      name: `gitlab-repo-${randomUUID()}`,
+      url: "https://gitlab.com/auth-org/auth-repo",
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await apiRequest(
+      "POST",
+      `/api/repositories/${repo.id}/github-token`,
+      undefined,
+      {},
+      { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
+      token,
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.error.message).toBe("GitHub auth is only available for github.com repositories");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("throws when GITHUB_APP_ID or GITHUB_APP_PRIVATE_KEY is not set", async () => {

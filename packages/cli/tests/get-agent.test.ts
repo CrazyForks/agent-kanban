@@ -17,11 +17,15 @@ const mockGetAgent = vi.fn();
 const mockListAgents = vi.fn();
 const mockGetSubagent = vi.fn();
 const mockListSubagents = vi.fn();
+const mockGetRepository = vi.fn();
+const mockListRepositories = vi.fn();
 const mockClient = {
   getAgent: mockGetAgent,
   listAgents: mockListAgents,
   getSubagent: mockGetSubagent,
   listSubagents: mockListSubagents,
+  getRepository: mockGetRepository,
+  listRepositories: mockListRepositories,
 };
 const mockCreateClient = vi.fn(() => Promise.resolve(mockClient));
 
@@ -144,6 +148,22 @@ describe("get agent — list mode filtering", () => {
     expect(mockListAgents).toHaveBeenCalledWith({ kind: "worker", role: "qa", runtime: "codex", available: "true" });
     const passed = vi.mocked(outputModule.output).mock.calls[0][0] as any[];
     expect(passed.map((a: any) => a.id)).toEqual(["a1"]);
+  });
+});
+
+describe("get repo", () => {
+  it("lists board repositories when --board is provided", async () => {
+    mockListRepositories.mockResolvedValue([{ id: "repo-1", name: "Repo", url: "https://github.com/org/repo" }]);
+    await makeProgram().parseAsync(["get", "repo", "--board", "board-1"], { from: "user" });
+    expect(mockListRepositories).toHaveBeenCalledWith({ board_id: "board-1" });
+    expect(mockGetRepository).not.toHaveBeenCalled();
+  });
+
+  it("fetches one repository by id", async () => {
+    mockGetRepository.mockResolvedValue({ id: "repo-1", name: "Repo", url: "https://github.com/org/repo" });
+    await makeProgram().parseAsync(["get", "repo", "repo-1"], { from: "user" });
+    expect(mockGetRepository).toHaveBeenCalledWith("repo-1");
+    expect(mockListRepositories).not.toHaveBeenCalled();
   });
 });
 

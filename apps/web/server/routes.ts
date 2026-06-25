@@ -67,6 +67,7 @@ import {
   deleteBoardMaintainer,
   getBoardMaintainer,
   getOwnedBoard,
+  isActiveMaintainerForRepository,
   listBoardMaintainers,
   updateBoardMaintainer,
 } from "./boardMaintainerRepo";
@@ -82,10 +83,11 @@ import {
   updateBoard,
   updateBoardLabel,
 } from "./boardRepo";
+import { listBoardRepositories } from "./boardRepositoryRepo";
 import { createBoardSSEResponse, createPublicBoardSSEResponse } from "./boardSSE";
 import { cliVersionMiddleware } from "./cliVersion";
 import type { D1 } from "./db";
-import { isGithubAppConfigured, listInstallationRepositories, recordInstallationFromSetup } from "./githubApp";
+import { isGithubAppConfigured, listInstallationRepositories, mintGithubInstallationToken, recordInstallationFromSetup } from "./githubApp";
 import { getInstallationsForOwner, repoAppStatus, repoAppStatusBatch } from "./githubInstallations";
 import { addAgentEmail, getGithubToken, removeAgentEmail, syncGpgKey } from "./githubService";
 import {
@@ -1776,7 +1778,6 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     name?: string;
     prompt: string;
     agent_id?: string;
-    repository_id?: string;
     interval_seconds?: number;
     status?: "active" | "paused";
   }>();
@@ -1793,8 +1794,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
 
   const board = await getOwnedBoard(c.env.DB, ownerId, boardId);
   if (!board) throw new HTTPException(404, { message: "Board not found" });
-  const repository = body.repository_id ? await getRepository(c.env.DB, body.repository_id, ownerId) : null;
-  if (body.repository_id && !repository) throw new HTTPException(404, { message: "Repository not found" });
+  const boardRepositories = await listBoardRepositories(c.env.DB, ownerId, boardId);
 
   const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
   const maintainerAgent = await getAgent(c.env.DB, maintainerAgentId, ownerId);
@@ -1811,7 +1811,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     AK_WORKER: "1",
     AK_AGENT_ID: maintainerAgentId,
     AK_BOARD_ID: boardId,
-    ...(repository ? { AK_REPOSITORY_ID: repository.id, AK_REPOSITORY_FULL_NAME: repository.full_name } : {}),
+    AK_BOARD_REPOSITORIES: JSON.stringify(boardRepositories.map((repo) => ({ id: repo.id, full_name: repo.full_name, url: repo.url }))),
     AK_API_URL: apiUrl(c.env, new URL(c.req.url).origin),
   };
   const memoryStore = await createAmaMemoryStore(c.env, ownerId, {
@@ -1824,19 +1824,28 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     projectId: amaProjectId,
     storeId: memoryStore.id,
     path: MAINTAINER_HEARTBEAT_PATH,
-    content: initialMaintainerHeartbeat({ boardId, boardName: board.name, maintainerName: name, repositoryFullName: repository?.full_name ?? null }),
+    content: initialMaintainerHeartbeat({
+      boardId,
+      boardName: board.name,
+      maintainerName: name,
+      repositories: boardRepositories.map((repo) => repo.full_name),
+    }),
     metadata: { purpose: "ak-board-maintainer-heartbeat", boardId },
   });
-  const memoryResourceRefs = [{ type: "memory_store", storeId: memoryStore.id, access: "read_write" }];
+  const resourceRefs = [{ type: "memory_store", storeId: memoryStore.id, access: "read_write" }];
   const schedule = await createAmaScheduledAgentTrigger(c.env, ownerId, {
     projectId: amaProjectId,
     agentId: amaAgent.id,
     runtime: amaRuntime,
     name,
-    promptTemplate: boardMaintainerScheduledPrompt(boardId, body.prompt, repository?.full_name),
+    promptTemplate: boardMaintainerScheduledPrompt(
+      boardId,
+      body.prompt,
+      boardRepositories.map((repo) => repo.full_name),
+    ),
     intervalSeconds,
     status: body.status ?? "active",
-    resourceRefs: memoryResourceRefs,
+    resourceRefs,
     runtimeEnv,
   });
   const httpTrigger = await createAmaHttpAgentTrigger(c.env, ownerId, {
@@ -1844,16 +1853,19 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     agentId: amaAgent.id,
     runtime: amaRuntime,
     name: `${name} GitHub events`,
-    promptTemplate: boardMaintainerHttpPrompt(boardId, body.prompt, repository?.full_name),
+    promptTemplate: boardMaintainerHttpPrompt(
+      boardId,
+      body.prompt,
+      boardRepositories.map((repo) => repo.full_name),
+    ),
     status: body.status ?? "active",
-    resourceRefs: memoryResourceRefs,
+    resourceRefs,
     runtimeEnv,
   });
 
   const maintainer = await createBoardMaintainer(c.env.DB, ownerId, {
     boardId,
     agentId: maintainerAgentId,
-    repositoryId: repository?.id ?? null,
     amaScheduleId: schedule.id,
     amaHttpTriggerId: httpTrigger.id,
     amaMemoryStoreId: memoryStore.id,
@@ -1888,17 +1900,18 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
     throw new HTTPException(400, { message: "status must be active or paused" });
   }
   const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
-  const repository = maintainer.repository_id ? await getRepository(c.env.DB, maintainer.repository_id, ownerId) : null;
+  const boardRepositories = body.prompt ? await listBoardRepositories(c.env.DB, ownerId, boardId) : [];
+  const boardRepositoryNames = boardRepositories.map((repo) => repo.full_name);
   const schedule = await updateAmaScheduledAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_schedule_id, {
     name: body.name,
-    promptTemplate: body.prompt ? boardMaintainerScheduledPrompt(boardId, body.prompt, repository?.full_name) : undefined,
+    promptTemplate: body.prompt ? boardMaintainerScheduledPrompt(boardId, body.prompt, boardRepositoryNames) : undefined,
     intervalSeconds: body.interval_seconds,
     status: body.status,
   });
   if (maintainer.ama_http_trigger_id) {
     await updateAmaHttpAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_http_trigger_id, {
       name: body.name ? `${body.name} GitHub events` : undefined,
-      promptTemplate: body.prompt ? boardMaintainerHttpPrompt(boardId, body.prompt, repository?.full_name) : undefined,
+      promptTemplate: body.prompt ? boardMaintainerHttpPrompt(boardId, body.prompt, boardRepositoryNames) : undefined,
       status: body.status,
     });
   }
@@ -1992,56 +2005,67 @@ api.delete("/api/boards/:id", async (c) => {
   return c.json({ ok: true });
 });
 
-const MAINTAINER_HEARTBEAT_PATH = "ak-maintainer-heartbeat.md";
+const MAINTAINER_HEARTBEAT_PATH = "HEARTBEAT.md";
 
-function boardMaintainerBasePrompt(boardId: string, prompt: string, repositoryFullName?: string | null) {
+function boardMaintainerBasePrompt(boardId: string, prompt: string, repositoryFullNames: string[]) {
   return [
     `You are the maintainer for AK board ${boardId}.`,
-    repositoryFullName ? `GitHub repository scope: ${repositoryFullName}.` : "No GitHub repository scope is configured for this maintainer.",
+    repositoryFullNames.length > 0
+      ? `GitHub repository scope: ${repositoryFullNames.join(", ")}.`
+      : "No GitHub repositories are currently associated with this board.",
     "Use the AK CLI/API as the source of truth for board workflow, tasks, reviews, and follow-up work.",
-    `A read/write Memory Store is mounted. Read ${MAINTAINER_HEARTBEAT_PATH} at the start of every heartbeat and update it before finishing.`,
-    "Use that heartbeat file for durable board-level observations, recent decisions, open questions, and follow-up checkpoints. Do not store secrets in notes, tasks, messages, or memory.",
+    `Discover current repository scope with: ak get repo --board ${boardId} -o json.`,
+    "Before cloning or using gh for a repository, run: ak github auth <repo-id>.",
+    "A read/write Memory Store is mounted. Search and read relevant memories before acting.",
+    `Use ${MAINTAINER_HEARTBEAT_PATH} as the scheduled maintenance checklist. It is not the only memory file.`,
+    "Create or update focused memory files for durable board-level observations, decisions, open questions, and follow-up checkpoints. Do not store secrets in notes, tasks, messages, or memory.",
     "",
     prompt,
   ];
 }
 
-function boardMaintainerScheduledPrompt(boardId: string, prompt: string, repositoryFullName?: string | null) {
+function boardMaintainerScheduledPrompt(boardId: string, prompt: string, repositoryFullNames: string[]) {
   return [
-    ...boardMaintainerBasePrompt(boardId, prompt, repositoryFullName),
+    ...boardMaintainerBasePrompt(boardId, prompt, repositoryFullNames),
     "",
-    "This is a scheduled heartbeat. Inspect the board state, decide whether any tasks, proposals, reviews, or follow-up actions are needed, and act through AK commands.",
+    "This is a scheduled maintenance run. Inspect the board and associated repositories proactively.",
+    "Look for functional problems, implementation problems, technical debt, stale reviews, unresolved proposals, and follow-up work. Decide and act through AK commands.",
   ].join("\n");
 }
 
-function boardMaintainerHttpPrompt(boardId: string, prompt: string, repositoryFullName?: string | null) {
+function boardMaintainerHttpPrompt(boardId: string, prompt: string, repositoryFullNames: string[]) {
   return [
-    ...boardMaintainerBasePrompt(boardId, prompt, repositoryFullName),
+    ...boardMaintainerBasePrompt(boardId, prompt, repositoryFullNames),
     "",
-    "This heartbeat was triggered by a GitHub webhook event.",
+    "This run was triggered by a GitHub webhook event.",
     "Use the event JSON below as a signal, then inspect AK and GitHub state directly before taking action.",
     "",
     "{{ body.event_json }}",
   ].join("\n");
 }
 
-function initialMaintainerHeartbeat(input: { boardId: string; boardName: string; maintainerName: string; repositoryFullName?: string | null }) {
+function initialMaintainerHeartbeat(input: { boardId: string; boardName: string; maintainerName: string; repositories: string[] }) {
   return [
-    `# ${input.maintainerName}`,
+    "# Maintainer Scheduled Heartbeat",
     "",
+    `Maintainer: ${input.maintainerName}`,
     `Board: ${input.boardName} (${input.boardId})`,
-    `Repository: ${input.repositoryFullName ?? "not configured"}`,
+    `Repositories: ${input.repositories.length > 0 ? input.repositories.join(", ") : "none associated yet"}`,
     `Created: ${new Date().toISOString()}`,
     "",
-    "## Last Heartbeat",
+    "## Scheduled Maintenance Checklist",
     "",
-    "No heartbeat has completed yet.",
+    "- Inspect new and stale issues for bugs, proposals, and questions that need maintainer action.",
+    "- Review open PRs for correctness, tests, scope, and merge readiness.",
+    "- Check recent task outcomes and close linked issues after accepted fixes merge.",
+    "- Look across associated repositories for functional gaps, implementation problems, and technical debt worth turning into AK tasks.",
+    "- Use AK repository commands to discover repos and authenticate GitHub before cloning or running gh.",
+    "- Record durable decisions, unresolved questions, and follow-up checkpoints in focused memory files.",
     "",
-    "## Open Questions",
+    "## Notes",
     "",
-    input.repositoryFullName
-      ? `- GitHub issue and pull request events for ${input.repositoryFullName} wake this maintainer through the AMA HTTP trigger.`
-      : "- No GitHub repository is bound yet, so this maintainer currently runs only on scheduled heartbeats.",
+    "- GitHub issue and pull request events can trigger event-driven maintainer runs for associated board repositories.",
+    "- Scheduled runs are for proactive maintenance, not event acknowledgement.",
   ].join("\n");
 }
 
@@ -2146,8 +2170,12 @@ api.post("/api/repositories", async (c) => {
 
 api.get("/api/repositories", async (c) => {
   const ownerId = c.get("ownerId");
-  const { url } = c.req.query();
-  const repositories = await listRepositories(c.env.DB, ownerId, { url });
+  const { url, board_id } = c.req.query();
+  if (board_id) {
+    const board = await getOwnedBoard(c.env.DB, ownerId, board_id);
+    if (!board) throw new HTTPException(404, { message: "Board not found" });
+  }
+  const repositories = board_id ? await listBoardRepositories(c.env.DB, ownerId, board_id) : await listRepositories(c.env.DB, ownerId, { url });
   const statuses = await repoAppStatusBatch(
     c.env.DB,
     ownerId,
@@ -2162,6 +2190,30 @@ api.get("/api/repositories/:id", async (c) => {
   if (!repo) throw new HTTPException(404, { message: "Repository not found" });
   const app_status = await repoAppStatus(c.env.DB, ownerId, repo.full_name);
   return c.json({ ...repo, app_status });
+});
+
+api.post("/api/repositories/:id/github-token", async (c) => {
+  if (!isGithubAppConfigured(c.env)) throw new HTTPException(503, { message: "GitHub App is not configured" });
+  const ownerId = c.get("ownerId");
+  const repo = await getRepository(c.env.DB, c.req.param("id"), ownerId);
+  if (!repo) throw new HTTPException(404, { message: "Repository not found" });
+  if (c.get("identityType") === "agent:worker") {
+    const agentId = c.get("agentId");
+    if (!agentId || !(await isActiveMaintainerForRepository(c.env.DB, ownerId, agentId, repo.id))) {
+      throw new HTTPException(403, { message: "Worker agent is not an active maintainer for this repository" });
+    }
+  }
+  const githubUrl = new URL(repo.url);
+  const githubParts = githubUrl.pathname.replace(/^\/|\/$/g, "").split("/");
+  if (githubUrl.hostname !== "github.com" || githubParts.length !== 2) {
+    throw new HTTPException(400, { message: "GitHub auth is only available for github.com repositories" });
+  }
+  const [githubOwner, githubRepo] = githubParts;
+  if ((await repoAppStatus(c.env.DB, ownerId, `${githubOwner}/${githubRepo}`)) !== "covered") {
+    throw new HTTPException(403, { message: "GitHub App is not installed for this owner and repository" });
+  }
+  const github = await mintGithubInstallationToken(c.env, githubOwner, githubRepo);
+  return c.json({ repository_id: repo.id, full_name: repo.full_name, token: github.token, expires_at: github.expiresAt });
 });
 
 // Unlink only: removes the AK repo row. Never uninstalls the App or removes the

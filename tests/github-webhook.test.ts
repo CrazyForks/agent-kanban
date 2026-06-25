@@ -231,9 +231,11 @@ describe("POST /api/webhooks/github-app route", () => {
 
     const { createBoard } = await import("../apps/web/server/boardRepo");
     const { createBoardMaintainer } = await import("../apps/web/server/boardMaintainerRepo");
+    const { recordBoardRepository } = await import("../apps/web/server/boardRepositoryRepo");
     const { createRepository } = await import("../apps/web/server/repositoryRepo");
     const board = await createBoard(db, ownerId, `webhook-maintainer-board-${randomUUID()}`, "dev");
     const repo = await createRepository(db, ownerId, { name: repoName, url: `https://github.com/${repoFullName}` });
+    await recordBoardRepository(db, board.id, repo.id);
     const agent = await createTestAgent(db, ownerId, {
       name: "Webhook maintainer",
       username: `webhook-maintainer-${randomUUID()}`,
@@ -244,7 +246,6 @@ describe("POST /api/webhooks/github-app route", () => {
     const maintainer = await createBoardMaintainer(db, ownerId, {
       boardId: board.id,
       agentId: agent.id,
-      repositoryId: repo.id,
       amaScheduleId: `sched_webhook_${triggerSuffix}_${randomUUID()}`,
       amaHttpTriggerId: httpTriggerId,
       amaMemoryStoreId: `mem_webhook_${triggerSuffix}_${randomUUID()}`,
@@ -373,9 +374,11 @@ describe("POST /api/webhooks/github-app route", () => {
 
     const { createBoard } = await import("../apps/web/server/boardRepo");
     const { createBoardMaintainer } = await import("../apps/web/server/boardMaintainerRepo");
+    const { recordBoardRepository } = await import("../apps/web/server/boardRepositoryRepo");
     const { createRepository } = await import("../apps/web/server/repositoryRepo");
     const board = await createBoard(db, ownerId, `webhook-maintainer-scope-board-${randomUUID()}`, "dev");
     const repo = await createRepository(db, ownerId, { name: repoName, url: `https://github.com/${repoFullName}` });
+    await recordBoardRepository(db, board.id, repo.id);
     const agent = await createTestAgent(db, ownerId, {
       name: "Webhook maintainer scope",
       username: `webhook-maintainer-scope-${randomUUID()}`,
@@ -386,7 +389,6 @@ describe("POST /api/webhooks/github-app route", () => {
     await createBoardMaintainer(db, ownerId, {
       boardId: board.id,
       agentId: agent.id,
-      repositoryId: repo.id,
       amaScheduleId: `sched_webhook_scope_${randomUUID()}`,
       amaHttpTriggerId: httpTriggerId,
       amaMemoryStoreId: `mem_webhook_scope_${randomUUID()}`,

@@ -2,6 +2,7 @@ import type { BoardAction, CreateTaskInput, IdentityType, Task, TaskAction, Task
 import { validateTransition } from "@agent-kanban/shared";
 import { HTTPException } from "hono/http-exception";
 import { getDefaultBoard } from "./boardRepo";
+import { recordBoardRepository } from "./boardRepositoryRepo";
 import { type D1, MAX_TASK_PARTITION_ROWS, newLongId, parseJsonFields } from "./db";
 import { isRuntimeAvailable } from "./machineRepo";
 import { computeBlocked, detectCycle, getDependencies, setDependencies } from "./taskDeps";
@@ -19,6 +20,21 @@ async function assertKnownLabels(db: D1, boardId: string, labels: string[] | nul
   const knownLabels = new Set((JSON.parse(board.labels) as { name: string }[]).map((label) => label.name));
   const unknown = labels.find((label) => !knownLabels.has(label));
   if (unknown) throw new HTTPException(400, { message: `Label not found: ${unknown}` });
+}
+
+async function assertRepositoryBelongsToBoardOwner(db: D1, boardId: string, repositoryId: string): Promise<void> {
+  const row = await db
+    .prepare(
+      `
+      SELECT 1
+      FROM boards b
+      JOIN repositories r ON r.owner_id = b.owner_id
+      WHERE b.id = ? AND r.id = ?
+    `,
+    )
+    .bind(boardId, repositoryId)
+    .first();
+  if (!row) throw new HTTPException(404, { message: "Repository not found" });
 }
 
 function enforceTransition(action: TaskActionType, currentStatus: TaskStatus, identity: IdentityType): void {
@@ -58,10 +74,13 @@ export async function createTask(
   const actorType = input.actorType ?? "machine";
   const actorId = input.actorId ?? "system";
   const board = input.board_id
-    ? await db.prepare("SELECT id, type FROM boards WHERE id = ?").bind(input.board_id).first<{ id: string; type: string }>()
+    ? await db
+        .prepare("SELECT id, type FROM boards WHERE id = ? AND owner_id = ?")
+        .bind(input.board_id, ownerId)
+        .first<{ id: string; type: string }>()
     : await getDefaultBoard(db, ownerId);
 
-  if (!board) throw new HTTPException(400, { message: "No board exists. Create a board first." });
+  if (!board) throw new HTTPException(400, { message: input.board_id ? "Board not found" : "No board exists. Create a board first." });
 
   if (board.type === "dev" && !input.repository_id) {
     throw new HTTPException(400, { message: "repository_id is required for dev board tasks" });
@@ -69,6 +88,7 @@ export async function createTask(
   if (board.type === "ops" && input.repository_id) {
     throw new HTTPException(400, { message: "repository_id is not allowed for ops board tasks" });
   }
+  if (input.repository_id) await assertRepositoryBelongsToBoardOwner(db, board.id, input.repository_id);
 
   const maxPos = await db
     .prepare("SELECT COALESCE(MAX(position), -1) as max_pos FROM tasks WHERE board_id = ? AND status = 'todo'")
@@ -147,6 +167,7 @@ export async function createTask(
   ];
 
   await db.batch(stmts);
+  if (input.repository_id) await recordBoardRepository(db, board.id, input.repository_id);
 
   return {
     id: taskId,
@@ -295,6 +316,9 @@ export async function updateTask(
   if (updates.labels !== undefined) {
     await assertKnownLabels(db, task.board_id, updates.labels);
   }
+  if (updates.repository_id) {
+    await assertRepositoryBelongsToBoardOwner(db, task.board_id, updates.repository_id);
+  }
 
   const now = new Date().toISOString();
   const sets: string[] = ["updated_at = ?"];
@@ -315,6 +339,7 @@ export async function updateTask(
     .prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`)
     .bind(...binds)
     .run();
+  if (updates.repository_id) await recordBoardRepository(db, task.board_id, updates.repository_id);
 
   return parseTask({ ...task, ...updates, updated_at: now } as Task);
 }

@@ -288,6 +288,7 @@ export function registerGetCommand(program: Command) {
   getCmd
     .command("repo [id]")
     .description("Get a repository or list repositories")
+    .option("--board <id>", "Only list repositories associated with a board")
     .option("-o, --output <format>", "Output format (json, yaml, text)")
     .action(async (id: string | undefined, opts) => {
       const client = await createClient();
@@ -296,7 +297,7 @@ export function registerGetCommand(program: Command) {
         const repo = await client.getRepository(id);
         output(repo, fmt, formatRepository, { kind: "repo" });
       } else {
-        const repos = await client.listRepositories();
+        const repos = await client.listRepositories(opts.board ? { board_id: opts.board } : undefined);
         output(repos, fmt, formatRepositoryList, { kind: "repo" });
       }
     });

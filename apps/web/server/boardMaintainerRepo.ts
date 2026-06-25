@@ -5,7 +5,6 @@ export interface BoardMaintainer {
   owner_id: string;
   board_id: string;
   agent_id: string;
-  repository_id: string | null;
   ama_schedule_id: string;
   ama_http_trigger_id: string | null;
   ama_memory_store_id: string | null;
@@ -23,7 +22,6 @@ export interface BoardMaintainer {
 export interface CreateBoardMaintainerInput {
   boardId: string;
   agentId: string;
-  repositoryId?: string | null;
   amaScheduleId: string;
   amaHttpTriggerId: string;
   amaMemoryStoreId: string;
@@ -50,16 +48,15 @@ export async function createBoardMaintainer(db: D1, ownerId: string, input: Crea
   await db
     .prepare(
       `INSERT INTO board_maintainers (
-        id, owner_id, board_id, agent_id, repository_id, ama_schedule_id, ama_http_trigger_id, ama_memory_store_id,
+        id, owner_id, board_id, agent_id, ama_schedule_id, ama_http_trigger_id, ama_memory_store_id,
         name, prompt, interval_seconds, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
       ownerId,
       input.boardId,
       input.agentId,
-      input.repositoryId ?? null,
       input.amaScheduleId,
       input.amaHttpTriggerId,
       input.amaMemoryStoreId,
@@ -134,6 +131,26 @@ export async function deleteBoardMaintainer(db: D1, ownerId: string, boardId: st
   return (result.meta?.changes ?? 0) > 0;
 }
 
+export async function isActiveMaintainerForRepository(db: D1, ownerId: string, agentId: string, repositoryId: string): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `
+      SELECT 1
+      FROM board_maintainers bm
+      JOIN boards b ON b.id = bm.board_id AND b.owner_id = bm.owner_id
+      JOIN board_repositories br ON br.board_id = bm.board_id AND br.repository_id = ?
+      JOIN repositories r ON r.id = br.repository_id AND r.owner_id = bm.owner_id
+      WHERE bm.owner_id = ?
+        AND bm.agent_id = ?
+        AND bm.status = 'active'
+      LIMIT 1
+    `,
+    )
+    .bind(repositoryId, ownerId, agentId)
+    .first();
+  return Boolean(row);
+}
+
 export async function listActiveBoardMaintainersForRepository(db: D1, installationId: number, fullName: string): Promise<BoardMaintainer[]> {
   const canonicalFullName = fullName.toLowerCase();
   const result = await db
@@ -141,7 +158,8 @@ export async function listActiveBoardMaintainersForRepository(db: D1, installati
       `
       SELECT DISTINCT bm.*
       FROM board_maintainers bm
-      JOIN repositories r ON r.id = bm.repository_id AND r.owner_id = bm.owner_id
+      JOIN board_repositories br ON br.board_id = bm.board_id
+      JOIN repositories r ON r.id = br.repository_id AND r.owner_id = bm.owner_id
       JOIN github_installations gi ON gi.owner_id = bm.owner_id AND gi.installation_id = ? AND gi.suspended_at IS NULL
       LEFT JOIN github_installation_repositories gir
         ON gir.installation_id = gi.installation_id AND gir.full_name = ?

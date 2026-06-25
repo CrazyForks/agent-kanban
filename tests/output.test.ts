@@ -482,36 +482,36 @@ describe("formatRepositoryList", () => {
 });
 
 describe("formatMaintainer", () => {
-  it("includes repository_id when present", () => {
+  it("formats board maintainer details", () => {
     const result = formatMaintainer({
       id: "maintainer-1",
-      name: "Repo Maintainer",
+      name: "Board Maintainer",
       board_id: "board-1",
       agent_id: "agent-1",
-      repository_id: "repo-1",
       status: "active",
       interval_seconds: 3600,
     });
 
-    expect(result).toContain("Repository:");
-    expect(result).toContain("repo-1");
+    expect(result).toContain("Board Maintainer");
+    expect(result).toContain("Board:");
+    expect(result).not.toContain("Repository:");
   });
 });
 
 describe("formatMaintainerList", () => {
-  it("includes repository_id when present", () => {
+  it("formats board maintainer list rows", () => {
     const result = formatMaintainerList([
       {
         id: "maintainer-1",
-        name: "Repo Maintainer",
+        name: "Board Maintainer",
         agent_id: "agent-1",
-        repository_id: "repo-1",
         status: "active",
         interval_seconds: 3600,
       },
     ]);
 
-    expect(result).toContain("repo=repo-1");
+    expect(result).toContain("Board Maintainer");
+    expect(result).not.toContain("repo=");
   });
 });
 

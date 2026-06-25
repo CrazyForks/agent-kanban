@@ -32,6 +32,7 @@ import type { D1 } from "./db";
 import { isGithubAppConfigured, mintGithubInstallationToken } from "./githubApp";
 import { createLogger } from "./logger";
 import { listMachineEnvironmentCandidatesForRuntime } from "./machineRepo";
+import { githubRepoRef } from "./repositoryRepo";
 import { getSubagent } from "./subagentRepo";
 import { computeBlocked } from "./taskDeps";
 import { addTaskAction, getTask, releaseTask, updateTask } from "./taskRepo";
@@ -887,11 +888,7 @@ async function taskResourceRefs(db: D1, task: Task) {
   return github ? [github] : [];
 }
 
-export function githubRepoRef(url: string) {
-  const match = url.match(/github\.com[:/]([^/]+)\/([^/.]+)(?:\.git)?$/);
-  if (!match) return null;
-  return { type: "github_repository", owner: match[1], repo: match[2] };
-}
+export { githubRepoRef } from "./repositoryRepo";
 
 export function secretReferenceName(sessionId: string) {
   return `AK_AGENT_KEY_${sessionId.replaceAll(/[^A-Za-z0-9_]/g, "_")}`;

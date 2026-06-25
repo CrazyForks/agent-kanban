@@ -51,6 +51,10 @@ export async function createAmaAgentSession(
     amaSessionId?: string | null;
   },
 ): Promise<{ delegation_proof: string }> {
+  const agent = await db.prepare("SELECT owner_id FROM agents WHERE id = ?").bind(input.agentId).first<{ owner_id: string }>();
+  if (!agent) throw new Error("Agent not found");
+  if (agent.owner_id !== input.ownerId) throw new Error("Agent does not belong to owner");
+
   const agentPrivateKey = await getAgentPrivateKey(db, input.agentId);
   if (!agentPrivateKey) throw new Error("Agent not found");
 

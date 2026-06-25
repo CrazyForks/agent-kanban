@@ -274,12 +274,14 @@ describe("routes", () => {
     await configureAmaOwnerRuntime(userTokenOwnerId, "codex", "env_123");
 
     const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { recordBoardRepository } = await import("../apps/web/server/boardRepositoryRepo");
     const { createRepository } = await import("../apps/web/server/repositoryRepo");
-    const maintainerBoard = await createBoard(env.DB, userTokenOwnerId, `maintainer-board-${crypto.randomUUID()}`, "ops");
+    const maintainerBoard = await createBoard(env.DB, userTokenOwnerId, `maintainer-board-${crypto.randomUUID()}`, "dev");
     const maintainerRepository = await createRepository(env.DB, userTokenOwnerId, {
       name: `maintainer-repo-${crypto.randomUUID()}`,
       url: "https://github.com/maintainer-org/maintainer-repo",
     });
+    await recordBoardRepository(env.DB, maintainerBoard.id, maintainerRepository.id);
     const maintainerAgent = await createTestAgent(env.DB, userTokenOwnerId, {
       name: "Daily maintainer",
       username: `daily-maintainer-${crypto.randomUUID()}`,
@@ -343,9 +345,9 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/memory-stores/mem_maintainer/memories" && method === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         memoryRequests.push(body);
-        expect(body.path).toBe("ak-maintainer-heartbeat.md");
+        expect(body.path).toBe("HEARTBEAT.md");
         expect(body.content).toContain(`Board: ${maintainerBoard.name} (${maintainerBoard.id})`);
-        expect(body.content).toContain("Repository: maintainer-org/maintainer-repo");
+        expect(body.content).toContain("Repositories: maintainer-org/maintainer-repo");
         expect(body.metadata).toEqual({ purpose: "ak-board-maintainer-heartbeat", boardId: maintainerBoard.id });
         return jsonResponse({ id: "memory_heartbeat", ...body }, 201);
       }
@@ -359,14 +361,20 @@ describe("routes", () => {
         expect(body.env).toMatchObject({
           AK_WORKER: "1",
           AK_BOARD_ID: maintainerBoard.id,
-          AK_REPOSITORY_ID: maintainerRepository.id,
-          AK_REPOSITORY_FULL_NAME: "maintainer-org/maintainer-repo",
           AK_API_URL: "https://ak.test",
         });
+        expect(JSON.parse(body.env.AK_BOARD_REPOSITORIES)).toEqual([
+          { id: maintainerRepository.id, full_name: "maintainer-org/maintainer-repo", url: "https://github.com/maintainer-org/maintainer-repo" },
+        ]);
         expect(body.env.AK_AGENT_ID).toBe(maintainerAgent.id);
+        expect(body.env).not.toHaveProperty("AK_REPOSITORY_ID");
+        expect(body.env).not.toHaveProperty("AK_REPOSITORY_FULL_NAME");
         expect(body.env).not.toHaveProperty("AK_SESSION_ID");
         expect(body.secretEnv).toEqual([]);
         expect(body.promptTemplate).toContain(`AK board ${maintainerBoard.id}`);
+        expect(body.promptTemplate).toContain(`GitHub repository scope: maintainer-org/maintainer-repo.`);
+        expect(body.promptTemplate).toContain(`ak get repo --board ${maintainerBoard.id} -o json`);
+        expect(body.promptTemplate).toContain("ak github auth <repo-id>");
         if (body.type === "http") {
           expect(body.schedule).toBeNull();
           expect(body.name).toBe("Daily maintainer GitHub events");
@@ -506,7 +514,6 @@ describe("routes", () => {
         {
           agent_id: maintainerAgent.id,
           name: "Daily maintainer",
-          repository_id: maintainerRepository.id,
           prompt: "Inspect open work and create follow-up tasks when needed.",
           interval_seconds: 3600,
         },
@@ -517,9 +524,9 @@ describe("routes", () => {
       expect(maintainer).toMatchObject({
         board_id: maintainerBoard.id,
         agent_id: maintainerAgent.id,
-        repository_id: maintainerRepository.id,
         status: "active",
       });
+      expect(maintainer).not.toHaveProperty("repository_id");
       expect(maintainer).not.toHaveProperty("ama_schedule_id");
       expect(maintainer).not.toHaveProperty("last_ama_session_id");
       expect(maintainer).toMatchObject({
@@ -545,12 +552,11 @@ describe("routes", () => {
       expect(triggerRequests[0].env).toMatchObject({ AK_AGENT_ID: maintainerAgent.id, AK_BOARD_ID: maintainerBoard.id });
       expect(triggerRequests[0].env).not.toHaveProperty("AK_SESSION_ID");
       const maintainerRow = await env.DB.prepare(
-        "SELECT repository_id, ama_schedule_id, ama_http_trigger_id, ama_memory_store_id FROM board_maintainers WHERE id = ?",
+        "SELECT ama_schedule_id, ama_http_trigger_id, ama_memory_store_id FROM board_maintainers WHERE id = ?",
       )
         .bind(maintainer.id)
-        .first<{ repository_id: string; ama_schedule_id: string; ama_http_trigger_id: string; ama_memory_store_id: string }>();
+        .first<{ ama_schedule_id: string; ama_http_trigger_id: string; ama_memory_store_id: string }>();
       expect(maintainerRow).toEqual({
-        repository_id: maintainerRepository.id,
         ama_schedule_id: "sched_maintainer",
         ama_http_trigger_id: "http_maintainer",
         ama_memory_store_id: "mem_maintainer",
@@ -561,7 +567,6 @@ describe("routes", () => {
       await expect(listRes.json()).resolves.toEqual([
         expect.objectContaining({
           id: maintainer.id,
-          repository_id: maintainerRepository.id,
           last_run_at: "2026-06-08T12:10:00.000Z",
           last_session_id: "session_maintainer_http_1",
         }),
@@ -1059,6 +1064,43 @@ describe("routes", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("GET /api/repositories?board_id= lists repositories associated with that board", async () => {
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { recordBoardRepository } = await import("../apps/web/server/boardRepositoryRepo");
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    const board = await createBoard(env.DB, userTokenOwnerId, `repo-scope-${crypto.randomUUID()}`, "dev");
+    const included = await createRepository(env.DB, userTokenOwnerId, {
+      name: `included-${crypto.randomUUID()}`,
+      url: "https://github.com/scope-org/included-repo",
+    });
+    await createRepository(env.DB, userTokenOwnerId, {
+      name: `excluded-${crypto.randomUUID()}`,
+      url: "https://github.com/scope-org/excluded-repo",
+    });
+    await recordBoardRepository(env.DB, board.id, included.id);
+
+    const res = await apiRequest("GET", `/api/repositories?board_id=${board.id}`, undefined, userToken);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any[];
+    expect(body.map((repo) => repo.id)).toEqual([included.id]);
+    expect(body[0]).toMatchObject({ full_name: "scope-org/included-repo", url: "https://github.com/scope-org/included-repo" });
+  });
+
+  it("POST /api/repositories/:id/github-token rejects machine identity", async () => {
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    const repo = await createRepository(env.DB, userId, {
+      name: `machine-token-repo-${crypto.randomUUID()}`,
+      url: "https://github.com/machine-token-org/repo",
+    });
+
+    const res = await apiRequest("POST", `/api/repositories/${repo.id}/github-token`, undefined, apiKey);
+
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as any;
+    expect(body.error.message).toBe("user or agent:worker or agent:leader required");
   });
 
   it("DELETE /api/repositories/:id deletes a repository", async () => {
