@@ -21,9 +21,9 @@ function env(db: D1Database): any {
     GITHUB_CLIENT_ID: "gh",
     GITHUB_CLIENT_SECRET: "ghs",
     AMA_ORIGIN: "https://ama.test",
-    AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-    AMA_OAUTH_CLIENT_ID: "ak-app",
-    AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    AMA_OIDC_ISSUER: "https://auth.test",
+    AMA_OIDC_CLIENT_ID: "ak-app",
+    AMA_OIDC_CLIENT_SECRET: "ak-secret",
   };
 }
 

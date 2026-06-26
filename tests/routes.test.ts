@@ -259,16 +259,16 @@ describe("routes", () => {
   it("creates, updates, lists, and deletes board maintainers through AMA triggers and memory stores", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
       AK_API_URL: env.AK_API_URL,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
       AK_API_URL: "https://ak.test",
     });
     await configureAmaOwnerRuntime(userTokenOwnerId, "codex", "env_123");
@@ -910,16 +910,16 @@ describe("routes", () => {
     const amaProjectId = "project_patch_test";
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
       AK_API_URL: env.AK_API_URL,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
       AK_API_URL: "https://ak.test",
     });
     const { createAuth } = await import("../apps/web/server/betterAuth");
@@ -1065,16 +1065,16 @@ describe("routes", () => {
     const amaProjectId = "project_delete_test";
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
       AK_API_URL: env.AK_API_URL,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
       AK_API_URL: "https://ak.test",
     });
     const { createAuth: createAuthForDelete } = await import("../apps/web/server/betterAuth");
@@ -1409,15 +1409,15 @@ describe("routes", () => {
   it("GET /api/agents uses AMA runner load and capabilities as runtime availability source", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
     await configureAmaOwnerRuntime(userId, "claude", "env_available");
     await configureAmaOwnerRuntime(userId, "codex", "env_full");
@@ -1486,15 +1486,15 @@ describe("routes", () => {
   it("GET /api/agents filters AMA-backed agents out when no active runner can serve their runtime", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
     await configureAmaOwnerRuntime(userId, "codex", "env_unavailable");
     vi.stubGlobal(
@@ -1570,15 +1570,15 @@ describe("routes", () => {
   it("GET /api/models returns the cloud catalog for the ama runtime fetched from AMA", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
@@ -1645,15 +1645,15 @@ describe("routes", () => {
   it("GET /api/models lists models declared by live AMA runners for machine runtimes", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
     await configureAmaOwnerRuntime(userId, "gemini", "env_models");
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -1721,15 +1721,15 @@ describe("routes", () => {
   it("GET /api/models returns an empty list when no runner is online", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
     await configureAmaOwnerRuntime(userId, "hermes", "env_models_empty");
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -2220,15 +2220,15 @@ describe("routes", () => {
   it("POST /api/tasks keeps unassigned task creation compatible when AMA dispatch is configured", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -2253,15 +2253,15 @@ describe("routes", () => {
   it("POST /api/tasks keeps assigned task creation on the legacy path when AMA mode is partially configured", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: undefined,
-      AMA_OAUTH_CLIENT_ID: undefined,
-      AMA_OAUTH_CLIENT_SECRET: undefined,
+      AMA_OIDC_ISSUER: undefined,
+      AMA_OIDC_CLIENT_ID: undefined,
+      AMA_OIDC_CLIENT_SECRET: undefined,
     });
 
     try {
@@ -2287,16 +2287,16 @@ describe("routes", () => {
   it("POST /api/tasks dispatches assigned tasks to AMA and stores AK-owned annotations", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
       AK_API_URL: env.AK_API_URL,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
       AK_API_URL: "https://ak.test",
     });
     await configureAmaOwnerRuntime(userId, "claude", "env_123");
@@ -2450,15 +2450,15 @@ describe("routes", () => {
   it("cleans up local task and runtime session rows when initial AMA dispatch fails", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
     await configureAmaOwnerRuntime(userId, "codex", "env_123");
     const tempAgent = await createTestAgent(env.DB, userId, {
@@ -2525,15 +2525,15 @@ describe("routes", () => {
   it("does not assign when AMA dispatch fails while assigning an existing task", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
     await configureAmaOwnerRuntime(userId, "codex", "env_123");
     const tempAgent = await createTestAgent(env.DB, userId, {
@@ -2592,15 +2592,15 @@ describe("routes", () => {
   it("POST /api/tasks/:id/release redispatches assigned AMA tasks", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
     await configureAmaOwnerRuntime(userId, "codex", "env_release");
     const tempAgent = await createTestAgent(env.DB, userId, {
@@ -2990,15 +2990,15 @@ describe("routes", () => {
   it("routes task messages, rejects, and cancels to bound AMA sessions", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
 
     const runtimeMessages: string[] = [];
@@ -3076,15 +3076,15 @@ describe("routes", () => {
   it("does not mutate task state when AMA reject or cancel command delivery fails", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
@@ -3128,15 +3128,15 @@ describe("routes", () => {
   it("updates AMA runtime session usage and closes runtime sessions on terminal lifecycle states", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
@@ -3208,15 +3208,15 @@ describe("routes", () => {
   it("GET /api/tasks/:id/session returns session metadata for a bound AMA session", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
@@ -3251,15 +3251,15 @@ describe("routes", () => {
   it("GET /api/tasks/:id/session resolves a historical AMA session from the task action session", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
 
     const akSessionId = "ak_session_history_123";
@@ -3315,15 +3315,15 @@ describe("routes", () => {
   it("GET /api/tasks/:id/session/ws returns a browser socket URL for a bound AMA session", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
 
     try {
@@ -3349,15 +3349,15 @@ describe("routes", () => {
   it("GET /api/sessions/:sessionId returns an AMA session by session id", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
 
     const sessionId = "session_direct_123";
@@ -3390,15 +3390,15 @@ describe("routes", () => {
   it("GET /api/sessions lists AMA sessions with a metadata label selector", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
     vi.stubGlobal(
       "fetch",
@@ -3442,15 +3442,15 @@ describe("routes", () => {
   it("GET /api/sessions/:sessionId/ws returns a browser socket URL by session id", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
     vi.stubGlobal(
       "fetch",
@@ -3580,16 +3580,16 @@ describe("routes", () => {
   it("legacy daemon APIs remain available once AMA dispatch is configured", async () => {
     const previous = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
       AK_API_URL: env.AK_API_URL,
     };
     Object.assign(env, {
       AMA_ORIGIN: "http://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
       AK_API_URL: "http://ak.test",
     });
 
@@ -3645,15 +3645,15 @@ describe("routes", () => {
   it("GET /api/machines/:id marks stale machines offline", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: undefined,
-      AMA_OIDC_DISCOVERY_URL: undefined,
-      AMA_OAUTH_CLIENT_ID: undefined,
-      AMA_OAUTH_CLIENT_SECRET: undefined,
+      AMA_OIDC_ISSUER: undefined,
+      AMA_OIDC_CLIENT_ID: undefined,
+      AMA_OIDC_CLIENT_SECRET: undefined,
     });
     await env.DB.prepare("UPDATE machines SET status = 'online', last_heartbeat_at = ? WHERE id = ?")
       .bind("2000-01-01T00:00:00.000Z", machineId)
@@ -3673,15 +3673,15 @@ describe("routes", () => {
   it("GET /api/machines/:id preserves usage_info while deriving status from AMA runners", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
     await configureAmaOwnerRuntime(userId, "codex", "env_usage");
     const machine = await env.DB.prepare("SELECT id FROM machines WHERE owner_id = ? AND ama_environment_id = ?")

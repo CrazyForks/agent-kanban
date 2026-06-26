@@ -51,9 +51,9 @@ function makeEnv(overrides: Record<string, unknown> = {}): any {
     MAILS_ADMIN_TOKEN: "",
     GITHUB_APP_WEBHOOK_SECRET: WEBHOOK_SECRET,
     AMA_ORIGIN: "https://ama.test",
-    AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-    AMA_OAUTH_CLIENT_ID: "ak-app",
-    AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    AMA_OIDC_ISSUER: "https://auth.test",
+    AMA_OIDC_CLIENT_ID: "ak-app",
+    AMA_OIDC_CLIENT_SECRET: "ak-secret",
     ...overrides,
   };
 }
@@ -751,9 +751,9 @@ describe("handleGithubPullRequestEvent", () => {
 
     const AMA_ENV = {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     };
 
     const stops: string[] = [];

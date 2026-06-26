@@ -20,9 +20,9 @@ const OWNER = "ama-sweep-test-user";
 // Shared AMA env-var bundle — matches routes.test.ts pattern
 const AMA_ENV = {
   AMA_ORIGIN: "https://ama.test",
-  AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-  AMA_OAUTH_CLIENT_ID: "ak-app",
-  AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+  AMA_OIDC_ISSUER: "https://auth.test",
+  AMA_OIDC_CLIENT_ID: "ak-app",
+  AMA_OIDC_CLIENT_SECRET: "ak-secret",
   AK_API_URL: "https://ak.test",
 };
 

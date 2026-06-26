@@ -295,15 +295,15 @@ describe("GET /api/admin/stats", () => {
   it("derives machine online stats from AMA runners when AMA dispatch is configured", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
-      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
-      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-      AMA_OAUTH_CLIENT_ID: "ak-app",
-      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
     });
     const ownerId = "admin-ama-machine-owner";
     const machineId = "admin-ama-machine";

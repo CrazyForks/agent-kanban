@@ -63,10 +63,10 @@ function env(overrides: Partial<Env> = {}): Env {
     CF_API_TOKEN: "cf-token",
     AK_API_URL: "https://ak.example.com",
     AMA_ORIGIN: "https://ama.test/",
-    AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
-    AMA_OAUTH_CLIENT_ID: "ak-app",
-    AMA_OAUTH_CLIENT_SECRET: "ak-secret",
-    AMA_OAUTH_SCOPE: "ama:project",
+    AMA_OIDC_ISSUER: "https://auth.test",
+    AMA_OIDC_CLIENT_ID: "ak-app",
+    AMA_OIDC_CLIENT_SECRET: "ak-secret",
+    AMA_OIDC_SCOPES: "ama:project",
     ...overrides,
   };
 }
@@ -81,7 +81,7 @@ describe("AMA runtime adapter", () => {
 
   it("reports configured when origin and the OAuth client exist", () => {
     expect(isAmaRuntimeConfigured(env())).toBe(true);
-    expect(isAmaRuntimeConfigured(env({ AMA_OAUTH_CLIENT_SECRET: undefined }))).toBe(false);
+    expect(isAmaRuntimeConfigured(env({ AMA_OIDC_CLIENT_SECRET: undefined }))).toBe(false);
     expect(isAmaRuntimeConfigured(env({ AMA_ORIGIN: undefined }))).toBe(false);
   });
 

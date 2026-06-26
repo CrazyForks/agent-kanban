@@ -20,25 +20,37 @@ export async function hasAmaResources(db: D1, ownerId: string): Promise<boolean>
 }
 
 // Registers AMA as a generic OIDC provider so each AK user can link their own
-// AMA account. Only added when AMA OAuth is configured; standalone AK skips it.
+// AMA account. Only added when AMA OIDC is configured; standalone AK skips it.
 function amaProviderPlugins(env: Env): BetterAuthPlugin[] {
-  const discoveryUrl = env.AMA_OIDC_DISCOVERY_URL;
-  if (!discoveryUrl || !env.AMA_OAUTH_CLIENT_ID || !env.AMA_OAUTH_CLIENT_SECRET) return [];
+  const issuer = env.AMA_OIDC_ISSUER;
+  if (!issuer || !env.AMA_OIDC_CLIENT_ID || !env.AMA_OIDC_CLIENT_SECRET) return [];
   return [
     genericOAuth({
       config: [
         {
           providerId: "ama",
-          discoveryUrl,
-          clientId: env.AMA_OAUTH_CLIENT_ID,
-          clientSecret: env.AMA_OAUTH_CLIENT_SECRET,
+          discoveryUrl: oidcDiscoveryUrl(issuer),
+          clientId: env.AMA_OIDC_CLIENT_ID,
+          clientSecret: env.AMA_OIDC_CLIENT_SECRET,
           authentication: "basic",
-          scopes: ["openid", "profile", "email", "offline_access"],
+          scopes: amaOidcScopes(env),
           pkce: true,
         },
       ],
     }),
   ];
+}
+
+function oidcDiscoveryUrl(issuer: string): string {
+  return `${issuer.replace(/\/+$/, "")}/.well-known/openid-configuration`;
+}
+
+function amaOidcScopes(env: Env): string[] {
+  return (
+    env.AMA_OIDC_SCOPES?.trim()
+      .split(/[\s,]+/)
+      .filter(Boolean) ?? ["openid", "profile", "email", "offline_access"]
+  );
 }
 
 export function createAuth(env: Env) {

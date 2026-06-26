@@ -319,7 +319,7 @@ export function vendorFromModelId(modelId: string): string {
 // client used to register the provider are present. Per-call authorization
 // is the logged-in user's own linked AMA account (resolved at request time).
 function hasAmaOidcClient(env: Env): boolean {
-  return Boolean(env.AMA_OIDC_DISCOVERY_URL && env.AMA_OAUTH_CLIENT_ID && env.AMA_OAUTH_CLIENT_SECRET);
+  return Boolean(env.AMA_OIDC_ISSUER && env.AMA_OIDC_CLIENT_ID && env.AMA_OIDC_CLIENT_SECRET);
 }
 
 export function isAmaRuntimeConfigured(env: Env): boolean {
