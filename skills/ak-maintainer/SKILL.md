@@ -18,8 +18,8 @@ You are maintaining an Agent Kanban board. Use AK as the source of truth for boa
 ## GitHub Identity
 
 - GitHub actions must use the AK GitHub App bot identity, not a human user's login.
-- Before every `gh` command that reads from, writes to, or replies in a GitHub repository, run `ak github auth <repo-id>` for that repository.
-- Do not use pre-existing `gh` login state or human GitHub credentials. If `ak github auth` fails, stop and report the failure.
+- Before every `gh` command that reads from, writes to, or replies in a GitHub repository, run `ak auth git <repo-id>` for that repository.
+- Do not use pre-existing `gh` login state or human GitHub credentials. If `ak auth git` fails, stop and report the failure.
 
 ## Scheduled Runs
 

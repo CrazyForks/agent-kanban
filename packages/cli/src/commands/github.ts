@@ -3,8 +3,6 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Command } from "commander";
-import { createClient } from "../agent/leader.js";
 
 type GithubAuthOptions = {
   homeDir?: string;
@@ -63,32 +61,4 @@ async function configureGhCli(token: string, options: GithubAuthOptions = {}): P
 export async function configureGithubAuth(token: string, options: GithubAuthOptions = {}) {
   await configureGitCredential(token, options);
   return await configureGhCli(token, options);
-}
-
-export function registerGithubCommand(program: Command) {
-  const githubCmd = program.command("github").description("GitHub helper commands");
-
-  githubCmd
-    .command("auth <repo-id>")
-    .description("Configure git and gh authentication for an AK repository")
-    .option("--git-only", "Only configure git credentials, skip gh auth")
-    .option("--force", "Configure local git and gh even outside an AK worker environment")
-    .option("--print-token", "Print the minted token instead of configuring local tools")
-    .action(async (repoId: string, opts) => {
-      const client = await createClient();
-      const auth = await client.createRepositoryGithubToken(repoId);
-      if (opts.printToken) {
-        console.log(auth.token);
-        return;
-      }
-      if (process.env.AK_WORKER !== "1" && !opts.force) {
-        console.error("Refusing to modify global GitHub credentials outside an AK worker. Use --print-token or --force.");
-        process.exit(1);
-      }
-      await configureGitCredential(auth.token);
-      const ghStatus = opts.gitOnly ? "skipped" : await configureGhCli(auth.token);
-      const ghMessage =
-        ghStatus === "configured" ? "gh authenticated" : ghStatus === "missing" ? "gh not found; git credentials configured" : "gh auth skipped";
-      console.log(`Configured GitHub auth for ${auth.full_name}; ${ghMessage}; expires at ${auth.expires_at}`);
-    });
 }

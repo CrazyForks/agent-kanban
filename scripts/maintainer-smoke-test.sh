@@ -12,7 +12,7 @@ set -euo pipefail
 #   - ensures the board can discover its repositories via `ak get repo --board`
 #   - creates/lists/gets/updates/deletes a board-level maintainer
 #   - verifies maintainers are not bound to repository_id
-#   - verifies `ak github auth <repo-id>` can print a token without leaking it
+#   - verifies `ak auth git <repo-id>` can print a token without leaking it
 #   - verifies git credential writes are guarded outside AK_WORKER and work in an
 #     isolated worker HOME
 #
@@ -548,27 +548,27 @@ else
   fail "maintainer runs history not listable"
 fi
 
-if token_output="$(ak github auth "$REPO_ID" --print-token 2>&1)"; then
+if token_output="$(ak auth git "$REPO_ID" --print-token 2>&1)"; then
   if printf '%s' "$token_output" | grep -Eq 'gh[opsu]_[A-Za-z0-9_]{20,}|github_pat_'; then
-    pass "ak github auth --print-token returns an installation token"
+    pass "ak auth git --print-token returns an installation token"
   else
-    fail "ak github auth --print-token succeeded but token shape was not recognized"
+    fail "ak auth git --print-token succeeded but token shape was not recognized"
   fi
 else
-  fail "ak github auth --print-token failed"
+  fail "ak auth git --print-token failed"
 fi
 unset token_output
 
-if AK_WORKER=0 ak github auth "$REPO_ID" --git-only >/tmp/maintainer-smoke-git-only.out 2>&1; then
-  fail "ak github auth --git-only modified credentials outside AK_WORKER"
+if AK_WORKER=0 ak auth git "$REPO_ID" >/tmp/maintainer-smoke-git.out 2>&1; then
+  fail "ak auth git modified credentials outside AK_WORKER"
 else
-  if grep -q "Refusing to modify global GitHub credentials" /tmp/maintainer-smoke-git-only.out; then
-    pass "ak github auth --git-only refuses outside AK_WORKER"
+  if grep -q "Refusing to modify global git credentials" /tmp/maintainer-smoke-git.out; then
+    pass "ak auth git refuses outside AK_WORKER"
   else
-    fail "ak github auth --git-only failed for unexpected reason outside AK_WORKER"
+    fail "ak auth git failed for unexpected reason outside AK_WORKER"
   fi
 fi
-rm -f /tmp/maintainer-smoke-git-only.out
+rm -f /tmp/maintainer-smoke-git.out
 
 TEMP_WORKER_HOME="$(mktemp -d)"
 if AK_WORKER=1 \
@@ -576,17 +576,17 @@ if AK_WORKER=1 \
   XDG_CONFIG_HOME="$ORIGINAL_HOME/.config" \
   XDG_STATE_HOME="$ORIGINAL_HOME/.local/state" \
   XDG_DATA_HOME="$ORIGINAL_HOME/.local/share" \
-  ak github auth "$REPO_ID" --git-only >/dev/null 2>&1; then
+  ak auth git "$REPO_ID" >/dev/null 2>&1; then
   if [ -f "$TEMP_WORKER_HOME/.git-credentials" ] \
     && grep -q "x-access-token:" "$TEMP_WORKER_HOME/.git-credentials" \
     && [ -f "$TEMP_WORKER_HOME/.gitconfig" ] \
     && grep -q "helper = store" "$TEMP_WORKER_HOME/.gitconfig"; then
-    pass "ak github auth --git-only configures isolated worker git credentials"
+    pass "ak auth git configures isolated worker git credentials"
   else
     fail "worker git credential files were not written as expected"
   fi
 else
-  fail "ak github auth --git-only failed inside AK_WORKER"
+  fail "ak auth git failed inside AK_WORKER"
 fi
 
 DELETE_OK=$(ak delete maintainer "$MAINTAINER_ID" --board "$BOARD_ID" -o json 2>/dev/null | json_query "data.ok" || echo "")
@@ -623,7 +623,7 @@ if [ "$LIVE" = 1 ]; then
   SCHEDULED_MARKER_TITLE="maintainer-smoke-scheduled-$TIMESTAMP"
   LIVE_BASELINE_SEQ="$(max_task_seq)"
 
-  HTTP_PROMPT="This is a maintainer issue triage smoke test. Treat only an issues.opened event as actionable. First run: ak get repo --board $BOARD_ID -o json. Confirm repository $REPO_ID ($REPO_FULL_NAME) is present. Then run: ak github auth $REPO_ID --print-token. Do not print or store the token. After both commands succeed, use the issue number and issue URL from the trigger context. Create exactly one unassigned triage task with: ak create task --board $BOARD_ID --repo $REPO_ID --title \"$HTTP_TRIAGE_TITLE\" --description \"Source: GitHub issues.opened maintainer smoke. Issue Number: #<issue.number>. Issue URL: <issue.html_url>. Requested Action: triage the issue and decide the implementation path.\" Do not modify GitHub or the repository."
+  HTTP_PROMPT="This is a maintainer issue triage smoke test. Treat only an issues.opened event as actionable. First run: ak get repo --board $BOARD_ID -o json. Confirm repository $REPO_ID ($REPO_FULL_NAME) is present. Then run: ak auth git $REPO_ID --print-token. Do not print or store the token. After both commands succeed, use the issue number and issue URL from the trigger context. Create exactly one unassigned triage task with: ak create task --board $BOARD_ID --repo $REPO_ID --title \"$HTTP_TRIAGE_TITLE\" --description \"Source: GitHub issues.opened maintainer smoke. Issue Number: #<issue.number>. Issue URL: <issue.html_url>. Requested Action: triage the issue and decide the implementation path.\" Do not modify GitHub or the repository."
   HTTP_MAINTAINER_ID=$(ak create maintainer \
     --board "$BOARD_ID" \
     --agent "$AGENT_ID" \
@@ -659,7 +659,7 @@ if [ "$LIVE" = 1 ]; then
     fail "HTTP maintainer delete before scheduled maintainer phase did not return ok"
   fi
 
-  SCHEDULED_PROMPT="This is a scheduled maintainer smoke test. First run: ak get repo --board $BOARD_ID -o json. Confirm repository $REPO_ID ($REPO_FULL_NAME) is present. Then run: ak github auth $REPO_ID --print-token. Do not print or store the token. After both commands succeed, create exactly one unassigned marker task with: ak create task --board $BOARD_ID --repo $REPO_ID --title \"$SCHEDULED_MARKER_TITLE\" --description \"Scheduled maintainer smoke marker\". Do not modify any repository."
+  SCHEDULED_PROMPT="This is a scheduled maintainer smoke test. First run: ak get repo --board $BOARD_ID -o json. Confirm repository $REPO_ID ($REPO_FULL_NAME) is present. Then run: ak auth git $REPO_ID --print-token. Do not print or store the token. After both commands succeed, create exactly one unassigned marker task with: ak create task --board $BOARD_ID --repo $REPO_ID --title \"$SCHEDULED_MARKER_TITLE\" --description \"Scheduled maintainer smoke marker\". Do not modify any repository."
   SCHEDULED_MAINTAINER_ID=$(ak create maintainer \
     --board "$BOARD_ID" \
     --agent "$AGENT_ID" \
