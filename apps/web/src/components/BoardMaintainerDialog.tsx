@@ -1,3 +1,4 @@
+import { MAINTAINER_HEARTBEAT_DEFAULT_INTERVAL_SECONDS, MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS } from "@agent-kanban/shared";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -7,6 +8,7 @@ import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
+import { Switch } from "./ui/switch";
 import { Textarea } from "./ui/textarea";
 
 interface BoardMaintainer {
@@ -14,6 +16,7 @@ interface BoardMaintainer {
   prompt: string;
   agent_id?: string;
   interval_seconds: number;
+  heartbeat_enabled?: boolean;
 }
 
 interface MaintainerAgent {
@@ -41,13 +44,15 @@ export function BoardMaintainerDialog({ boardId, maintainer, open, onOpenChange 
   });
   const [prompt, setPrompt] = useState("");
   const [agentId, setAgentId] = useState("");
-  const [intervalSeconds, setIntervalSeconds] = useState("86400");
+  const [intervalSeconds, setIntervalSeconds] = useState(String(MAINTAINER_HEARTBEAT_DEFAULT_INTERVAL_SECONDS));
+  const [heartbeatEnabled, setHeartbeatEnabled] = useState(true);
 
   useEffect(() => {
     if (!open) return;
     setPrompt(maintainer?.prompt ?? "");
     setAgentId(maintainer?.agent_id ?? "");
-    setIntervalSeconds(String(maintainer?.interval_seconds ?? 86400));
+    setIntervalSeconds(String(maintainer?.interval_seconds ?? MAINTAINER_HEARTBEAT_DEFAULT_INTERVAL_SECONDS));
+    setHeartbeatEnabled(maintainer?.heartbeat_enabled ?? true);
   }, [open, maintainer?.id]);
 
   const agents = (agentQuery.data ?? []) as MaintainerAgent[];
@@ -55,8 +60,8 @@ export function BoardMaintainerDialog({ boardId, maintainer, open, onOpenChange 
 
   async function save() {
     const seconds = Number.parseInt(intervalSeconds, 10);
-    if (!Number.isInteger(seconds) || seconds < 60) {
-      toast.error("Interval must be at least 60 seconds");
+    if (!Number.isInteger(seconds) || seconds < MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS) {
+      toast.error("Interval must be at least 3600 seconds");
       return;
     }
     if (!prompt.trim()) {
@@ -67,7 +72,7 @@ export function BoardMaintainerDialog({ boardId, maintainer, open, onOpenChange 
       if (maintainer) {
         await updateMaintainer.mutateAsync({
           maintainerId: maintainer.id,
-          body: { prompt: prompt.trim(), interval_seconds: seconds },
+          body: { prompt: prompt.trim(), interval_seconds: seconds, heartbeat_enabled: heartbeatEnabled },
         });
         toast.success("Maintainer updated");
       } else {
@@ -79,6 +84,7 @@ export function BoardMaintainerDialog({ boardId, maintainer, open, onOpenChange 
           prompt: prompt.trim(),
           agent_id: agentId,
           interval_seconds: seconds,
+          heartbeat_enabled: heartbeatEnabled,
         });
         toast.success("Maintainer created");
       }
@@ -125,6 +131,15 @@ export function BoardMaintainerDialog({ boardId, maintainer, open, onOpenChange 
               onChange={(event) => setIntervalSeconds(event.target.value)}
               inputMode="numeric"
             />
+            <p className="text-xs text-content-tertiary">Minimum {MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS} seconds.</p>
+          </div>
+
+          <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-surface-primary px-3 py-2">
+            <div className="min-w-0">
+              <Label htmlFor="maintainer-heartbeat">Scheduled heartbeat</Label>
+              <p className="mt-0.5 text-xs text-content-tertiary">GitHub events stay active when this is off.</p>
+            </div>
+            <Switch id="maintainer-heartbeat" checked={heartbeatEnabled} onCheckedChange={setHeartbeatEnabled} disabled={pending} />
           </div>
 
           <div className="space-y-1.5">

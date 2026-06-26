@@ -10,6 +10,7 @@ export interface BoardMaintainer {
   ama_memory_store_id: string | null;
   prompt: string;
   interval_seconds: number;
+  heartbeat_enabled: boolean;
   status: "active" | "paused" | "archived";
   last_run_at: string | null;
   last_ama_session_id: string | null;
@@ -30,6 +31,7 @@ export interface CreateBoardMaintainerInput {
   amaMemoryStoreId: string;
   prompt: string;
   intervalSeconds: number;
+  heartbeatEnabled: boolean;
   status: "active" | "paused";
   apiKeyId?: string | null;
   apiKeyCredentialId?: string | null;
@@ -39,7 +41,14 @@ export interface CreateBoardMaintainerInput {
 export interface UpdateBoardMaintainerInput {
   prompt?: string;
   intervalSeconds?: number;
+  heartbeatEnabled?: boolean;
   status?: "active" | "paused" | "archived";
+}
+
+type BoardMaintainerRow = Omit<BoardMaintainer, "heartbeat_enabled"> & { heartbeat_enabled: number };
+
+function mapBoardMaintainer(row: BoardMaintainerRow): BoardMaintainer {
+  return { ...row, heartbeat_enabled: row.heartbeat_enabled === 1 };
 }
 
 export async function getOwnedBoard(db: D1, ownerId: string, boardId: string) {
@@ -53,8 +62,8 @@ export async function createBoardMaintainer(db: D1, ownerId: string, input: Crea
     .prepare(
       `INSERT INTO board_maintainers (
         id, owner_id, board_id, agent_id, ama_schedule_id, ama_http_trigger_id, ama_memory_store_id,
-        prompt, interval_seconds, status, api_key_id, api_key_credential_id, api_key_credential_version_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        prompt, interval_seconds, heartbeat_enabled, status, api_key_id, api_key_credential_id, api_key_credential_version_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -66,6 +75,7 @@ export async function createBoardMaintainer(db: D1, ownerId: string, input: Crea
       input.amaMemoryStoreId,
       input.prompt,
       input.intervalSeconds,
+      input.heartbeatEnabled ? 1 : 0,
       input.status,
       input.apiKeyId ?? null,
       input.apiKeyCredentialId ?? null,
@@ -83,15 +93,16 @@ export async function listBoardMaintainers(db: D1, ownerId: string, boardId: str
   const rows = await db
     .prepare("SELECT * FROM board_maintainers WHERE owner_id = ? AND board_id = ? AND status != 'archived' ORDER BY created_at DESC")
     .bind(ownerId, boardId)
-    .all<BoardMaintainer>();
-  return rows.results;
+    .all<BoardMaintainerRow>();
+  return rows.results.map(mapBoardMaintainer);
 }
 
 export async function getBoardMaintainer(db: D1, ownerId: string, boardId: string, maintainerId: string): Promise<BoardMaintainer | null> {
-  return await db
+  const row = await db
     .prepare("SELECT * FROM board_maintainers WHERE owner_id = ? AND board_id = ? AND id = ?")
     .bind(ownerId, boardId, maintainerId)
-    .first<BoardMaintainer>();
+    .first<BoardMaintainerRow>();
+  return row ? mapBoardMaintainer(row) : null;
 }
 
 export async function updateBoardMaintainer(
@@ -110,6 +121,10 @@ export async function updateBoardMaintainer(
   if (updates.intervalSeconds !== undefined) {
     sets.push("interval_seconds = ?");
     values.push(updates.intervalSeconds);
+  }
+  if (updates.heartbeatEnabled !== undefined) {
+    sets.push("heartbeat_enabled = ?");
+    values.push(updates.heartbeatEnabled ? 1 : 0);
   }
   if (updates.status !== undefined) {
     sets.push("status = ?");

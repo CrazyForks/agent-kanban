@@ -36,4 +36,8 @@ export const MACHINE_HEARTBEAT_INTERVAL_MS = 30000; // 30 seconds
 
 export const MACHINE_STALE_TIMEOUT_MS = 60000; // 60 seconds (miss 2 heartbeats)
 
+export const MAINTAINER_HEARTBEAT_DEFAULT_INTERVAL_SECONDS = 86400; // 24 hours
+
+export const MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS = 3600; // 1 hour
+
 export const SENDER_TYPES = ["user", "agent"] as const;

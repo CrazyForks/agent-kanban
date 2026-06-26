@@ -158,6 +158,7 @@ export function formatMaintainer(maintainer: any): string {
   lines.push(`  Board:        ${maintainer.board_id}`);
   lines.push(`  Agent:        ${maintainer.agent_id ?? "unbound"}`);
   lines.push(`  Status:       ${maintainer.status}`);
+  lines.push(`  Heartbeat:    ${maintainer.heartbeat_enabled === false ? "disabled" : "enabled"}`);
   lines.push(`  Interval:     ${maintainer.interval_seconds}s`);
   if (maintainer.last_run_at) lines.push(`  Last run:     ${maintainer.last_run_at}`);
   if (maintainer.latest_run?.status) lines.push(`  Last status:  ${maintainer.latest_run.status}`);
@@ -171,7 +172,8 @@ export function formatMaintainerList(maintainers: any[]): string {
   return maintainers
     .map((maintainer) => {
       const lastRun = maintainer.last_run_at ? ` last=${maintainer.last_run_at}` : "";
-      return `  ${maintainer.id}  [${maintainer.status}] agent=${maintainer.agent_id ?? "unbound"} interval=${maintainer.interval_seconds}s${lastRun}`;
+      const heartbeat = maintainer.heartbeat_enabled === false ? "disabled" : "enabled";
+      return `  ${maintainer.id}  [${maintainer.status}] agent=${maintainer.agent_id ?? "unbound"} heartbeat=${heartbeat} interval=${maintainer.interval_seconds}s${lastRun}`;
     })
     .join("\n");
 }

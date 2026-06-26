@@ -11,6 +11,8 @@ import {
   isBoardType,
   isValidAgentRole,
   isValidUsername,
+  MAINTAINER_HEARTBEAT_DEFAULT_INTERVAL_SECONDS,
+  MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS,
   MAINTAINER_TAINT_KEY,
   type MachineRuntime,
   parseScheduledAt,
@@ -355,6 +357,24 @@ function assertValidMachineRuntimes(runtimes: unknown): void {
 
 function readyAmaRuntimeNames(runtimes: MachineRuntime[]): string[] {
   return runtimes.filter((runtime) => runtime.status === "ready").map((runtime) => amaRuntimeName(runtime.name));
+}
+
+function validateMaintainerHeartbeatInterval(intervalSeconds: number): void {
+  if (!Number.isInteger(intervalSeconds) || intervalSeconds < MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS) {
+    throw new HTTPException(400, {
+      message: `interval_seconds must be an integer >= ${MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS}`,
+    });
+  }
+}
+
+function validateMaintainerHeartbeatEnabled(heartbeatEnabled: unknown): void {
+  if (heartbeatEnabled !== undefined && typeof heartbeatEnabled !== "boolean") {
+    throw new HTTPException(400, { message: "heartbeat_enabled must be a boolean" });
+  }
+}
+
+function maintainerScheduledStatus(status: "active" | "paused", heartbeatEnabled: boolean): "active" | "paused" {
+  return status === "active" && heartbeatEnabled ? "active" : "paused";
 }
 
 function publicBoardMaintainer(
@@ -1924,18 +1944,20 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     prompt: string;
     agent_id?: string;
     interval_seconds?: number;
+    heartbeat_enabled?: boolean;
     status?: "active" | "paused";
   }>();
   const maintainerAgentId = body.agent_id;
   if (!maintainerAgentId) throw new HTTPException(400, { message: "agent_id is required" });
   if (!body.prompt || typeof body.prompt !== "string") throw new HTTPException(400, { message: "prompt is required" });
-  const intervalSeconds = body.interval_seconds ?? 86400;
-  if (!Number.isInteger(intervalSeconds) || intervalSeconds < 60) {
-    throw new HTTPException(400, { message: "interval_seconds must be an integer >= 60" });
-  }
+  const intervalSeconds = body.interval_seconds ?? MAINTAINER_HEARTBEAT_DEFAULT_INTERVAL_SECONDS;
+  validateMaintainerHeartbeatInterval(intervalSeconds);
+  validateMaintainerHeartbeatEnabled(body.heartbeat_enabled);
   if (body.status !== undefined && body.status !== "active" && body.status !== "paused") {
     throw new HTTPException(400, { message: "status must be active or paused" });
   }
+  const maintainerStatus = body.status ?? "active";
+  const heartbeatEnabled = body.heartbeat_enabled ?? true;
 
   const board = await getOwnedBoard(c.env.DB, ownerId, boardId);
   if (!board) throw new HTTPException(404, { message: "Board not found" });
@@ -2004,7 +2026,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
       boardRepositories.map((repo) => repo.full_name),
     ),
     intervalSeconds,
-    status: body.status ?? "active",
+    status: maintainerScheduledStatus(maintainerStatus, heartbeatEnabled),
     resourceRefs,
     runtimeEnv,
     runtimeSecretEnv,
@@ -2020,7 +2042,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
       body.prompt,
       boardRepositories.map((repo) => repo.full_name),
     ),
-    status: body.status ?? "active",
+    status: maintainerStatus,
     resourceRefs,
     runtimeEnv,
     runtimeSecretEnv,
@@ -2036,7 +2058,8 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     amaMemoryStoreId: memoryStore.id,
     prompt: body.prompt,
     intervalSeconds,
-    status: schedule.status === "paused" ? "paused" : "active",
+    heartbeatEnabled,
+    status: maintainerStatus,
     apiKeyId: maintainerKey.apiKeyId,
     apiKeyCredentialId: maintainerKey.credentialId,
     apiKeyCredentialVersionId: maintainerKey.versionId,
@@ -2106,13 +2129,14 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   const boardId = c.req.param("id");
   const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
   if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
-  const body = await c.req.json<{ prompt?: string; interval_seconds?: number; status?: "active" | "paused" }>();
-  if (body.interval_seconds !== undefined && (!Number.isInteger(body.interval_seconds) || body.interval_seconds < 60)) {
-    throw new HTTPException(400, { message: "interval_seconds must be an integer >= 60" });
-  }
+  const body = await c.req.json<{ prompt?: string; interval_seconds?: number; heartbeat_enabled?: boolean; status?: "active" | "paused" }>();
+  if (body.interval_seconds !== undefined) validateMaintainerHeartbeatInterval(body.interval_seconds);
+  validateMaintainerHeartbeatEnabled(body.heartbeat_enabled);
   if (body.status !== undefined && body.status !== "active" && body.status !== "paused") {
     throw new HTTPException(400, { message: "status must be active or paused" });
   }
+  const nextStatus = body.status ?? (maintainer.status === "archived" ? "paused" : maintainer.status);
+  const nextHeartbeatEnabled = body.heartbeat_enabled ?? maintainer.heartbeat_enabled;
   const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
   const boardRepositories = await listBoardRepositories(c.env.DB, ownerId, boardId);
   const boardRepositoryNames = boardRepositories.map((repo) => repo.full_name);
@@ -2159,13 +2183,14 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
     runtime: amaRuntime,
     promptTemplate: body.prompt ? boardMaintainerScheduledPrompt(boardId, body.prompt, boardRepositoryNames) : undefined,
     intervalSeconds: body.interval_seconds,
-    status: body.status,
+    status:
+      body.status !== undefined || body.heartbeat_enabled !== undefined ? maintainerScheduledStatus(nextStatus, nextHeartbeatEnabled) : undefined,
     resourceRefs,
     runtimeEnv,
     runtimeSecretEnv,
     metadata: maintainerSessionMetadata,
   });
-  if (maintainer.ama_http_trigger_id) {
+  if (maintainer.ama_http_trigger_id && (body.prompt !== undefined || body.status !== undefined)) {
     await updateAmaHttpAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_http_trigger_id, {
       agentId: amaAgent.id,
       runtime: amaRuntime,
@@ -2180,7 +2205,8 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   const updated = await updateBoardMaintainer(c.env.DB, ownerId, boardId, maintainer.id, {
     prompt: body.prompt,
     intervalSeconds: body.interval_seconds ?? schedule.schedule.intervalSeconds,
-    status: schedule.status === "archived" ? "archived" : schedule.status,
+    heartbeatEnabled: body.heartbeat_enabled,
+    status: body.status,
   });
   if (!updated) throw new HTTPException(404, { message: "Board maintainer not found" });
   return c.json(await publicBoardMaintainerWithAmaStatus(c.env.DB, c.env, ownerId, updated));

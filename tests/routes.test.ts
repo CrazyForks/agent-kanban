@@ -573,11 +573,12 @@ describe("routes", () => {
         {
           agent_id: maintainerAgent.id,
           prompt: "Too frequent",
-          interval_seconds: 30,
+          interval_seconds: 3599,
         },
         userToken,
       );
       expect(invalidRes.status).toBe(400);
+      await expect(invalidRes.json()).resolves.toMatchObject({ error: { message: "interval_seconds must be an integer >= 3600" } });
 
       const ordinaryAgent = await createTestAgent(env.DB, userTokenOwnerId, {
         name: "Ordinary worker",
@@ -616,6 +617,7 @@ describe("routes", () => {
         board_id: maintainerBoard.id,
         agent_id: maintainerAgent.id,
         status: "active",
+        heartbeat_enabled: true,
       });
       expect(maintainer).not.toHaveProperty("repository_id");
       expect(maintainer).not.toHaveProperty("ama_schedule_id");
@@ -687,13 +689,14 @@ describe("routes", () => {
         .first<{ count: number }>();
       expect(sessionBeforeLogin?.count).toBe(0);
       const maintainerRow = await env.DB.prepare(
-        "SELECT ama_schedule_id, ama_http_trigger_id, ama_memory_store_id, api_key_id, api_key_credential_id, api_key_credential_version_id FROM board_maintainers WHERE id = ?",
+        "SELECT ama_schedule_id, ama_http_trigger_id, ama_memory_store_id, heartbeat_enabled, api_key_id, api_key_credential_id, api_key_credential_version_id FROM board_maintainers WHERE id = ?",
       )
         .bind(maintainer.id)
         .first<{
           ama_schedule_id: string;
           ama_http_trigger_id: string;
           ama_memory_store_id: string;
+          heartbeat_enabled: number;
           api_key_id: string;
           api_key_credential_id: string;
           api_key_credential_version_id: string;
@@ -702,6 +705,7 @@ describe("routes", () => {
         ama_schedule_id: "sched_maintainer",
         ama_http_trigger_id: "http_maintainer",
         ama_memory_store_id: "mem_maintainer",
+        heartbeat_enabled: 1,
         api_key_id: expect.any(String),
         api_key_credential_id: "vaultcred_maintainer",
         api_key_credential_version_id: "vaultver_maintainer",
@@ -743,6 +747,7 @@ describe("routes", () => {
           id: maintainer.id,
           last_run_at: "2026-06-08T12:10:00.000Z",
           last_session_id: "session_maintainer_http_1",
+          heartbeat_enabled: true,
         }),
       ]);
 
@@ -754,6 +759,7 @@ describe("routes", () => {
           id: maintainer.id,
           last_run_at: "2026-06-08T12:10:00.000Z",
           last_session_id: "session_maintainer_http_1",
+          heartbeat_enabled: true,
         }),
       );
       expect(detail).not.toHaveProperty("ama_schedule_id");
@@ -789,6 +795,32 @@ describe("routes", () => {
           { id: maintainerRepository.id, full_name: "maintainer-org/maintainer-repo", url: "https://github.com/maintainer-org/maintainer-repo" },
         ]);
       }
+
+      const heartbeatOffRes = await apiRequest(
+        "PATCH",
+        `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`,
+        { status: "active", heartbeat_enabled: false },
+        userToken,
+      );
+      expect(heartbeatOffRes.status).toBe(200);
+      await expect(heartbeatOffRes.json()).resolves.toEqual(
+        expect.objectContaining({ id: maintainer.id, status: "active", heartbeat_enabled: false }),
+      );
+      const heartbeatOffRequests = updateRequests.slice(-2);
+      expect(heartbeatOffRequests.find((request) => request.triggerId === "sched_maintainer")?.body.enabled).toBe(false);
+      expect(heartbeatOffRequests.find((request) => request.triggerId === "http_maintainer")?.body.enabled).toBe(true);
+
+      const heartbeatOnRes = await apiRequest(
+        "PATCH",
+        `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`,
+        { heartbeat_enabled: true },
+        userToken,
+      );
+      expect(heartbeatOnRes.status).toBe(200);
+      await expect(heartbeatOnRes.json()).resolves.toEqual(expect.objectContaining({ id: maintainer.id, status: "active", heartbeat_enabled: true }));
+      const heartbeatOnRequests = updateRequests.slice(-1);
+      expect(heartbeatOnRequests).toHaveLength(1);
+      expect(heartbeatOnRequests[0]).toMatchObject({ triggerId: "sched_maintainer", body: { enabled: true } });
 
       const updateRes = await apiRequest(
         "PATCH",

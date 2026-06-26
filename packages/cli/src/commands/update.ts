@@ -1,3 +1,4 @@
+import { MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS } from "@agent-kanban/shared";
 import type { Command } from "commander";
 import { createClient } from "../agent/leader.js";
 import type { ApiClient } from "../client/index.js";
@@ -41,6 +42,14 @@ async function resolveBoardId(client: ApiClient, nameOrId: string): Promise<stri
     process.exit(1);
   }
   return match.id;
+}
+
+function parseHeartbeat(value: string): boolean {
+  const normalized = value.toLowerCase();
+  if (["on", "enabled", "true", "1"].includes(normalized)) return true;
+  if (["off", "disabled", "false", "0"].includes(normalized)) return false;
+  console.error("--heartbeat must be on or off");
+  process.exit(1);
 }
 
 export function registerUpdateCommand(program: Command) {
@@ -200,6 +209,7 @@ export function registerUpdateCommand(program: Command) {
     .option("--board <id>", "Board ID")
     .option("--prompt <prompt>", "Heartbeat prompt")
     .option("--interval-seconds <seconds>", "Heartbeat interval in seconds")
+    .option("--heartbeat <on|off>", "Scheduled heartbeat switch")
     .option("--status <status>", "active or paused")
     .option("-o, --output <format>", "Output format (json, yaml, text)")
     .action(async (id: string, opts) => {
@@ -211,12 +221,13 @@ export function registerUpdateCommand(program: Command) {
       if (opts.prompt) body.prompt = opts.prompt;
       if (opts.intervalSeconds !== undefined) {
         const intervalSeconds = Number.parseInt(String(opts.intervalSeconds), 10);
-        if (!Number.isInteger(intervalSeconds) || intervalSeconds < 60) {
-          console.error("--interval-seconds must be an integer >= 60");
+        if (!Number.isInteger(intervalSeconds) || intervalSeconds < MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS) {
+          console.error(`--interval-seconds must be an integer >= ${MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS}`);
           process.exit(1);
         }
         body.interval_seconds = intervalSeconds;
       }
+      if (opts.heartbeat !== undefined) body.heartbeat_enabled = parseHeartbeat(String(opts.heartbeat));
       if (opts.status) {
         if (opts.status !== "active" && opts.status !== "paused") {
           console.error("--status must be active or paused");
@@ -225,7 +236,7 @@ export function registerUpdateCommand(program: Command) {
         body.status = opts.status;
       }
       if (Object.keys(body).length === 0) {
-        console.error("Nothing to update. Provide --prompt, --interval-seconds, or --status.");
+        console.error("Nothing to update. Provide --prompt, --interval-seconds, --heartbeat, or --status.");
         process.exit(1);
       }
       const client = await createClient();

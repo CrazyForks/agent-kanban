@@ -530,11 +530,14 @@ describe("formatMaintainer", () => {
       board_id: "board-1",
       agent_id: "agent-1",
       status: "active",
+      heartbeat_enabled: false,
       interval_seconds: 3600,
     });
 
     expect(result).toContain("Maintainer maintainer-1");
     expect(result).toContain("Board:");
+    expect(result).toContain("Heartbeat:");
+    expect(result).toContain("disabled");
     expect(result).not.toContain("Repository:");
   });
 });
@@ -546,12 +549,14 @@ describe("formatMaintainerList", () => {
         id: "maintainer-1",
         agent_id: "agent-1",
         status: "active",
+        heartbeat_enabled: true,
         interval_seconds: 3600,
       },
     ]);
 
     expect(result).toContain("maintainer-1");
     expect(result).toContain("agent=agent-1");
+    expect(result).toContain("heartbeat=enabled");
     expect(result).not.toContain("repo=");
   });
 });

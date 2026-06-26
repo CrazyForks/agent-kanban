@@ -1357,9 +1357,9 @@ describe("ApiClient method stubs", () => {
   it("updateBoardMaintainer sends the input body as JSON", async () => {
     const c = await makeAgentClient();
     stubOk({});
-    await c.updateBoardMaintainer("board-abc", "maintainer-xyz", { name: "Nightly", interval_seconds: 86400 });
+    await c.updateBoardMaintainer("board-abc", "maintainer-xyz", { name: "Nightly", interval_seconds: 86400, heartbeat_enabled: false });
     const [, opts] = lastCall();
-    expect(JSON.parse(opts.body as string)).toEqual({ name: "Nightly", interval_seconds: 86400 });
+    expect(JSON.parse(opts.body as string)).toEqual({ name: "Nightly", interval_seconds: 86400, heartbeat_enabled: false });
   });
 
   it("deleteBoardMaintainer sends DELETE /api/boards/:boardId/maintainers/:maintainerId", async () => {

@@ -118,8 +118,9 @@ export function MaintainerDetailPage() {
           </div>
         </div>
 
-        <div className="grid gap-3 rounded-lg border border-border bg-surface-secondary p-3 sm:grid-cols-4">
+        <div className="grid gap-3 rounded-lg border border-border bg-surface-secondary p-3 sm:grid-cols-5">
           <Metric label="Agent" value={maintainer.agent_id ?? "unbound"} />
+          <Metric label="Heartbeat" value={maintainer.heartbeat_enabled === false ? "off" : "on"} />
           <Metric label="Interval" value={formatInterval(maintainer.interval_seconds)} />
           <Metric label="Last run" value={maintainer.last_run_at ? formatRelative(maintainer.last_run_at) : "never"} />
           <Metric label="Last session" value={maintainer.last_session_id ?? "none"} />

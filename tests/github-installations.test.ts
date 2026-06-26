@@ -1595,6 +1595,7 @@ describe("recordInstallationFromSetup", () => {
       amaMemoryStoreId: `mem-${randomUUID()}`,
       prompt: "Maintain the board",
       intervalSeconds: 3600,
+      heartbeatEnabled: true,
       status: "active",
     });
     const jwt = await createWorkerSessionToken(ownerId, agent.id);

@@ -168,6 +168,7 @@ describe("registerCreateCommand agent", () => {
       agent: "agent-1",
       prompt: "Watch incoming GitHub work",
       intervalSeconds: "3600",
+      heartbeat: "off",
       paused: true,
       output: "json",
     });
@@ -176,6 +177,7 @@ describe("registerCreateCommand agent", () => {
       agent_id: "agent-1",
       prompt: "Watch incoming GitHub work",
       interval_seconds: 3600,
+      heartbeat_enabled: false,
       status: "paused",
     });
     expect(output).toHaveBeenCalledWith({ id: "maintainer-1", board_id: "board-1", agent_id: "agent-1" }, "json", expect.any(Function));

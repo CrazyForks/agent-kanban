@@ -357,6 +357,7 @@ describe("POST /api/webhooks/github-app route", () => {
       amaMemoryStoreId: `mem_webhook_${triggerSuffix}_${randomUUID()}`,
       prompt: "Watch GitHub events.",
       intervalSeconds: 3600,
+      heartbeatEnabled: true,
       status: "active",
     });
 
@@ -567,6 +568,7 @@ describe("POST /api/webhooks/github-app route", () => {
       amaMemoryStoreId: `mem_webhook_scope_${randomUUID()}`,
       prompt: "Watch GitHub events.",
       intervalSeconds: 3600,
+      heartbeatEnabled: true,
       status: "active",
     });
 

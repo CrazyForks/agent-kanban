@@ -18,6 +18,7 @@ export default defineConfig({
       "lucide-react": path.resolve(__dirname, "apps/web/node_modules/lucide-react"),
       "@base-ui/react": path.resolve(__dirname, "apps/web/node_modules/@base-ui/react"),
       "@assistant-ui/react": path.resolve(__dirname, "apps/web/node_modules/@assistant-ui/react"),
+      "@tanstack/react-query": path.resolve(__dirname, "apps/web/node_modules/@tanstack/react-query"),
       "prism-react-renderer": path.resolve(__dirname, "apps/web/node_modules/prism-react-renderer"),
       "react-diff-viewer-continued": path.resolve(__dirname, "apps/web/node_modules/react-diff-viewer-continued"),
       "react-markdown": path.resolve(__dirname, "apps/web/node_modules/react-markdown"),

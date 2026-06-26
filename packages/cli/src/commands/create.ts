@@ -1,4 +1,9 @@
-import { isBoardType, parseScheduledAt } from "@agent-kanban/shared";
+import {
+  isBoardType,
+  MAINTAINER_HEARTBEAT_DEFAULT_INTERVAL_SECONDS,
+  MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS,
+  parseScheduledAt,
+} from "@agent-kanban/shared";
 import type { Command } from "commander";
 import { createClient } from "../agent/leader.js";
 import type { ApiClient } from "../client/index.js";
@@ -30,6 +35,14 @@ async function resolveRepoId(client: ApiClient, repoRef: string): Promise<string
     process.exit(1);
   }
   return repos[0].id;
+}
+
+function parseHeartbeat(value: string): boolean {
+  const normalized = value.toLowerCase();
+  if (["on", "enabled", "true", "1"].includes(normalized)) return true;
+  if (["off", "disabled", "false", "0"].includes(normalized)) return false;
+  console.error("--heartbeat must be on or off");
+  process.exit(1);
 }
 
 export function registerCreateCommand(program: Command) {
@@ -126,13 +139,14 @@ export function registerCreateCommand(program: Command) {
     .requiredOption("--board <id>", "Board ID")
     .requiredOption("--agent <id>", "Maintainer agent ID")
     .requiredOption("--prompt <prompt>", "Maintainer heartbeat prompt")
-    .option("--interval-seconds <seconds>", "Heartbeat interval in seconds", "86400")
+    .option("--interval-seconds <seconds>", "Heartbeat interval in seconds", String(MAINTAINER_HEARTBEAT_DEFAULT_INTERVAL_SECONDS))
+    .option("--heartbeat <on|off>", "Scheduled heartbeat switch", "on")
     .option("--paused", "Create maintainer paused")
     .option("-o, --output <format>", "Output format (json, yaml, text)")
     .action(async (opts) => {
       const intervalSeconds = Number.parseInt(String(opts.intervalSeconds), 10);
-      if (!Number.isInteger(intervalSeconds) || intervalSeconds < 60) {
-        console.error("--interval-seconds must be an integer >= 60");
+      if (!Number.isInteger(intervalSeconds) || intervalSeconds < MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS) {
+        console.error(`--interval-seconds must be an integer >= ${MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS}`);
         process.exit(1);
       }
       const client = await createClient();
@@ -140,6 +154,7 @@ export function registerCreateCommand(program: Command) {
         agent_id: opts.agent,
         prompt: opts.prompt,
         interval_seconds: intervalSeconds,
+        heartbeat_enabled: parseHeartbeat(String(opts.heartbeat)),
       };
       if (opts.paused) body.status = "paused";
       const maintainer = await client.createBoardMaintainer(opts.board, body);
