@@ -1321,6 +1321,63 @@ describe("recordInstallationFromSetup", () => {
     expect(row!.repository_selection).toBe("all");
   });
 
+  it("accepts a GitHub App private key PEM with escaped newlines", async () => {
+    const { recordInstallationFromSetup } = await import("../apps/web/server/githubApp");
+    const installId = Math.floor(Math.random() * 1_000_000) + 6_050_000;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes(`/app/installations/${installId}`)) {
+          return new Response(
+            JSON.stringify({
+              id: installId,
+              account: { login: "setup-escaped-key-org", id: 5003, type: "Organization" },
+              repository_selection: "all",
+              suspended_at: null,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    const env = makeEnv({ GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey.replaceAll("\n", "\\n"), GITHUB_APP_SLUG: "agent-kanban" });
+    const details = await recordInstallationFromSetup(db, env, OWNER, installId);
+    expect(details.account.login).toBe("setup-escaped-key-org");
+  });
+
+  it("accepts GitHub's RSA PRIVATE KEY PEM shape", async () => {
+    const { recordInstallationFromSetup } = await import("../apps/web/server/githubApp");
+    const installId = Math.floor(Math.random() * 1_000_000) + 6_060_000;
+    const rsaPrivateKey = "-----BEGIN RSA PRIVATE KEY-----\n" + "AQIDBAUGBwgJCgsMDQ4PEA==\n" + "-----END RSA PRIVATE KEY-----";
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes(`/app/installations/${installId}`)) {
+          return new Response(
+            JSON.stringify({
+              id: installId,
+              account: { login: "setup-rsa-key-org", id: 5004, type: "Organization" },
+              repository_selection: "all",
+              suspended_at: null,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    const env = makeEnv({ GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: rsaPrivateKey, GITHUB_APP_SLUG: "agent-kanban" });
+    const details = await recordInstallationFromSetup(db, env, OWNER, installId);
+    expect(details.account.login).toBe("setup-rsa-key-org");
+  });
+
   it("upserts the installation and stores selected repos when selection is 'selected'", async () => {
     const { recordInstallationFromSetup } = await import("../apps/web/server/githubApp");
     const installId = Math.floor(Math.random() * 1_000_000) + 6_100_000;

@@ -162,14 +162,75 @@ async function githubAppJwt(env: Env): Promise<string> {
   return `${body}.${base64UrlEncode(new Uint8Array(signature))}`;
 }
 
-// GITHUB_APP_PRIVATE_KEY is the base64 of the PKCS#8 PEM (or the raw PEM).
+// GITHUB_APP_PRIVATE_KEY accepts the raw PEM, a PEM with literal "\n" escapes,
+// or a base64-encoded PEM. GitHub App keys are often PKCS#1
+// "BEGIN RSA PRIVATE KEY" PEMs; WebCrypto requires PKCS#8, so wrap PKCS#1 DER
+// in a PKCS#8 PrivateKeyInfo before import.
 function base64Decode(value: string): ArrayBuffer {
-  const pem = value.includes("-----BEGIN") ? value : atob(value.trim());
-  const der = pem.replaceAll(/-----(BEGIN|END) PRIVATE KEY-----/g, "").replaceAll(/\s+/g, "");
-  const raw = atob(der);
+  try {
+    const normalized = value.trim().replaceAll("\\n", "\n");
+    if (normalized.includes("-----BEGIN")) return pemPrivateKeyToPkcs8(normalized);
+
+    const decoded = atob(normalized.replaceAll(/\s+/g, "")).replaceAll("\\n", "\n");
+    if (decoded.includes("-----BEGIN")) return pemPrivateKeyToPkcs8(decoded);
+
+    return binaryStringToBytes(decoded).buffer as ArrayBuffer;
+  } catch (err) {
+    throw new Error(
+      `Invalid GITHUB_APP_PRIVATE_KEY: expected raw PKCS#8/RSA PEM, escaped-newline PEM, or base64-encoded PEM (${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
+}
+
+function pemPrivateKeyToPkcs8(pem: string): ArrayBuffer {
+  const normalized = pem.replaceAll("\\n", "\n").trim();
+  const match = normalized.match(/-----BEGIN ([A-Z ]*PRIVATE KEY)-----([\s\S]*?)-----END \1-----/);
+  if (!match) throw new Error("unsupported PEM private key block");
+
+  const label = match[1];
+  const body = match[2].replaceAll(/\s+/g, "");
+  const keyDer = binaryStringToBytes(atob(body));
+  if (label === "PRIVATE KEY") return keyDer.buffer as ArrayBuffer;
+  if (label === "RSA PRIVATE KEY") return wrapPkcs1RsaPrivateKey(keyDer).buffer as ArrayBuffer;
+  throw new Error(`unsupported PEM private key type: ${label}`);
+}
+
+function binaryStringToBytes(raw: string): Uint8Array {
   const bytes = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-  return bytes.buffer;
+  return bytes;
+}
+
+function wrapPkcs1RsaPrivateKey(pkcs1Der: Uint8Array): Uint8Array {
+  const version = Uint8Array.from([0x02, 0x01, 0x00]);
+  const rsaEncryptionAlgorithm = Uint8Array.from([0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00]);
+  return derSequence(concatBytes([version, rsaEncryptionAlgorithm, derOctetString(pkcs1Der)]));
+}
+
+function derSequence(content: Uint8Array): Uint8Array {
+  return concatBytes([Uint8Array.from([0x30]), derLength(content.length), content]);
+}
+
+function derOctetString(content: Uint8Array): Uint8Array {
+  return concatBytes([Uint8Array.from([0x04]), derLength(content.length), content]);
+}
+
+function derLength(length: number): Uint8Array {
+  if (length < 0x80) return Uint8Array.from([length]);
+  const bytes: number[] = [];
+  for (let value = length; value > 0; value >>= 8) bytes.unshift(value & 0xff);
+  return Uint8Array.from([0x80 | bytes.length, ...bytes]);
+}
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
 }
 
 function base64UrlEncodeJson(value: unknown): string {
