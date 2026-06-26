@@ -129,6 +129,16 @@ task_session_state() {
   ak get session "$1" 2>/dev/null | sed -n 's/^  State: *//p' | head -n 1
 }
 
+task_runtime_state() {
+  local task_id="$1"
+  local session_id
+  session_id="$(task_runtime_binding "$task_id")"
+  if [ -z "$session_id" ]; then
+    return 0
+  fi
+  task_session_state "$session_id"
+}
+
 task_pr_url() {
   ak describe task "$1" 2>/dev/null | sed -n 's/^PR: *//p'
 }
@@ -261,12 +271,14 @@ wait_subagent_evidence() {
 wait_session_stopped() {
   local task_id="$1" timeout_secs="${2:-120}"
   local elapsed=0
+  local session_id
   local state
   while [ "$elapsed" -lt "$timeout_secs" ]; do
-    if [ -z "$(task_runtime_binding "$task_id")" ]; then
+    session_id="$(task_runtime_binding "$task_id")"
+    if [ -z "$session_id" ]; then
       return 0
     fi
-    state="$(task_session_state "$task_id")"
+    state="$(task_session_state "$session_id")"
     if [[ "$state" == stopped* ]]; then
       return 0
     fi
@@ -384,7 +396,7 @@ run_complete_phase() {
   if wait_session_stopped "$task_id" 120; then
     pass "[$label] session stopped after completion"
   else
-    fail "[$label] session still active after completion timeout (state=$(task_session_state "$task_id"), binding=$(task_runtime_binding "$task_id"))"
+    fail "[$label] session still active after completion timeout (state=$(task_runtime_state "$task_id"), binding=$(task_runtime_binding "$task_id"))"
   fi
 }
 
@@ -414,7 +426,7 @@ run_cancel_phase() {
   if wait_session_stopped "$task_id" 60; then
     pass "[$label] cancelled task session stopped"
   else
-    fail "[$label] cancelled task session still active after 60s (state=$(task_session_state "$task_id"), binding=$(task_runtime_binding "$task_id"))"
+    fail "[$label] cancelled task session still active after 60s (state=$(task_runtime_state "$task_id"), binding=$(task_runtime_binding "$task_id"))"
   fi
 }
 

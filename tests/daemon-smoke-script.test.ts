@@ -11,6 +11,12 @@ function readScript() {
   return readFileSync(scriptPath, "utf8");
 }
 
+function functionBlock(script: string, name: string) {
+  const match = script.match(new RegExp(`${name}\\(\\) \\{[\\s\\S]*?\\n\\}`));
+  expect(match).not.toBeNull();
+  return match?.[0] ?? "";
+}
+
 describe("daemon smoke script", () => {
   it("has valid bash syntax", () => {
     execFileSync("bash", ["-n", scriptPath], { stdio: "pipe" });
@@ -98,6 +104,24 @@ describe("daemon smoke script", () => {
     expect(script).toContain("run_reject_phase()");
     expect(script).toContain("run_complete_phase()");
     expect(script).toContain("run_cancel_phase()");
+  });
+
+  it("checks terminal runtime state by AMA session id, not task id", () => {
+    const script = readScript();
+    const waitSessionStopped = functionBlock(script, "wait_session_stopped");
+
+    expect(script).toContain("task_runtime_binding()");
+    expect(script).toContain('data.metadata.annotations["ama.sessionId"]');
+    expect(waitSessionStopped).toContain('session_id="$(task_runtime_binding "$task_id")"');
+    expect(waitSessionStopped).toContain('state="$(task_session_state "$session_id")"');
+    expect(waitSessionStopped).not.toContain('task_session_state "$task_id"');
+
+    expect(script).toContain(
+      'session still active after completion timeout (state=$(task_runtime_state "$task_id"), binding=$(task_runtime_binding "$task_id"))',
+    );
+    expect(script).toContain(
+      'cancelled task session still active after 60s (state=$(task_runtime_state "$task_id"), binding=$(task_runtime_binding "$task_id"))',
+    );
   });
 
   it("skips daemon check for pure ama (cloud-only) runs", () => {
