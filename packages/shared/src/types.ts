@@ -167,6 +167,7 @@ export interface AgentTaint {
 }
 
 export const MAINTAINER_TAINT_KEY = "agent-kanban.dev/maintainer";
+export const AMA_BACKFILL_FAILED_TAINT_KEY = "agent-kanban.dev/ama-backfill-failed";
 
 export function hasNoScheduleTaint(taints: AgentTaint[] | null | undefined): boolean {
   return taints?.some((taint) => taint.effect === "NoSchedule") ?? false;

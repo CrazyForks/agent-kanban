@@ -8,12 +8,17 @@ import type { D1 } from "./db";
 import { sendVerificationEmail } from "./emailService";
 import type { Env } from "./types";
 
-// AMA can only be unlinked once the user has no AMA-backed resources left: any
-// non-builtin agent or any machine. Builtin agents (auto-seeded, no AMA agent)
-// don't count; the project/vault are auto-provisioned containers, not user
-// resources. The user clears their agents/machines first, then disconnects.
+// AMA can only be unlinked once the user has no AMA-backed resources left:
+// latest worker agents that actually have a backing AMA agent, or machines.
+// Leaders, builtin agents, old snapshots, and pre-AMA rows still missing an
+// ama_agent_id are AK-only records and must not block disconnect.
 export async function hasAmaResources(db: D1, ownerId: string): Promise<boolean> {
-  const agent = await db.prepare("SELECT 1 FROM agents WHERE owner_id = ? AND builtin = 0 LIMIT 1").bind(ownerId).first();
+  const agent = await db
+    .prepare(
+      "SELECT 1 FROM agents WHERE owner_id = ? AND builtin = 0 AND kind = 'worker' AND version = 'latest' AND ama_agent_id IS NOT NULL LIMIT 1",
+    )
+    .bind(ownerId)
+    .first();
   if (agent) return true;
   const machine = await db.prepare("SELECT 1 FROM machines WHERE owner_id = ? LIMIT 1").bind(ownerId).first();
   return Boolean(machine);

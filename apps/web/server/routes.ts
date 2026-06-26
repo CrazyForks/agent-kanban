@@ -2,6 +2,7 @@ import {
   AGENT_RUNTIMES,
   type AgentRuntime,
   type AgentTaint,
+  AMA_BACKFILL_FAILED_TAINT_KEY,
   type CreateAgentInput,
   type CreateSubagentInput,
   findInvalidSkillRef,
@@ -1115,19 +1116,47 @@ api.post("/api/ama/provision", async (c) => {
   // because it only touches rows still missing an ama_agent_id. Per-agent
   // failures are logged and skipped so one bad agent can't block the rest —
   // the next provision retries whatever is still missing.
-  const backfilled = await backfillAgentAmaIds(c.env.DB, c.env, ownerId, integration.amaProjectId);
-  return c.json({ ok: true, project_id: integration.amaProjectId, agents_backfilled: backfilled });
+  const backfill = await backfillAgentAmaIds(c.env.DB, c.env, ownerId, integration.amaProjectId);
+  return c.json({ ok: true, project_id: integration.amaProjectId, agents_backfilled: backfill.backfilled, agents_backfill_failed: backfill.failed });
 });
 
-async function backfillAgentAmaIds(db: D1, env: Env, ownerId: string, projectId: string): Promise<number> {
+async function backfillAgentAmaIds(db: D1, env: Env, ownerId: string, projectId: string): Promise<{ backfilled: number; failed: number }> {
   const pending = await listAgentsMissingAmaAgent(db, ownerId);
   let backfilled = 0;
+  let failed = 0;
   for (const agent of pending) {
-    await ensureAmaAgentForAkAgent(db, env, ownerId, agent.id, projectId, amaRuntimeName(agent.runtime));
-    backfilled += 1;
+    try {
+      await ensureAmaAgentForAkAgent(db, env, ownerId, agent.id, projectId, amaRuntimeName(agent.runtime));
+      await clearAmaBackfillFailedTaint(db, ownerId, agent.id);
+      backfilled += 1;
+    } catch (err) {
+      failed += 1;
+      await markAmaBackfillFailed(db, ownerId, agent.id);
+      logger.warn(
+        `ama agent backfill failed owner=${ownerId} agent=${agent.id} username=${agent.username} runtime=${agent.runtime}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
-  if (pending.length > 0) logger.info(`ama agent backfill: ${backfilled}/${pending.length} for owner ${ownerId}`);
-  return backfilled;
+  if (pending.length > 0) logger.info(`ama agent backfill: ${backfilled}/${pending.length} for owner ${ownerId}; failed=${failed}`);
+  return { backfilled, failed };
+}
+
+async function markAmaBackfillFailed(db: D1, ownerId: string, agentId: string): Promise<void> {
+  const agent = await getAgent(db, agentId, ownerId);
+  if (!agent) return;
+  const taints = withAmaBackfillFailedTaint(agent.taints);
+  if (JSON.stringify(taints) === JSON.stringify(agent.taints ?? [])) return;
+  await updateAgent(db, agentId, { taints });
+}
+
+async function clearAmaBackfillFailedTaint(db: D1, ownerId: string, agentId: string): Promise<void> {
+  const agent = await getAgent(db, agentId, ownerId);
+  if (!agent) return;
+  const taints = withoutAmaBackfillFailedTaint(agent.taints);
+  if (JSON.stringify(taints) === JSON.stringify(agent.taints ?? [])) return;
+  await updateAgent(db, agentId, { taints });
 }
 
 // ─── Models ───
@@ -2264,6 +2293,7 @@ api.delete("/api/boards/:id", async (c) => {
 
 const AK_MAINTAINER_SKILL_REF = "saltbo/agent-kanban@ak-maintainer";
 const AK_MAINTAINER_TAINT: AgentTaint = { key: MAINTAINER_TAINT_KEY, value: "board-maintainer", effect: "NoSchedule" };
+const AMA_BACKFILL_FAILED_TAINT: AgentTaint = { key: AMA_BACKFILL_FAILED_TAINT_KEY, value: "ama-agent-create-failed", effect: "NoSchedule" };
 
 function sameTaint(a: AgentTaint, b: AgentTaint): boolean {
   return a.key === b.key && a.effect === b.effect && (a.value ?? null) === (b.value ?? null);
@@ -2272,6 +2302,15 @@ function sameTaint(a: AgentTaint, b: AgentTaint): boolean {
 function withMaintainerTaint(taints: AgentTaint[] | null | undefined): AgentTaint[] {
   const current = taints ?? [];
   return current.some((taint) => sameTaint(taint, AK_MAINTAINER_TAINT)) ? current : [...current, AK_MAINTAINER_TAINT];
+}
+
+function withAmaBackfillFailedTaint(taints: AgentTaint[] | null | undefined): AgentTaint[] {
+  const current = taints ?? [];
+  return current.some((taint) => sameTaint(taint, AMA_BACKFILL_FAILED_TAINT)) ? current : [...current, AMA_BACKFILL_FAILED_TAINT];
+}
+
+function withoutAmaBackfillFailedTaint(taints: AgentTaint[] | null | undefined): AgentTaint[] {
+  return (taints ?? []).filter((taint) => !sameTaint(taint, AMA_BACKFILL_FAILED_TAINT));
 }
 
 function withMaintainerSkill(skills: string[] | null | undefined): string[] {

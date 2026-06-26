@@ -12,6 +12,7 @@
  *  4. Gating: create-agent, add-machine (local + cloud) require AMA connected.
  */
 
+import { AMA_BACKFILL_FAILED_TAINT_KEY } from "@agent-kanban/shared";
 import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { hasAmaResources } from "../apps/web/server/betterAuth";
@@ -336,12 +337,33 @@ describe("add-cloud-sandbox-creates-cloud-env", () => {
 });
 
 describe("disconnect guard (hasAmaResources)", () => {
-  it("ignores builtin agents but counts user agents and machines", async () => {
+  it("only counts actual AMA-backed agents and machines", async () => {
     // Builtin/seed agents have no AMA agent, so they must not block disconnect.
     await createTestAgent(db, "guard-builtin", { name: "Soul", username: "soul", runtime: "claude" }, true);
     expect(await hasAmaResources(db, "guard-builtin")).toBe(false);
 
-    // A user-created (non-builtin) agent is an AMA-backed resource.
+    // A latest worker that still has no AMA id is a pre-AMA AK-only row.
+    const unbound = await createTestAgent(db, "guard-unbound", { name: "Unbound", username: "guard-unbound", runtime: "claude" }, false);
+    await db.prepare("UPDATE agents SET ama_agent_id = NULL WHERE id = ?").bind(unbound.id).run();
+    expect(await hasAmaResources(db, "guard-unbound")).toBe(false);
+
+    // Leaders are AK identities, not AMA-backed dispatch resources.
+    const leader = await createTestAgent(db, "guard-leader", { name: "Lead", username: "guard-leader", runtime: "claude", kind: "leader" }, false);
+    await db.prepare("UPDATE agents SET ama_agent_id = NULL WHERE id = ?").bind(leader.id).run();
+    expect(await hasAmaResources(db, "guard-leader")).toBe(false);
+
+    // Old snapshot rows can retain historical AMA ids but must not block once
+    // the latest worker is gone.
+    await seedUser(db, "guard-snapshot", "guard-snapshot@test.com");
+    await db
+      .prepare(
+        `INSERT INTO agents (id, owner_id, name, username, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, version, public_key, private_key, fingerprint, builtin, ama_agent_id, metadata, created_at, updated_at)
+         VALUES ('guard-snapshot-agent', 'guard-snapshot', 'Snap', 'guard-snapshot', NULL, NULL, NULL, 'worker', NULL, 'claude', NULL, NULL, NULL, 'snapshot-v1', 'pubkey', 'privkey', 'fp', 0, 'ama-snapshot', '{}', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+    expect(await hasAmaResources(db, "guard-snapshot")).toBe(false);
+
+    // A latest user worker with an AMA id is an AMA-backed resource.
     await createTestAgent(db, "guard-agent", { name: "Worker", username: "worker", runtime: "claude" }, false);
     expect(await hasAmaResources(db, "guard-agent")).toBe(true);
 
@@ -644,7 +666,7 @@ describe("connect-backfills-pre-ama-agents", () => {
     expect(row?.ama_agent_id ?? null).toBeNull();
   });
 
-  it("fails provisioning when any agent backfill fails", async () => {
+  it("continues provisioning when one agent backfill fails", async () => {
     const env = makeEnv();
     const { userId, token } = await createSessionUser(env, "backfill-partial@test.com");
     await linkAmaAccount(db, userId);
@@ -655,8 +677,8 @@ describe("connect-backfills-pre-ama-agents", () => {
     const agentB = await createTestAgent(db, userId, { name: "Agent B", username: "agent-b-bf", runtime: "claude" }, false);
     await db.prepare("UPDATE agents SET ama_agent_id = NULL WHERE id IN (?, ?)").bind(agentA.id, agentB.id).run();
 
-    // AMA backfill is part of provisioning. A failure must abort the request
-    // instead of silently persisting a partial AK/AMA state.
+    // A single old Agent may fail to create in AMA; provision should bind the
+    // rest and leave the failed row missing ama_agent_id for the next retry.
     const fetchMock = makeFetchMock([
       "error",
       jsonResponse({ id: "ama_agent_success", projectId: PROJECT_ID, name: "Agent", providerId: "anthropic" }, 201),
@@ -664,12 +686,61 @@ describe("connect-backfills-pre-ama-agents", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const res = await apiRequest(env, "POST", "/api/ama/provision", undefined, token);
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as any;
+    expect(body.agents_backfilled).toBe(1);
+    expect(body.agents_backfill_failed).toBe(1);
 
     const rows = await db
-      .prepare("SELECT id, ama_agent_id FROM agents WHERE id IN (?, ?) AND version = 'latest'")
+      .prepare("SELECT id, ama_agent_id, taints FROM agents WHERE id IN (?, ?) AND version = 'latest'")
       .bind(agentA.id, agentB.id)
-      .all<{ id: string; ama_agent_id: string | null }>();
-    expect(rows.results.map((row) => row.ama_agent_id)).toEqual([null, null]);
+      .all<{ id: string; ama_agent_id: string | null; taints: string | null }>();
+    expect(rows.results.filter((row) => row.ama_agent_id === null)).toHaveLength(1);
+    expect(rows.results.filter((row) => row.ama_agent_id === "ama_agent_success")).toHaveLength(1);
+
+    const failedRow = rows.results.find((row) => row.ama_agent_id === null)!;
+    const successRow = rows.results.find((row) => row.ama_agent_id === "ama_agent_success")!;
+    expect(JSON.parse(failedRow.taints ?? "[]")).toContainEqual({
+      key: AMA_BACKFILL_FAILED_TAINT_KEY,
+      value: "ama-agent-create-failed",
+      effect: "NoSchedule",
+    });
+    expect(JSON.parse(successRow.taints ?? "[]")).not.toContainEqual({
+      key: AMA_BACKFILL_FAILED_TAINT_KEY,
+      value: "ama-agent-create-failed",
+      effect: "NoSchedule",
+    });
+  });
+
+  it("clears the AMA backfill failure taint after a later successful retry", async () => {
+    const env = makeEnv();
+    const { userId, token } = await createSessionUser(env, "backfill-taint-clear@test.com");
+    await linkAmaAccount(db, userId);
+    await seedIntegration(userId);
+
+    const agent = await createTestAgent(db, userId, { name: "Retry", username: "retry-bf", runtime: "claude" }, false);
+    await db
+      .prepare("UPDATE agents SET ama_agent_id = NULL, taints = ? WHERE id = ?")
+      .bind(JSON.stringify([{ key: AMA_BACKFILL_FAILED_TAINT_KEY, value: "ama-agent-create-failed", effect: "NoSchedule" }]), agent.id)
+      .run();
+
+    const fetchMock = makeFetchMock([jsonResponse({ id: "ama_agent_retry", projectId: PROJECT_ID, name: "Retry", providerId: "anthropic" }, 201)]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await apiRequest(env, "POST", "/api/ama/provision", undefined, token);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).agents_backfilled).toBe(1);
+
+    const row = await db
+      .prepare("SELECT ama_agent_id, taints FROM agents WHERE id = ?")
+      .bind(agent.id)
+      .first<{ ama_agent_id: string; taints: string | null }>();
+    expect(row?.ama_agent_id).toBe("ama_agent_retry");
+    expect(JSON.parse(row?.taints ?? "[]")).not.toContainEqual({
+      key: AMA_BACKFILL_FAILED_TAINT_KEY,
+      value: "ama-agent-create-failed",
+      effect: "NoSchedule",
+    });
   });
 });
