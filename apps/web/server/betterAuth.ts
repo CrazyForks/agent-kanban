@@ -19,19 +19,10 @@ export async function hasAmaResources(db: D1, ownerId: string): Promise<boolean>
   return Boolean(machine);
 }
 
-// AMA OIDC discovery url. Explicit AMA_OIDC_DISCOVERY_URL wins; otherwise it is
-// derived from the client-credentials token url. Returns undefined in
-// standalone mode (no AMA configured) so the provider plugin is skipped.
-function amaOidcDiscoveryUrl(env: Env): string | undefined {
-  if (env.AMA_OIDC_DISCOVERY_URL) return env.AMA_OIDC_DISCOVERY_URL;
-  if (!env.AMA_OAUTH_TOKEN_URL) return undefined;
-  return `${env.AMA_OAUTH_TOKEN_URL.replace(/\/oauth2\/token$/, "")}/.well-known/openid-configuration`;
-}
-
 // Registers AMA as a generic OIDC provider so each AK user can link their own
 // AMA account. Only added when AMA OAuth is configured; standalone AK skips it.
 function amaProviderPlugins(env: Env): BetterAuthPlugin[] {
-  const discoveryUrl = amaOidcDiscoveryUrl(env);
+  const discoveryUrl = env.AMA_OIDC_DISCOVERY_URL;
   if (!discoveryUrl || !env.AMA_OAUTH_CLIENT_ID || !env.AMA_OAUTH_CLIENT_SECRET) return [];
   return [
     genericOAuth({

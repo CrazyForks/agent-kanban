@@ -19,7 +19,7 @@ import { addCloudSandboxMachine, createTestAgent, linkAmaAccount, seedUser, setu
 
 const AMA_ENV = {
   AMA_ORIGIN: "https://ama.test",
-  AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+  AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
   AMA_OAUTH_CLIENT_ID: "ak-app",
   AMA_OAUTH_CLIENT_SECRET: "ak-secret",
   AK_API_URL: "https://ak.test",
@@ -63,8 +63,13 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
-function oauthTokenResponse() {
-  return jsonResponse({ access_token: "test-token", expires_in: 3600 }, 200);
+function oidcDiscoveryResponse() {
+  return jsonResponse({
+    issuer: "https://auth.test",
+    authorization_endpoint: "https://auth.test/oauth/authorize",
+    token_endpoint: "https://auth.test/oauth/token",
+    jwks_uri: "https://auth.test/.well-known/jwks.json",
+  });
 }
 
 async function apiRequest(env: any, method: string, path: string, body: unknown, token?: string) {
@@ -106,7 +111,7 @@ describe("connect-provisions-project", () => {
     let vaultCreates = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects" && reqMethod(input, init) === "POST") {
         projectCreates += 1;
         return jsonResponse({ id: "project_eager", name: "Workspace" }, 201);
@@ -143,7 +148,7 @@ describe("connect-provisions-project", () => {
     const env = makeEnv();
     const { token } = await createSessionUser(env, "provision-unlinked@test.com");
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      if (reqUrl(input) === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (reqUrl(input) === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       throw new Error(`Unexpected fetch: ${reqUrl(input)}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -174,7 +179,7 @@ describe("create-agent-creates-ama-agent-first", () => {
     let agentCreateBody: Record<string, any> | null = null;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_ca") return jsonResponse({ id: "project_ca", name: "Workspace" });
       if (url === "https://ama.test/api/v1/agents" && reqMethod(input, init) === "POST") {
         agentCreateBody = JSON.parse(await reqBody(input, init)) as Record<string, any>;
@@ -201,7 +206,7 @@ describe("create-agent-creates-ama-agent-first", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_ca") return jsonResponse({ id: "project_ca", name: "Workspace" });
       if (url === "https://ama.test/api/v1/agents" && reqMethod(input, init) === "POST") {
         return jsonResponse({ error: "agent quota exceeded" }, 503);
@@ -221,7 +226,7 @@ describe("create-agent-creates-ama-agent-first", () => {
     const env = makeEnv();
     const { token } = await createSessionUser(env, "create-agent-gate@test.com");
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      if (reqUrl(input) === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (reqUrl(input) === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       throw new Error(`Unexpected fetch: ${reqUrl(input)}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -234,7 +239,7 @@ describe("create-agent-creates-ama-agent-first", () => {
     const env = makeEnv();
     const { token } = await createSessionUser(env, "create-leader-no-ama@test.com");
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      if (reqUrl(input) === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (reqUrl(input) === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       throw new Error(`Unexpected fetch: ${reqUrl(input)}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -261,7 +266,7 @@ describe("create-agent-creates-ama-agent-first", () => {
   it("standalone AK (AMA not configured) creates agents without AMA", async () => {
     const env = makeEnv({
       AMA_ORIGIN: undefined,
-      AMA_OAUTH_TOKEN_URL: undefined,
+      AMA_OIDC_DISCOVERY_URL: undefined,
       AMA_OAUTH_CLIENT_ID: undefined,
       AMA_OAUTH_CLIENT_SECRET: undefined,
     });
@@ -291,7 +296,7 @@ describe("add-cloud-sandbox-creates-cloud-env", () => {
     let envCreateBody: Record<string, any> | null = null;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_cloud_m") return jsonResponse({ id: "project_cloud_m", name: "Workspace" });
       if (url === "https://ama.test/api/v1/environments" && reqMethod(input, init) === "POST") {
         envCreateBody = JSON.parse(await reqBody(input, init)) as Record<string, any>;
@@ -320,7 +325,7 @@ describe("add-cloud-sandbox-creates-cloud-env", () => {
     const env = makeEnv();
     const { token } = await createSessionUser(env, "cloud-machine-gate@test.com");
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      if (reqUrl(input) === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (reqUrl(input) === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       throw new Error(`Unexpected fetch: ${reqUrl(input)}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -370,7 +375,7 @@ describe("delete archives the AMA resource (AMA has no hard delete)", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = reqUrl(input);
-        if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+        if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
         if (url === `https://ama.test/api/v1/agents/${amaAgentId}` && reqMethod(input, init) === "PATCH") {
           archiveBody = JSON.parse(await reqBody(input, init));
           return jsonResponse({ id: amaAgentId, name: "Del", archivedAt: "2026-01-01T00:00:00.000Z" });
@@ -399,7 +404,7 @@ describe("delete archives the AMA resource (AMA has no hard delete)", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = reqUrl(input);
-        if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+        if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
         if (url === "https://ama.test/api/v1/environments/env_del_machine" && reqMethod(input, init) === "PATCH") {
           archiveBody = JSON.parse(await reqBody(input, init));
           return jsonResponse({ id: "env_del_machine", archivedAt: "2026-01-01T00:00:00.000Z" });
@@ -442,7 +447,7 @@ describe("connect-backfills-pre-ama-agents", () => {
     let agentCallIndex = 0;
     return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       // ensureAmaOwnerIntegration verifies the project is live via GET.
       if (url === `https://ama.test/api/v1/projects/${PROJECT_ID}`) {
         return jsonResponse({ id: PROJECT_ID, name: "Workspace" });
@@ -511,7 +516,7 @@ describe("connect-backfills-pre-ama-agents", () => {
     // existing AMA agent is live, so mock that too.
     const secondFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/projects/${PROJECT_ID}`) {
         return jsonResponse({ id: PROJECT_ID, name: "Workspace" });
       }

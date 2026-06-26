@@ -16,7 +16,7 @@ import { createTestAgent, seedUser, setupMiniflare } from "./helpers/db";
 
 const AMA_ENV = {
   AMA_ORIGIN: "https://ama.test",
-  AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+  AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
   AMA_OAUTH_CLIENT_ID: "ak-app",
   AMA_OAUTH_CLIENT_SECRET: "ak-secret",
   AK_API_URL: "https://ak.test",
@@ -61,8 +61,13 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
-function oauthTokenResponse() {
-  return jsonResponse({ access_token: "test-token", expires_in: 3600 });
+function oidcDiscoveryResponse() {
+  return jsonResponse({
+    issuer: "https://auth.test",
+    authorization_endpoint: "https://auth.test/oauth/authorize",
+    token_endpoint: "https://auth.test/oauth/token",
+    jwks_uri: "https://auth.test/.well-known/jwks.json",
+  });
 }
 
 beforeAll(async () => {
@@ -350,7 +355,7 @@ describe("amaRunnerCanRunRuntime", () => {
     const futureReset = new Date(Date.now() + 3_600_000).toISOString();
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_123") return jsonResponse({ id: "project_123", name: "Workspace" });
       if (url === "https://ama.test/api/v1/runners?environmentId=env_quota&limit=100") {
         return jsonResponse({
@@ -454,7 +459,7 @@ describe("session usage accounting via releaseTaskRuntimeBinding", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       // AMA session stop
       if (url === `https://ama.test/api/v1/sessions/${amaSessionId}` && reqMethod(input, init) === "PATCH")
         return jsonResponse({ id: amaSessionId, state: "stopped" });
@@ -532,7 +537,7 @@ describe("session usage accounting via releaseTaskRuntimeBinding", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${amaSessionId}` && reqMethod(input, init) === "PATCH")
         return jsonResponse({ id: amaSessionId, state: "stopped" });
       // Usage summary with records:0 → function returns null → no update
@@ -601,7 +606,7 @@ describe("session usage accounting via releaseTaskRuntimeBinding", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${amaSessionId}` && reqMethod(input, init) === "PATCH")
         return jsonResponse({ id: amaSessionId, state: "stopped" });
       // Usage endpoint fails
@@ -679,7 +684,7 @@ describe("POST /api/machines runner.version from env", () => {
         const url = reqUrl(input);
         // Serves both the client-credentials flow and the runner token
         // exchange, which additionally requires a refresh_token.
-        if (url === "https://auth.test/oauth/token") {
+        if (url === "https://auth.test/.well-known/openid-configuration") {
           return jsonResponse({ access_token: "test-token", refresh_token: "test-refresh", token_type: "Bearer", expires_in: 3600 });
         }
         // readAmaProject health probe (ensureAmaOwnerIntegration self-heal)
@@ -824,7 +829,7 @@ describe("dispatchTaskToAma includes git identity env in runtimeEnv", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_git") return jsonResponse({ id: "project_git", name: "Workspace" });
       if (url === "https://ama.test/api/v1/runners?environmentId=env_git&limit=100") {
         return jsonResponse({

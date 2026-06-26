@@ -295,13 +295,13 @@ describe("GET /api/admin/stats", () => {
   it("derives machine online stats from AMA runners when AMA dispatch is configured", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
-      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OIDC_DISCOVERY_URL: env.AMA_OIDC_DISCOVERY_URL,
       AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
       AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
     };
     Object.assign(env, {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
       AMA_OAUTH_CLIENT_ID: "ak-app",
       AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     });
@@ -329,7 +329,7 @@ describe("GET /api/admin/stats", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = reqUrl(input);
-        if (url === "https://auth.test/oauth/token") {
+        if (url === "https://auth.test/.well-known/openid-configuration") {
           return jsonResponse({ access_token: "oauth-token" });
         }
         if (url === "https://ama.test/api/v1/runners?environmentId=env_admin_stats&limit=100") {

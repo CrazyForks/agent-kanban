@@ -315,15 +315,15 @@ export function vendorFromModelId(modelId: string): string {
   return segments.length >= 2 && first ? first : "unknown";
 }
 
-// AMA is "configured" for this AK instance when the AMA origin and the OAuth
-// client used to register the OIDC provider are present. Per-call authorization
+// AMA is "configured" for this AK instance when the AMA origin and the OIDC
+// client used to register the provider are present. Per-call authorization
 // is the logged-in user's own linked AMA account (resolved at request time).
-function hasAmaOAuthClient(env: Env): boolean {
-  return Boolean(env.AMA_OAUTH_TOKEN_URL && env.AMA_OAUTH_CLIENT_ID && env.AMA_OAUTH_CLIENT_SECRET);
+function hasAmaOidcClient(env: Env): boolean {
+  return Boolean(env.AMA_OIDC_DISCOVERY_URL && env.AMA_OAUTH_CLIENT_ID && env.AMA_OAUTH_CLIENT_SECRET);
 }
 
 export function isAmaRuntimeConfigured(env: Env): boolean {
-  return Boolean(env.AMA_ORIGIN && hasAmaOAuthClient(env));
+  return Boolean(env.AMA_ORIGIN && hasAmaOidcClient(env));
 }
 
 export function isAmaTaskDispatchConfigured(env: Env): boolean {

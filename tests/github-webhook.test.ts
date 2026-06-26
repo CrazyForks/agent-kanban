@@ -51,7 +51,7 @@ function makeEnv(overrides: Record<string, unknown> = {}): any {
     MAILS_ADMIN_TOKEN: "",
     GITHUB_APP_WEBHOOK_SECRET: WEBHOOK_SECRET,
     AMA_ORIGIN: "https://ama.test",
-    AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+    AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
     AMA_OAUTH_CLIENT_ID: "ak-app",
     AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     ...overrides,
@@ -751,7 +751,7 @@ describe("handleGithubPullRequestEvent", () => {
 
     const AMA_ENV = {
       AMA_ORIGIN: "https://ama.test",
-      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+      AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
       AMA_OAUTH_CLIENT_ID: "ak-app",
       AMA_OAUTH_CLIENT_SECRET: "ak-secret",
     };
@@ -761,7 +761,7 @@ describe("handleGithubPullRequestEvent", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = reqUrl(input);
-        if (url === "https://auth.test/oauth/token") return jsonResponse({ access_token: "test-token", expires_in: 3600 });
+        if (url === "https://auth.test/.well-known/openid-configuration") return jsonResponse({ access_token: "test-token", expires_in: 3600 });
         if (url === `https://ama.test/api/v1/sessions/${amaSessionId}` && reqMethod(input, init) === "PATCH") {
           stops.push(url);
           return jsonResponse({ id: amaSessionId, state: "stopped" });

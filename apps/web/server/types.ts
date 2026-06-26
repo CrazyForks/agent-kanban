@@ -15,14 +15,11 @@ export interface Env {
   CF_API_TOKEN: string;
   AK_API_URL?: string;
   AMA_ORIGIN?: string;
-  AMA_OAUTH_TOKEN_URL?: string;
+  // OIDC discovery document for AMA.
+  AMA_OIDC_DISCOVERY_URL?: string;
   AMA_OAUTH_CLIENT_ID?: string;
   AMA_OAUTH_CLIENT_SECRET?: string;
   AMA_OAUTH_SCOPE?: string;
-  // OIDC discovery document for AMA. When unset it is derived from
-  // AMA_OAUTH_TOKEN_URL (the /oauth2/token suffix is replaced with the
-  // well-known discovery path).
-  AMA_OIDC_DISCOVERY_URL?: string;
   AMA_RUNNER_VERSION?: string;
   GITHUB_APP_WEBHOOK_SECRET?: string;
   GITHUB_APP_ID?: string;

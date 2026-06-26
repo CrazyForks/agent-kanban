@@ -20,7 +20,7 @@ const OWNER = "ama-sweep-test-user";
 // Shared AMA env-var bundle — matches routes.test.ts pattern
 const AMA_ENV = {
   AMA_ORIGIN: "https://ama.test",
-  AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth/token",
+  AMA_OIDC_DISCOVERY_URL: "https://auth.test/.well-known/openid-configuration",
   AMA_OAUTH_CLIENT_ID: "ak-app",
   AMA_OAUTH_CLIENT_SECRET: "ak-secret",
   AK_API_URL: "https://ak.test",
@@ -66,9 +66,14 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
-// Stub fetch as the token endpoint + AMA API calls
-function oauthTokenResponse() {
-  return jsonResponse({ access_token: "test-token", expires_in: 3600 }, 200);
+// Stub fetch as OIDC discovery + AMA API calls
+function oidcDiscoveryResponse() {
+  return jsonResponse({
+    issuer: "https://auth.test",
+    authorization_endpoint: "https://auth.test/oauth/authorize",
+    token_endpoint: "https://auth.test/oauth/token",
+    jwks_uri: "https://auth.test/.well-known/jwks.json",
+  });
 }
 
 beforeAll(async () => {
@@ -236,7 +241,7 @@ describe("dispatchTaskToAma policy", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_123") return jsonResponse({ id: "project_123", name: "Workspace" }, 200);
       if (url === "https://ama.test/api/v1/runners?environmentId=env_busy&limit=100") return busyRunnerResponse("env_busy", "claude-code");
       throw new Error(`Unexpected fetch: ${url}`);
@@ -276,7 +281,7 @@ describe("dispatchTaskToAma policy", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_123") return jsonResponse({ id: "project_123", name: "Workspace" }, 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -407,7 +412,7 @@ describe("dispatchTaskToAma model-precise candidate selection", () => {
     let sessionEnvironmentId: string | null = null;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_123") return jsonResponse({ id: "project_123", name: "Workspace" }, 200);
       if (url === "https://ama.test/api/v1/runners?environmentId=env_prefer_bare&limit=100")
         return runnersResponse("env_prefer_bare", ["claude-code"]);
@@ -473,7 +478,7 @@ describe("dispatchTaskToAma model-precise candidate selection", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_123") return jsonResponse({ id: "project_123", name: "Workspace" }, 200);
       if (url === "https://ama.test/api/v1/runners?environmentId=env_model_mismatch&limit=100")
         return runnersResponse("env_model_mismatch", ["runtime-provider-model:claude-code:anthropic:claude-sonnet-4-6"]);
@@ -519,7 +524,7 @@ describe("dispatchPendingAmaTasks", () => {
     let sessionCreated = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_123") return jsonResponse({ id: "project_123", name: "Workspace" }, 200);
       if (url === "https://ama.test/api/v1/runners?environmentId=env_sweep&limit=100") return activeRunnerResponse("env_sweep", "claude-code");
       if (url === "https://ama.test/api/v1/providers?limit=100")
@@ -571,7 +576,7 @@ describe("dispatchPendingAmaTasks", () => {
     const sessionPostCalls: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/runners?environmentId=env_blocked_sweep&limit=100")
         return activeRunnerResponse("env_blocked_sweep", "claude-code");
       if (url === "https://ama.test/api/v1/sessions") {
@@ -617,7 +622,7 @@ describe("dispatchPendingAmaTasks", () => {
     let sessionCount = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_123") return jsonResponse({ id: "project_123", name: "Workspace" }, 200);
       if (url === "https://ama.test/api/v1/runners?environmentId=env_dep_sweep&limit=100")
         return activeRunnerResponse("env_dep_sweep", "claude-code");
@@ -716,7 +721,7 @@ describe("reconcileAmaBoundTasks", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH")
         return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "error", stateReason: "crashed" }, 200);
       // Stop call after release (PATCH /api/v1/sessions/{id})
@@ -748,7 +753,7 @@ describe("reconcileAmaBoundTasks", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}`)
         return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "running", stateReason: null }, 200);
       throw new Error(`Unexpected fetch: ${url}`);
@@ -775,7 +780,7 @@ describe("reconcileAmaBoundTasks", () => {
     const stops: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH") {
         stops.push(url);
         return jsonResponse({ id: sessionId, state: "stopped" }, 200);
@@ -807,7 +812,7 @@ describe("reconcileAmaBoundTasks", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}`) return new Response(null, { status: 404 });
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -836,7 +841,7 @@ describe("reconcileAmaBoundTasks", () => {
     const stops: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH") return new Response(null, { status: 404 });
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH") {
         stops.push(url);
@@ -869,7 +874,7 @@ describe("reconcileAmaBoundTasks", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH")
         return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "pending", stateReason: null }, 200);
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH")
@@ -903,7 +908,7 @@ describe("reconcileAmaBoundTasks", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}`)
         return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "pending", stateReason: null }, 200);
       throw new Error(`Unexpected fetch: ${url}`);
@@ -932,7 +937,7 @@ describe("reconcileAmaBoundTasks", () => {
     const stops: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH")
         return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "idle", stateReason: null }, 200);
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH") {
@@ -967,7 +972,7 @@ describe("reconcileAmaBoundTasks", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH") return new Response(null, { status: 404 });
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH")
         return jsonResponse({ id: sessionId, state: "stopped" }, 200);
@@ -1003,7 +1008,7 @@ describe("reconcileAmaBoundTasks", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH")
         return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "idle", stateReason: null }, 200);
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH")
@@ -1043,7 +1048,7 @@ describe("reconcileAmaBoundTasks", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH")
         return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "pending", stateReason: null }, 200);
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH")
@@ -1081,7 +1086,7 @@ describe("reconcileAmaBoundTasks", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH")
         return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "error", stateReason: "crashed" }, 200);
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH")
@@ -1150,7 +1155,7 @@ describe("detectAndReleaseStaleAll with AMA binding", () => {
     const stops: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH") {
         stops.push(url);
         return jsonResponse({ id: sessionId, state: "stopped" }, 200);
@@ -1238,7 +1243,7 @@ describe("POST /api/tasks/:id/reject AMA 409 handling", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       // POST /messages — AMA returns 409 before accepting the reject prompt.
       if (url === `https://ama.test/api/v1/sessions/${amaSessionId}/messages` && reqMethod(input, init) === "POST")
         return jsonResponse({ error: "session archived" }, 409);
@@ -1599,7 +1604,7 @@ describe("createAmaCloudSandboxEnvironment", () => {
     let createBody: Record<string, any> | null = null;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       // readAmaProject: alive (ensureAmaOwnerIntegration validation)
       if (url === "https://ama.test/api/v1/projects/project_cloud_new") return jsonResponse({ id: "project_cloud_new", name: "Workspace" }, 200);
       // createAmaEnvironment: returns a new cloud env
@@ -1634,7 +1639,7 @@ describe("createAmaCloudSandboxEnvironment", () => {
     let counter = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_cloud_twice") return jsonResponse({ id: "project_cloud_twice", name: "Workspace" }, 200);
       if (url === "https://ama.test/api/v1/environments" && reqMethod(input, init) === "POST") {
         counter += 1;
@@ -1670,7 +1675,7 @@ describe("resolveAmaSessionSecretVaultId", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       // readAmaProject: alive (so ensureAmaOwnerIntegration doesn't re-provision)
       if (url === "https://ama.test/api/v1/projects/project_no_vault") return jsonResponse({ id: "project_no_vault", name: "Workspace" }, 200);
       // createVault: provision one when vault is missing but project is alive
@@ -1801,7 +1806,7 @@ describe("dispatchTaskToAma — githubTokenSecretRef (GitHub App installation to
         const res = githubHandler(url, init);
         if (res !== null) return res;
       }
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/projects/${projectId}`) return jsonResponse({ id: projectId, name: "Workspace" }, 200);
       if (url === `https://ama.test/api/v1/runners?environmentId=${envId}&limit=100`) return activeRunnerResponse(envId, "claude-code");
       if (url === "https://ama.test/api/v1/providers?limit=100")
@@ -1983,7 +1988,7 @@ describe("dispatchTaskToAma with cloud runtime (ama)", () => {
     let sessionBody: Record<string, any> | null = null;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_cloud_rt") return jsonResponse({ id: "project_cloud_rt", name: "Workspace" }, 200);
       // amaEnvironmentExists for the cached cloud env
       if (url === `https://ama.test/api/v1/environments/${cloudEnvId}`) return jsonResponse({ id: cloudEnvId, name: "Cloud sandbox" }, 200);
@@ -2064,7 +2069,7 @@ describe("taskResourceRefs with repository_id", () => {
     let sessionBody: Record<string, any> | null = null;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_123") return jsonResponse({ id: "project_123", name: "Workspace" }, 200);
       if (url === "https://ama.test/api/v1/runners?environmentId=env_repo_task&limit=100")
         return activeRunnerResponse("env_repo_task", "claude-code");
@@ -2116,7 +2121,7 @@ describe("ensureAmaOwnerIntegration self-heal (Feature A)", () => {
     const newVaultId = "vault_new_heal";
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       // readAmaProject: the stored project is gone
       if (url === "https://ama.test/api/v1/projects/project_stale") return new Response(null, { status: 404 });
       // createProject: provision a fresh one
@@ -2153,7 +2158,7 @@ describe("ensureAmaOwnerIntegration self-heal (Feature A)", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       // readAmaProject: the project exists
       if (url === "https://ama.test/api/v1/projects/project_alive") return jsonResponse({ id: "project_alive", name: "Workspace" }, 200);
       throw new Error(`Unexpected fetch: ${url}`);
@@ -2199,7 +2204,7 @@ describe("ensureMachineAmaEnvironment self-heal (Feature A)", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token")
+      if (url === "https://auth.test/.well-known/openid-configuration")
         return jsonResponse({ access_token: "test-token", refresh_token: "test-refresh", token_type: "Bearer", expires_in: 3600 }, 200);
       // readAmaProject: alive
       if (url === "https://ama.test/api/v1/projects/project_envheal") return jsonResponse({ id: "project_envheal", name: "Workspace" }, 200);
@@ -2273,7 +2278,7 @@ describe("dispatch task_actions (dispatch_failed / dispatched)", () => {
   function makeFailFetchMock(environmentId: string, sessionErrorFactory: () => Response) {
     return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_123") return jsonResponse({ id: "project_123", name: "Workspace" }, 200);
       if (url === `https://ama.test/api/v1/runners?environmentId=${environmentId}&limit=100`)
         return activeRunnerResponse(environmentId, "claude-code");
@@ -2306,7 +2311,7 @@ describe("dispatch task_actions (dispatch_failed / dispatched)", () => {
   function makeSuccessFetchMock(environmentId: string, sessionId: string) {
     return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_123") return jsonResponse({ id: "project_123", name: "Workspace" }, 200);
       if (url === `https://ama.test/api/v1/runners?environmentId=${environmentId}&limit=100`)
         return activeRunnerResponse(environmentId, "claude-code");
@@ -2593,7 +2598,7 @@ describe("re-dispatch backoff (Feature B)", () => {
     // Dispatch fails: session creation throws an error
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_123") return jsonResponse({ id: "project_123", name: "Workspace" }, 200);
       if (url === "https://ama.test/api/v1/runners?environmentId=env_backoff&limit=100") return activeRunnerResponse("env_backoff", "claude-code");
       if (url === "https://ama.test/api/v1/providers?limit=100")
@@ -2659,7 +2664,7 @@ describe("re-dispatch backoff (Feature B)", () => {
     // fetch mock only handles auth — any AMA API call would mean backoff was not honoured
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       throw new Error(`Unexpected fetch (backoff should have prevented dispatch): ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -2708,7 +2713,7 @@ describe("re-dispatch backoff (Feature B)", () => {
     let sessionCreated = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_123") return jsonResponse({ id: "project_123", name: "Workspace" }, 200);
       if (url === "https://ama.test/api/v1/runners?environmentId=env_takeover&limit=100") return activeRunnerResponse("env_takeover", "claude-code");
       if (url === "https://ama.test/api/v1/providers?limit=100")
@@ -2776,7 +2781,7 @@ describe("re-dispatch backoff (Feature B)", () => {
     const sessionPostCalls: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/sessions") {
         sessionPostCalls.push(url);
         throw new Error("Should not dispatch a task whose nextRetryAt is in the future");
@@ -2827,7 +2832,7 @@ describe("re-dispatch backoff (Feature B)", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
-      if (url === "https://auth.test/oauth/token") return oauthTokenResponse();
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       // Session is live and healthy (running)
       if (url === `https://ama.test/api/v1/sessions/${sessionId}`)
         return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "running", stateReason: null }, 200);
