@@ -106,7 +106,7 @@ export function MaintainerDetailPage() {
               <p className="font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-content-tertiary">{board.name}</p>
               <div className="mt-1 flex min-w-0 items-center gap-2">
                 <span className={`size-2 rounded-full ${maintainer.status === "active" ? "bg-accent" : "bg-content-tertiary"}`} />
-                <h1 className="truncate text-xl font-bold text-content-primary">{maintainer.name}</h1>
+                <h1 className="truncate text-xl font-bold text-content-primary">Board maintainer</h1>
                 <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-content-tertiary">{maintainer.status}</span>
               </div>
               <p className="mt-2 max-w-3xl text-sm text-content-secondary">{maintainer.prompt}</p>
@@ -167,7 +167,7 @@ export function MaintainerDetailPage() {
         </Tabs>
       </main>
       <MaintainerSessionDrawer
-        maintainerName={maintainer.name}
+        maintainerName={maintainer.agent_id ?? maintainer.id}
         session={selectedSession}
         onOpenChange={(open) => !open && setSelectedSession(null)}
       />

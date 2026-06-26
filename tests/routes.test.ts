@@ -349,7 +349,7 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/memory-stores" && method === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         memoryStoreRequests.push(body);
-        expect(body.name).toBe("Daily maintainer memory");
+        expect(body.name).toMatch(new RegExp(`^${maintainerBoard.name} maintainer .+ memory$`));
         expect(body.metadata).toEqual({ purpose: "ak-board-maintainer", boardId: maintainerBoard.id, agentId: maintainerAgent.id });
         return jsonResponse({ id: "mem_maintainer", name: body.name }, 201);
       }
@@ -393,7 +393,7 @@ describe("routes", () => {
         expect(body.promptTemplate).not.toContain("Do not use pre-existing gh login state or human GitHub tokens");
         if (body.type === "http") {
           expect(body.schedule).toBeNull();
-          expect(body.name).toBe("Daily maintainer GitHub events");
+          expect(body.name).toMatch(new RegExp(`^${maintainerBoard.name} maintainer .+ GitHub events$`));
           expect(body.promptTemplate).toContain("{{ body.event }}.{{ body.action }}");
           expect(body.promptTemplate).toContain("{{ body.repository.full_name }}");
           expect(body.promptTemplate).toContain('{{#if eq body.subject.type "issue"}}');
@@ -457,7 +457,7 @@ describe("routes", () => {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         archiveRequests.push(url);
         expect(body).toEqual({ archived: true });
-        return jsonResponse({ id: "mem_maintainer", name: "Daily maintainer memory", archived: true });
+        return jsonResponse({ id: "mem_maintainer", name: "memory", archived: true });
       }
       if (
         (url === "https://ama.test/api/v1/triggers/sched_maintainer" || url === "https://ama.test/api/v1/triggers/http_maintainer") &&
@@ -471,7 +471,7 @@ describe("routes", () => {
           id: triggerId,
           agentId: "ama_agent_maintainer",
           environmentId: "env_123",
-          name: body.name ?? "Daily maintainer",
+          name: body.name ?? "unchanged",
           promptTemplate: body.promptTemplate ?? "unchanged",
           schedule: triggerId === "sched_maintainer" ? { intervalSeconds: body.schedule?.intervalSeconds ?? 3600, windowSeconds: 0 } : null,
           enabled: body.enabled ?? true,
@@ -570,12 +570,32 @@ describe("routes", () => {
       );
       expect(invalidRes.status).toBe(400);
 
+      const ordinaryAgent = await createTestAgent(env.DB, userTokenOwnerId, {
+        name: "Ordinary worker",
+        username: `ordinary-worker-${crypto.randomUUID()}`,
+        runtime: "codex",
+        kind: "worker",
+        role: "implementation",
+      });
+      await setAgentAmaId(env.DB, ordinaryAgent.id, "ama_agent_ordinary");
+      const nonMaintainerAgentRes = await apiRequest(
+        "POST",
+        `/api/boards/${maintainerBoard.id}/maintainers`,
+        {
+          agent_id: ordinaryAgent.id,
+          prompt: "Inspect open work.",
+          interval_seconds: 3600,
+        },
+        userToken,
+      );
+      expect(nonMaintainerAgentRes.status).toBe(400);
+      await expect(nonMaintainerAgentRes.json()).resolves.toMatchObject({ error: { message: "Board maintainers must use a maintainer agent" } });
+
       const createRes = await apiRequest(
         "POST",
         `/api/boards/${maintainerBoard.id}/maintainers`,
         {
           agent_id: maintainerAgent.id,
-          name: "Daily maintainer",
           prompt: "Inspect open work and create follow-up tasks when needed.",
           interval_seconds: 3600,
         },
@@ -591,6 +611,7 @@ describe("routes", () => {
       expect(maintainer).not.toHaveProperty("repository_id");
       expect(maintainer).not.toHaveProperty("ama_schedule_id");
       expect(maintainer).not.toHaveProperty("last_ama_session_id");
+      expect(maintainer).not.toHaveProperty("name");
       const updatedMaintainerAgent = await env.DB.prepare("SELECT skills, taints FROM agents WHERE id = ?").bind(maintainerAgent.id).first<{
         skills: string;
         taints: string;
@@ -637,7 +658,6 @@ describe("routes", () => {
         `/api/boards/${maintainerBoard.id}/maintainers`,
         {
           agent_id: maintainerAgent.id,
-          name: "Duplicate maintainer",
           prompt: "Inspect the same board twice.",
           interval_seconds: 3600,
         },
@@ -718,37 +738,34 @@ describe("routes", () => {
       const updateRes = await apiRequest(
         "PATCH",
         `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`,
-        { name: "Hourly maintainer", prompt: "Inspect stale work.", interval_seconds: 7200 },
+        { prompt: "Inspect stale work.", interval_seconds: 7200 },
         userToken,
       );
       expect(updateRes.status).toBe(200);
-      await expect(updateRes.json()).resolves.toEqual(
-        expect.objectContaining({ name: "Hourly maintainer", prompt: "Inspect stale work.", interval_seconds: 7200 }),
-      );
+      await expect(updateRes.json()).resolves.toEqual(expect.objectContaining({ prompt: "Inspect stale work.", interval_seconds: 7200 }));
       expect(
-        updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.name === "Hourly maintainer")?.body,
+        updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.schedule?.intervalSeconds === 7200)?.body,
       ).toMatchObject({
-        name: "Hourly maintainer",
         schedule: { type: "interval", intervalSeconds: 7200 },
       });
       expect(
-        updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.name === "Hourly maintainer")?.body.skills,
+        updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.schedule?.intervalSeconds === 7200)?.body.skills,
       ).toBeUndefined();
       expect(
-        updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.name === "Hourly maintainer")?.body.promptTemplate,
+        updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.schedule?.intervalSeconds === 7200)?.body
+          .promptTemplate,
       ).toContain(`AK board ${maintainerBoard.id}`);
       expect(
-        updateRequests.find((request) => request.triggerId === "http_maintainer" && request.body.name === "Hourly maintainer GitHub events")?.body,
-      ).toMatchObject({
-        name: "Hourly maintainer GitHub events",
-      });
-      expect(
-        updateRequests.find((request) => request.triggerId === "http_maintainer" && request.body.name === "Hourly maintainer GitHub events")?.body
-          .skills,
+        updateRequests.find((request) => request.triggerId === "http_maintainer" && request.body.promptTemplate?.includes("{{ body.comment.id }}"))
+          ?.body.name,
       ).toBeUndefined();
       expect(
-        updateRequests.find((request) => request.triggerId === "http_maintainer" && request.body.name === "Hourly maintainer GitHub events")?.body
-          .promptTemplate,
+        updateRequests.find((request) => request.triggerId === "http_maintainer" && request.body.promptTemplate?.includes("{{ body.comment.id }}"))
+          ?.body.skills,
+      ).toBeUndefined();
+      expect(
+        updateRequests.find((request) => request.triggerId === "http_maintainer" && request.body.promptTemplate?.includes("{{ body.comment.id }}"))
+          ?.body.promptTemplate,
       ).toContain("{{ body.comment.id }}");
 
       const runsRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/runs?limit=2`, undefined, userToken);
@@ -1321,6 +1338,17 @@ describe("routes", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as any[];
     expect(body.map((agent) => agent.username)).toEqual(["filter-claude-agent"]);
+  });
+
+  it("GET /api/agents?maintainer=true returns only maintainer worker agents", async () => {
+    await createTestAgent(env.DB, userId, { username: "maintainer-filter-agent", runtime: "codex", role: "board-maintainer" });
+    await createTestAgent(env.DB, userId, { username: "ordinary-filter-agent", runtime: "codex", role: "implementation" });
+
+    const res = await apiRequest("GET", "/api/agents?kind=worker&maintainer=true", undefined, apiKey);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any[];
+    expect(body.map((agent) => agent.username)).toContain("maintainer-filter-agent");
+    expect(body.map((agent) => agent.username)).not.toContain("ordinary-filter-agent");
   });
 
   it("GET /api/agents uses AMA runner load and capabilities as runtime availability source", async () => {

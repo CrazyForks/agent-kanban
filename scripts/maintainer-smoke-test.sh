@@ -500,7 +500,6 @@ fi
 MAINTAINER_ID=$(ak create maintainer \
   --board "$BOARD_ID" \
   --agent "$AGENT_ID" \
-  --name "Smoke maintainer $TIMESTAMP" \
   --prompt "Inspect the board and repository scope. Do not create or modify anything." \
   --interval-seconds 3600 \
   -o json | json_query "data.id")
@@ -536,12 +535,11 @@ ak update maintainer "$MAINTAINER_ID" --board "$BOARD_ID" --status active >/dev/
 [ "$(maintainer_field "$MAINTAINER_ID" status)" = "active" ] \
   && pass "maintainer resumed via update" || fail "maintainer did not resume"
 
-ak update maintainer "$MAINTAINER_ID" --board "$BOARD_ID" --interval-seconds 120 --name "Renamed $TIMESTAMP" >/dev/null 2>&1
-if [ "$(maintainer_field "$MAINTAINER_ID" interval_seconds)" = "120" ] \
-  && [ "$(maintainer_field "$MAINTAINER_ID" name)" = "Renamed $TIMESTAMP" ]; then
-  pass "maintainer interval + name updated"
+ak update maintainer "$MAINTAINER_ID" --board "$BOARD_ID" --interval-seconds 120 >/dev/null 2>&1
+if [ "$(maintainer_field "$MAINTAINER_ID" interval_seconds)" = "120" ]; then
+  pass "maintainer interval updated"
 else
-  fail "maintainer interval/name update not reflected"
+  fail "maintainer interval update not reflected"
 fi
 
 if [ "$(ak get maintainer "$MAINTAINER_ID" --board "$BOARD_ID" --runs -o json | json_query "Array.isArray(data.data)")" = "true" ]; then
@@ -629,7 +627,6 @@ if [ "$LIVE" = 1 ]; then
   HTTP_MAINTAINER_ID=$(ak create maintainer \
     --board "$BOARD_ID" \
     --agent "$AGENT_ID" \
-    --name "HTTP smoke maintainer $TIMESTAMP" \
     --prompt "$HTTP_PROMPT" \
     --interval-seconds 3600 \
     -o json | json_query "data.id")
@@ -666,7 +663,6 @@ if [ "$LIVE" = 1 ]; then
   SCHEDULED_MAINTAINER_ID=$(ak create maintainer \
     --board "$BOARD_ID" \
     --agent "$AGENT_ID" \
-    --name "Scheduled smoke maintainer $TIMESTAMP" \
     --prompt "$SCHEDULED_PROMPT" \
     --interval-seconds 60 \
     -o json | json_query "data.id")

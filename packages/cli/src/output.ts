@@ -153,7 +153,7 @@ export function formatLabelList(labels: any[]): string {
 
 export function formatMaintainer(maintainer: any): string {
   const lines: string[] = [];
-  lines.push(`${maintainer.name}`);
+  lines.push(`Maintainer ${maintainer.id}`);
   lines.push(`  ID:           ${maintainer.id}`);
   lines.push(`  Board:        ${maintainer.board_id}`);
   lines.push(`  Agent:        ${maintainer.agent_id ?? "unbound"}`);
@@ -171,7 +171,7 @@ export function formatMaintainerList(maintainers: any[]): string {
   return maintainers
     .map((maintainer) => {
       const lastRun = maintainer.last_run_at ? ` last=${maintainer.last_run_at}` : "";
-      return `  ${maintainer.id}  [${maintainer.status}] ${maintainer.name}  agent=${maintainer.agent_id ?? "unbound"} interval=${maintainer.interval_seconds}s${lastRun}`;
+      return `  ${maintainer.id}  [${maintainer.status}] agent=${maintainer.agent_id ?? "unbound"} interval=${maintainer.interval_seconds}s${lastRun}`;
     })
     .join("\n");
 }

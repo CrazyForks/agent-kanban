@@ -90,7 +90,10 @@ export const api = {
     sessionWs: (id: string) => request<{ url: string }>("GET", `/sessions/${id}/ws`),
   },
   agents: {
-    list: () => request<any[]>("GET", "/agents"),
+    list: (params?: Record<string, string>) => {
+      const qs = params ? `?${new URLSearchParams(params).toString()}` : "";
+      return request<any[]>("GET", `/agents${qs}`);
+    },
     get: (id: string) => request<any>("GET", `/agents/${id}`),
     create: (input: {
       name?: string;

@@ -43,7 +43,9 @@ async function applyMigrations(db: D1Database) {
     "0022_ama_runtime_integration.sql",
     "0025_machine_hosting.sql",
     "0026_agent_ama_agent_id.sql",
+    "0028_board_maintainer_triggers_memory.sql",
     "0030_agent_taints.sql",
+    "0031_drop_board_maintainer_name.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");

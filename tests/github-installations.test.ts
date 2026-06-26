@@ -1536,7 +1536,6 @@ describe("recordInstallationFromSetup", () => {
       amaScheduleId: `sched-${randomUUID()}`,
       amaHttpTriggerId: `http-${randomUUID()}`,
       amaMemoryStoreId: `mem-${randomUUID()}`,
-      name: "Maintainer worker",
       prompt: "Maintain the board",
       intervalSeconds: 3600,
       status: "active",

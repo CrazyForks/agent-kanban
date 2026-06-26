@@ -8,7 +8,6 @@ export interface BoardMaintainer {
   ama_schedule_id: string;
   ama_http_trigger_id: string | null;
   ama_memory_store_id: string | null;
-  name: string;
   prompt: string;
   interval_seconds: number;
   status: "active" | "paused" | "archived";
@@ -26,14 +25,12 @@ export interface CreateBoardMaintainerInput {
   amaScheduleId: string;
   amaHttpTriggerId: string;
   amaMemoryStoreId: string;
-  name: string;
   prompt: string;
   intervalSeconds: number;
   status: "active" | "paused";
 }
 
 export interface UpdateBoardMaintainerInput {
-  name?: string;
   prompt?: string;
   intervalSeconds?: number;
   status?: "active" | "paused" | "archived";
@@ -50,8 +47,8 @@ export async function createBoardMaintainer(db: D1, ownerId: string, input: Crea
     .prepare(
       `INSERT INTO board_maintainers (
         id, owner_id, board_id, agent_id, ama_schedule_id, ama_http_trigger_id, ama_memory_store_id,
-        name, prompt, interval_seconds, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        prompt, interval_seconds, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -61,7 +58,6 @@ export async function createBoardMaintainer(db: D1, ownerId: string, input: Crea
       input.amaScheduleId,
       input.amaHttpTriggerId,
       input.amaMemoryStoreId,
-      input.name,
       input.prompt,
       input.intervalSeconds,
       input.status,
@@ -98,10 +94,6 @@ export async function updateBoardMaintainer(
 ): Promise<BoardMaintainer | null> {
   const sets: string[] = [];
   const values: unknown[] = [];
-  if (updates.name !== undefined) {
-    sets.push("name = ?");
-    values.push(updates.name);
-  }
   if (updates.prompt !== undefined) {
     sets.push("prompt = ?");
     values.push(updates.prompt);

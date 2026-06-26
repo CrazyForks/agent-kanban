@@ -527,14 +527,13 @@ describe("formatMaintainer", () => {
   it("formats board maintainer details", () => {
     const result = formatMaintainer({
       id: "maintainer-1",
-      name: "Board Maintainer",
       board_id: "board-1",
       agent_id: "agent-1",
       status: "active",
       interval_seconds: 3600,
     });
 
-    expect(result).toContain("Board Maintainer");
+    expect(result).toContain("Maintainer maintainer-1");
     expect(result).toContain("Board:");
     expect(result).not.toContain("Repository:");
   });
@@ -545,14 +544,14 @@ describe("formatMaintainerList", () => {
     const result = formatMaintainerList([
       {
         id: "maintainer-1",
-        name: "Board Maintainer",
         agent_id: "agent-1",
         status: "active",
         interval_seconds: 3600,
       },
     ]);
 
-    expect(result).toContain("Board Maintainer");
+    expect(result).toContain("maintainer-1");
+    expect(result).toContain("agent=agent-1");
     expect(result).not.toContain("repo=");
   });
 });

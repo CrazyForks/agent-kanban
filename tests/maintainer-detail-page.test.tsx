@@ -48,7 +48,6 @@ describe("MaintainerDetailPage", () => {
       refresh: vi.fn(),
       maintainer: {
         id: "maintainer-1",
-        name: "Daily maintainer",
         prompt: "Inspect open work.",
         status: "active",
         agent_id: "agent-1",
@@ -162,7 +161,7 @@ describe("MaintainerDetailPage", () => {
   it("renders maintainer sessions and memory file contents", () => {
     renderMaintainerDetail();
 
-    expect(screen.getByRole("heading", { name: "Daily maintainer" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Board maintainer" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Sessions\s*1/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /session_1/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /saltbo\/slink Issue #42/ })).toHaveAttribute("href", "https://github.com/saltbo/slink/issues/42");

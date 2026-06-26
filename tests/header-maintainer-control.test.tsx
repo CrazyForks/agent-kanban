@@ -69,7 +69,7 @@ describe("Header maintainer control", () => {
 
   it("shows the maintainer agent avatar when the board has a maintainer", async () => {
     useBoardMaintainers.mockReturnValue({
-      maintainers: [{ id: "maintainer-1", name: "Daily maintainer", agent_id: "agent-1", status: "active" }],
+      maintainers: [{ id: "maintainer-1", agent_id: "agent-1", status: "active" }],
       loading: false,
       refresh: vi.fn(),
     });
@@ -77,6 +77,6 @@ describe("Header maintainer control", () => {
     renderHeader();
 
     expect(await screen.findByTestId("agent-identicon")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "View maintainer Daily maintainer" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View maintainer Daily Agent" })).toBeInTheDocument();
   });
 });

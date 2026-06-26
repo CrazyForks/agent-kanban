@@ -11,7 +11,6 @@ import { Textarea } from "./ui/textarea";
 
 interface BoardMaintainer {
   id: string;
-  name: string;
   prompt: string;
   agent_id?: string;
   interval_seconds: number;
@@ -35,15 +34,17 @@ export function BoardMaintainerDialog({ boardId, maintainer, open, onOpenChange 
   const isEditing = !!maintainer;
   const createMaintainer = useCreateBoardMaintainer(boardId);
   const updateMaintainer = useUpdateBoardMaintainer(boardId);
-  const agentQuery = useQuery({ queryKey: ["agents", { kind: "worker" }], queryFn: () => api.agents.list(), enabled: open && !isEditing });
-  const [name, setName] = useState("");
+  const agentQuery = useQuery({
+    queryKey: ["agents", { kind: "worker", maintainer: true }],
+    queryFn: () => api.agents.list({ kind: "worker", maintainer: "true" }),
+    enabled: open && !isEditing,
+  });
   const [prompt, setPrompt] = useState("");
   const [agentId, setAgentId] = useState("");
   const [intervalSeconds, setIntervalSeconds] = useState("86400");
 
   useEffect(() => {
     if (!open) return;
-    setName(maintainer?.name ?? "");
     setPrompt(maintainer?.prompt ?? "");
     setAgentId(maintainer?.agent_id ?? "");
     setIntervalSeconds(String(maintainer?.interval_seconds ?? 86400));
@@ -66,7 +67,7 @@ export function BoardMaintainerDialog({ boardId, maintainer, open, onOpenChange 
       if (maintainer) {
         await updateMaintainer.mutateAsync({
           maintainerId: maintainer.id,
-          body: { name: name.trim() || undefined, prompt: prompt.trim(), interval_seconds: seconds },
+          body: { prompt: prompt.trim(), interval_seconds: seconds },
         });
         toast.success("Maintainer updated");
       } else {
@@ -75,7 +76,6 @@ export function BoardMaintainerDialog({ boardId, maintainer, open, onOpenChange 
           return;
         }
         await createMaintainer.mutateAsync({
-          name: name.trim() || undefined,
           prompt: prompt.trim(),
           agent_id: agentId,
           interval_seconds: seconds,
@@ -97,11 +97,6 @@ export function BoardMaintainerDialog({ boardId, maintainer, open, onOpenChange 
         </DialogHeader>
 
         <div className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="maintainer-name">Name</Label>
-            <Input id="maintainer-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Daily maintainer" />
-          </div>
-
           {!isEditing && (
             <div className="space-y-1.5">
               <Label htmlFor="maintainer-agent">Agent</Label>

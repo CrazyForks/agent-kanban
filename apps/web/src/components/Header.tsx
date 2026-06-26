@@ -271,7 +271,7 @@ function MaintainerControl({ boardId }: { boardId: string }) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [agent, setAgent] = useState<any | null>(null);
   const { maintainers } = useBoardMaintainers(boardId);
-  const maintainer = maintainers[0] as { id: string; name: string; agent_id?: string; status?: string } | undefined;
+  const maintainer = maintainers[0] as { id: string; agent_id?: string; status?: string } | undefined;
 
   useEffect(() => {
     let cancelled = false;
@@ -310,6 +310,7 @@ function MaintainerControl({ boardId }: { boardId: string }) {
     );
   }
 
+  const maintainerLabel = agent?.name ?? agent?.username ?? maintainer.agent_id ?? maintainer.id;
   return (
     <Tooltip>
       <TooltipTrigger
@@ -318,20 +319,20 @@ function MaintainerControl({ boardId }: { boardId: string }) {
             variant="ghost"
             size="icon-sm"
             className="relative rounded-md"
-            aria-label={`View maintainer ${maintainer.name}`}
+            aria-label={`View maintainer ${maintainerLabel}`}
             onClick={() => navigate(`/boards/${boardId}/maintainers/${maintainer.id}`)}
           >
             {agent?.public_key ? (
               <AgentIdenticon publicKey={agent.public_key} size={22} glow={maintainer.status === "active"} />
             ) : (
               <Avatar size="sm">
-                <AvatarFallback>{(agent?.name ?? maintainer.name ?? "?")[0].toUpperCase()}</AvatarFallback>
+                <AvatarFallback>{maintainerLabel[0]?.toUpperCase() ?? "?"}</AvatarFallback>
               </Avatar>
             )}
           </Button>
         }
       />
-      <TooltipContent>{maintainer.name}</TooltipContent>
+      <TooltipContent>{maintainerLabel}</TooltipContent>
     </Tooltip>
   );
 }

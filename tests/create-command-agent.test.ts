@@ -161,13 +161,11 @@ describe("registerCreateCommand agent", () => {
       id: "maintainer-1",
       board_id: "board-1",
       agent_id: "agent-1",
-      name: "Board Maintainer",
     });
 
     await command.action!({
       board: "board-1",
       agent: "agent-1",
-      name: "Board Maintainer",
       prompt: "Watch incoming GitHub work",
       intervalSeconds: "3600",
       paused: true,
@@ -178,13 +176,8 @@ describe("registerCreateCommand agent", () => {
       agent_id: "agent-1",
       prompt: "Watch incoming GitHub work",
       interval_seconds: 3600,
-      name: "Board Maintainer",
       status: "paused",
     });
-    expect(output).toHaveBeenCalledWith(
-      { id: "maintainer-1", board_id: "board-1", agent_id: "agent-1", name: "Board Maintainer" },
-      "json",
-      expect.any(Function),
-    );
+    expect(output).toHaveBeenCalledWith({ id: "maintainer-1", board_id: "board-1", agent_id: "agent-1" }, "json", expect.any(Function));
   });
 });

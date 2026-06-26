@@ -198,7 +198,6 @@ export function registerUpdateCommand(program: Command) {
     .command("maintainer <id>")
     .description("Update a board maintainer")
     .option("--board <id>", "Board ID")
-    .option("--name <name>", "Maintainer display name")
     .option("--prompt <prompt>", "Heartbeat prompt")
     .option("--interval-seconds <seconds>", "Heartbeat interval in seconds")
     .option("--status <status>", "active or paused")
@@ -209,7 +208,6 @@ export function registerUpdateCommand(program: Command) {
         process.exit(1);
       }
       const body: Record<string, unknown> = {};
-      if (opts.name) body.name = opts.name;
       if (opts.prompt) body.prompt = opts.prompt;
       if (opts.intervalSeconds !== undefined) {
         const intervalSeconds = Number.parseInt(String(opts.intervalSeconds), 10);
@@ -227,12 +225,12 @@ export function registerUpdateCommand(program: Command) {
         body.status = opts.status;
       }
       if (Object.keys(body).length === 0) {
-        console.error("Nothing to update. Provide --name, --prompt, --interval-seconds, or --status.");
+        console.error("Nothing to update. Provide --prompt, --interval-seconds, or --status.");
         process.exit(1);
       }
       const client = await createClient();
       const maintainer = await client.updateBoardMaintainer(opts.board, id, body);
       const fmt = getOutputFormat(opts.output);
-      output(maintainer, fmt, (m) => `Updated maintainer ${m.id}: ${m.name}`);
+      output(maintainer, fmt, (m) => `Updated maintainer ${m.id}`);
     });
 }

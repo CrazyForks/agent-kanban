@@ -126,7 +126,6 @@ export function registerCreateCommand(program: Command) {
     .requiredOption("--board <id>", "Board ID")
     .requiredOption("--agent <id>", "Maintainer agent ID")
     .requiredOption("--prompt <prompt>", "Maintainer heartbeat prompt")
-    .option("--name <name>", "Maintainer display name")
     .option("--interval-seconds <seconds>", "Heartbeat interval in seconds", "86400")
     .option("--paused", "Create maintainer paused")
     .option("-o, --output <format>", "Output format (json, yaml, text)")
@@ -142,11 +141,10 @@ export function registerCreateCommand(program: Command) {
         prompt: opts.prompt,
         interval_seconds: intervalSeconds,
       };
-      if (opts.name) body.name = opts.name;
       if (opts.paused) body.status = "paused";
       const maintainer = await client.createBoardMaintainer(opts.board, body);
       const fmt = getOutputFormat(opts.output);
-      output(maintainer, fmt, (m) => `Created maintainer ${m.id}: ${m.name}`);
+      output(maintainer, fmt, (m) => `Created maintainer ${m.id}`);
     });
 
   createCmd
