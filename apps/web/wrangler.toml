@@ -6,10 +6,20 @@ preview_urls = true
 
 [vars]
 ALLOWED_HOSTS = "agent-kanban.dev"
+AK_API_URL = "https://agent-kanban.dev"
 GITHUB_CLIENT_ID = "Ov23liryJHLmoT8019oo"
 CF_ACCOUNT_ID = "94a89d03c0fc785c8dcbd3c674d6742a"
+AMA_ORIGIN = "https://ama.tftt.cc"
+AMA_OIDC_ISSUER = "https://id.tftt.cc/api/auth"
+AMA_OIDC_CLIENT_ID = "client_5fd9ed5b769b47ff8611f44debc82c10"
+GITHUB_APP_ID = "4098405"
+GITHUB_APP_SLUG = "agent-kanban"
+# Optional override. Defaults to "openid profile email offline_access".
+# AMA_OIDC_SCOPES = "openid profile email offline_access"
 
-# Secrets (AUTH_SECRET, GITHUB_CLIENT_SECRET, MAILS_ADMIN_TOKEN, CF_API_TOKEN) are set via `wrangler secret put`
+# Secrets are set via `wrangler secret put`:
+# AUTH_SECRET, GITHUB_CLIENT_SECRET, MAILS_ADMIN_TOKEN, CF_API_TOKEN,
+# AMA_OIDC_CLIENT_SECRET, GITHUB_APP_WEBHOOK_SECRET, GITHUB_APP_PRIVATE_KEY
 # Local dev overrides are in .dev.vars
 
 [observability]
@@ -61,8 +71,16 @@ migrations_dir = "migrations"
 
 [env.staging.vars]
 ALLOWED_HOSTS = "*.workers.dev"
+AK_API_URL = "TODO_STAGING_AK_API_URL"
 GITHUB_CLIENT_ID = "Ov23liryJHLmoT8019oo"
 CF_ACCOUNT_ID = "94a89d03c0fc785c8dcbd3c674d6742a"
+AMA_ORIGIN = "https://ama.tftt.cc"
+AMA_OIDC_ISSUER = "https://id.tftt.cc/api/auth"
+AMA_OIDC_CLIENT_ID = "TODO_STAGING_AMA_OIDC_CLIENT_ID"
+# Optional override. Defaults to "openid profile email offline_access".
+# AMA_OIDC_SCOPES = "openid profile email offline_access"
+GITHUB_APP_ID = "4153714"
+GITHUB_APP_SLUG = "agent-kanban-staging"
 
 [env.staging.durable_objects]
 bindings = [{ name = "TUNNEL_RELAY", class_name = "TunnelRelay" }]
