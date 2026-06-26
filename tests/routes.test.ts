@@ -286,7 +286,7 @@ describe("routes", () => {
       name: "Daily maintainer",
       username: `daily-maintainer-${crypto.randomUUID()}`,
       runtime: "codex",
-      kind: "leader",
+      kind: "worker",
       role: "board-maintainer",
       handoff_to: ["worker"],
       skills: ["saltbo/agent-kanban@agent-kanban"],
@@ -331,7 +331,7 @@ describe("routes", () => {
       }
       if (url === "https://ama.test/api/v1/agents/ama_agent_maintainer" && reqMethod(input, init) === "PATCH") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        expect(body.skills).toEqual(["saltbo/agent-kanban@agent-kanban"]);
+        expect(body.skills).toEqual(["saltbo/agent-kanban@agent-kanban", "saltbo/agent-kanban@ak-maintainer"]);
         expect(body.handoffPolicy).toEqual({ enabled: true, targets: [{ role: "worker" }] });
         expect(body.memoryPolicy).toEqual({ enabled: true, mode: "notebook", scope: "project_agent" });
         return jsonResponse({ id: "ama_agent_maintainer", projectId: "project_123", name: "agent" });
@@ -367,6 +367,7 @@ describe("routes", () => {
         triggerRequests.push(body);
         expect(body.metadata).toEqual({ labels: { maintainerId: expect.any(String) } });
         expect(body.agentId).toBe("ama_agent_maintainer");
+        expect(body.skills).toBeUndefined();
         expect(body.environmentId).toBeUndefined();
         expect(body.resourceRefs).toEqual([{ type: "memory_store", storeId: "mem_maintainer", access: "read_write" }]);
         expect(body.env).toMatchObject({
@@ -387,14 +388,30 @@ describe("routes", () => {
         ]);
         expect(body.promptTemplate).toContain(`AK board ${maintainerBoard.id}`);
         expect(body.promptTemplate).toContain(`GitHub repository scope: maintainer-org/maintainer-repo.`);
-        expect(body.promptTemplate).toContain(`ak get repo --board ${maintainerBoard.id} -o json`);
-        expect(body.promptTemplate).toContain("ak github auth <repo-id>");
-        expect(body.promptTemplate).toContain("AK GitHub App bot identity");
-        expect(body.promptTemplate).toContain("Do not use pre-existing gh login state or human GitHub tokens");
+        expect(body.promptTemplate).toContain("saltbo/agent-kanban@ak-maintainer");
+        expect(body.promptTemplate).toContain("Maintainer instructions:");
+        expect(body.promptTemplate).not.toContain("Do not use pre-existing gh login state or human GitHub tokens");
         if (body.type === "http") {
           expect(body.schedule).toBeNull();
           expect(body.name).toBe("Daily maintainer GitHub events");
-          expect(body.promptTemplate).toContain("{{ body.event_json }}");
+          expect(body.promptTemplate).toContain("{{ body.event }}.{{ body.action }}");
+          expect(body.promptTemplate).toContain("{{ body.repository.full_name }}");
+          expect(body.promptTemplate).toContain('{{#if eq body.subject.type "issue"}}');
+          expect(body.promptTemplate).toContain('{{#if eq body.subject.type "pull"}}');
+          expect(body.promptTemplate).toContain("{{#if body.comment.id}}");
+          expect(body.promptTemplate).toContain("{{#if body.review.id}}");
+          expect(body.promptTemplate).toContain("{{ body.subject.id }}");
+          expect(body.promptTemplate).toContain("{{ body.subject.node_id }}");
+          expect(body.promptTemplate).toContain("{{ body.subject.number }}");
+          expect(body.promptTemplate).toContain("{{ body.comment.id }}");
+          expect(body.promptTemplate).toContain("{{ body.comment.node_id }}");
+          expect(body.promptTemplate).toContain("{{ body.review.id }}");
+          expect(body.promptTemplate).toContain("{{ body.review.node_id }}");
+          expect(body.promptTemplate).not.toContain("{{ body.subject.title }}");
+          expect(body.promptTemplate).not.toContain("{{ body.subject.body }}");
+          expect(body.promptTemplate).not.toContain("{{ body.comment.body }}");
+          expect(body.promptTemplate).not.toContain("{{ body.review.body }}");
+          expect(body.promptTemplate).not.toContain("event_context_json");
           return jsonResponse(
             {
               id: "http_maintainer",
@@ -574,6 +591,16 @@ describe("routes", () => {
       expect(maintainer).not.toHaveProperty("repository_id");
       expect(maintainer).not.toHaveProperty("ama_schedule_id");
       expect(maintainer).not.toHaveProperty("last_ama_session_id");
+      const updatedMaintainerAgent = await env.DB.prepare("SELECT skills, taints FROM agents WHERE id = ?").bind(maintainerAgent.id).first<{
+        skills: string;
+        taints: string;
+      }>();
+      expect(JSON.parse(updatedMaintainerAgent!.skills)).toEqual(["saltbo/agent-kanban@agent-kanban", "saltbo/agent-kanban@ak-maintainer"]);
+      expect(JSON.parse(updatedMaintainerAgent!.taints)).toContainEqual({
+        key: "agent-kanban.dev/maintainer",
+        value: "board-maintainer",
+        effect: "NoSchedule",
+      });
       expect(maintainer).toMatchObject({
         last_run_at: "2026-06-08T12:10:00.000Z",
         last_session_id: "session_maintainer_http_1",
@@ -702,6 +729,9 @@ describe("routes", () => {
         schedule: { type: "interval", intervalSeconds: 7200 },
       });
       expect(
+        updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.name === "Hourly maintainer")?.body.skills,
+      ).toBeUndefined();
+      expect(
         updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.name === "Hourly maintainer")?.body.promptTemplate,
       ).toContain(`AK board ${maintainerBoard.id}`);
       expect(
@@ -711,8 +741,12 @@ describe("routes", () => {
       });
       expect(
         updateRequests.find((request) => request.triggerId === "http_maintainer" && request.body.name === "Hourly maintainer GitHub events")?.body
+          .skills,
+      ).toBeUndefined();
+      expect(
+        updateRequests.find((request) => request.triggerId === "http_maintainer" && request.body.name === "Hourly maintainer GitHub events")?.body
           .promptTemplate,
-      ).toContain("{{ body.event_json }}");
+      ).toContain("{{ body.comment.id }}");
 
       const runsRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/runs?limit=2`, undefined, userToken);
       expect(runsRes.status).toBe(200);
@@ -830,7 +864,7 @@ describe("routes", () => {
       name: "Patch header agent",
       username: `patch-header-agent-${crypto.randomUUID()}`,
       runtime: "codex",
-      kind: "leader",
+      kind: "worker",
       role: "board-maintainer",
       handoff_to: ["worker"],
       skills: ["saltbo/agent-kanban@agent-kanban"],
@@ -985,7 +1019,7 @@ describe("routes", () => {
       name: "Delete header agent",
       username: `delete-header-agent-${crypto.randomUUID()}`,
       runtime: "codex",
-      kind: "leader",
+      kind: "worker",
       role: "board-maintainer",
       handoff_to: ["worker"],
       skills: ["saltbo/agent-kanban@agent-kanban"],

@@ -1,13 +1,16 @@
 import {
   AGENT_RUNTIMES,
   type AgentRuntime,
+  type AgentTaint,
   type CreateAgentInput,
   type CreateSubagentInput,
   findInvalidSkillRef,
+  hasNoScheduleTaint,
   type InstallableRepo,
   isBoardType,
   isValidAgentRole,
   isValidUsername,
+  MAINTAINER_TAINT_KEY,
   type MachineRuntime,
   parseScheduledAt,
   RESERVED_ROLES,
@@ -188,6 +191,28 @@ function assertValidSkillRefs(skills: unknown) {
   const invalid = findInvalidSkillRef(skills);
   if (invalid) {
     throw new HTTPException(400, { message: `Invalid skill "${invalid}". Use source/repo@skill-name format.` });
+  }
+}
+
+function assertValidAgentTaints(taints: unknown) {
+  if (taints === undefined) return;
+  if (!Array.isArray(taints)) {
+    throw new HTTPException(400, { message: "taints must be an array" });
+  }
+  for (const taint of taints) {
+    if (!taint || typeof taint !== "object" || Array.isArray(taint)) {
+      throw new HTTPException(400, { message: "taints must be an array of objects" });
+    }
+    const { key, value, effect } = taint as Record<string, unknown>;
+    if (typeof key !== "string" || key.trim().length === 0 || key.length > 253) {
+      throw new HTTPException(400, { message: "taint key must be a non-empty string up to 253 characters" });
+    }
+    if (value !== undefined && value !== null && typeof value !== "string") {
+      throw new HTTPException(400, { message: "taint value must be a string or null" });
+    }
+    if (effect !== "NoSchedule") {
+      throw new HTTPException(400, { message: "taint effect must be NoSchedule" });
+    }
   }
 }
 
@@ -1142,6 +1167,7 @@ api.post("/api/agents", async (c) => {
     model?: string;
     skills?: string[];
     subagents?: string[];
+    taints?: AgentTaint[];
   }>();
   assertJsonObject(body, "agent");
   if (!body.username) throw new HTTPException(400, { message: "username is required" });
@@ -1155,6 +1181,7 @@ api.post("/api/agents", async (c) => {
     throw new HTTPException(403, { message: `Role "${body.role}" is reserved for built-in agents` });
   }
   assertValidSkillRefs(body.skills);
+  assertValidAgentTaints(body.taints);
   assertSubagentList(body.subagents);
   assertSubagentRuntime(body.runtime, body.subagents);
   const ownerId = c.get("ownerId");
@@ -1246,6 +1273,7 @@ api.patch("/api/agents/:id", async (c) => {
   assertValidHandoffRoles(updates.handoff_to);
   assertValidAgentRuntime(updates.runtime);
   assertValidSkillRefs(updates.skills);
+  assertValidAgentTaints(updates.taints);
   assertSubagentList(updates.subagents);
   const runtime = updates.runtime ?? existing.runtime;
   const subagents = updates.subagents ?? existing.subagents;
@@ -1648,6 +1676,9 @@ api.post("/api/tasks/:id/assign", async (c) => {
   const targetAgent = await getAgent(c.env.DB, targetAgentId, c.get("ownerId"));
   if (!targetAgent) throw new HTTPException(404, { message: "Agent not found" });
   if (targetAgent.kind !== "worker") throw new HTTPException(400, { message: "Tasks can only be assigned to worker agents" });
+  if (hasNoScheduleTaint(targetAgent.taints)) {
+    throw new HTTPException(409, { message: "Agent is tainted NoSchedule and cannot be assigned normal tasks" });
+  }
 
   try {
     await dispatchTaskToAma(
@@ -1868,8 +1899,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
   const boardRepositories = await listBoardRepositories(c.env.DB, ownerId, boardId);
 
   const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
-  const maintainerAgent = await getAgent(c.env.DB, maintainerAgentId, ownerId);
-  if (!maintainerAgent) throw new HTTPException(404, { message: "Agent not found" });
+  const maintainerAgent = await ensureMaintainerAgentProfile(c.env.DB, ownerId, maintainerAgentId);
   // The trigger is left unpinned: AMA resolves a runner-capable environment for
   // the runtime at each dispatch, so a daily maintainer lands on whatever
   // machine is healthy then rather than one picked at creation.
@@ -1999,8 +2029,7 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
   const boardRepositories = await listBoardRepositories(c.env.DB, ownerId, boardId);
   const boardRepositoryNames = boardRepositories.map((repo) => repo.full_name);
-  const maintainerAgent = await getAgent(c.env.DB, maintainer.agent_id, ownerId);
-  if (!maintainerAgent) throw new HTTPException(404, { message: "Agent not found" });
+  const maintainerAgent = await ensureMaintainerAgentProfile(c.env.DB, ownerId, maintainer.agent_id);
   const amaRuntime = amaRuntimeName(maintainerAgent.runtime);
   const amaAgent = await ensureAmaAgentForAkAgent(c.env.DB, c.env, ownerId, maintainer.agent_id, amaProjectId, amaRuntime, {
     memoryEnabled: true,
@@ -2167,6 +2196,35 @@ api.delete("/api/boards/:id", async (c) => {
   return c.json({ ok: true });
 });
 
+const AK_MAINTAINER_SKILL_REF = "saltbo/agent-kanban@ak-maintainer";
+const AK_MAINTAINER_TAINT: AgentTaint = { key: MAINTAINER_TAINT_KEY, value: "board-maintainer", effect: "NoSchedule" };
+
+function sameTaint(a: AgentTaint, b: AgentTaint): boolean {
+  return a.key === b.key && a.effect === b.effect && (a.value ?? null) === (b.value ?? null);
+}
+
+function withMaintainerTaint(taints: AgentTaint[] | null | undefined): AgentTaint[] {
+  const current = taints ?? [];
+  return current.some((taint) => sameTaint(taint, AK_MAINTAINER_TAINT)) ? current : [...current, AK_MAINTAINER_TAINT];
+}
+
+function withMaintainerSkill(skills: string[] | null | undefined): string[] {
+  return [...new Set([...(skills ?? []), AK_MAINTAINER_SKILL_REF])];
+}
+
+async function ensureMaintainerAgentProfile(db: D1, ownerId: string, agentId: string) {
+  const agent = await getAgent(db, agentId, ownerId);
+  if (!agent) throw new HTTPException(404, { message: "Agent not found" });
+  if (agent.kind !== "worker") throw new HTTPException(400, { message: "Board maintainers must use worker agents" });
+  const skills = withMaintainerSkill(agent.skills);
+  const taints = withMaintainerTaint(agent.taints);
+  if (JSON.stringify(skills) === JSON.stringify(agent.skills ?? []) && JSON.stringify(taints) === JSON.stringify(agent.taints ?? [])) {
+    return agent;
+  }
+  const updated = await updateAgent(db, agent.id, { skills, taints });
+  if (!updated) throw new HTTPException(404, { message: "Agent not found" });
+  return updated;
+}
 const MAINTAINER_HEARTBEAT_PATH = "HEARTBEAT.md";
 
 function boardMaintainerBasePrompt(boardId: string, prompt: string, repositoryFullNames: string[]) {
@@ -2175,62 +2233,69 @@ function boardMaintainerBasePrompt(boardId: string, prompt: string, repositoryFu
     repositoryFullNames.length > 0
       ? `GitHub repository scope: ${repositoryFullNames.join(", ")}.`
       : "No GitHub repositories are currently associated with this board.",
-    "Use the AK CLI/API as the source of truth for board workflow, tasks, reviews, and follow-up work.",
-    `Discover current repository scope with: ak get repo --board ${boardId} -o json.`,
-    "Maintainer GitHub actions must use the AK GitHub App bot identity, not any human user's GitHub login.",
-    "Before every gh command that reads from, writes to, or replies in a GitHub repository, run: ak github auth <repo-id> for that repository.",
-    "Do not use pre-existing gh login state or human GitHub tokens. If ak github auth fails, stop and report the failure instead of falling back to another identity.",
-    "A read/write Memory Store is mounted. Search and read relevant memories before acting.",
-    `Use ${MAINTAINER_HEARTBEAT_PATH} as the scheduled maintenance checklist. It is not the only memory file.`,
-    "Create or update focused memory files for durable board-level observations, decisions, open questions, and follow-up checkpoints. Do not store secrets in notes, tasks, messages, or memory.",
+    `Follow the installed ${AK_MAINTAINER_SKILL_REF} skill for maintainer workflow, GitHub identity, memory, and response rules.`,
     "",
+    "Maintainer instructions:",
     prompt,
   ];
 }
 
 function boardMaintainerScheduledPrompt(boardId: string, prompt: string, repositoryFullNames: string[]) {
-  return [
-    ...boardMaintainerBasePrompt(boardId, prompt, repositoryFullNames),
-    "",
-    "This is a scheduled maintenance run. Inspect the board and associated repositories proactively.",
-    "Look for functional problems, implementation problems, technical debt, stale reviews, unresolved proposals, and follow-up work. Decide and act through AK commands.",
-  ].join("\n");
+  return [...boardMaintainerBasePrompt(boardId, prompt, repositoryFullNames), "", "Run type: scheduled maintenance."].join("\n");
 }
 
 function boardMaintainerHttpPrompt(boardId: string, prompt: string, repositoryFullNames: string[]) {
   return [
     ...boardMaintainerBasePrompt(boardId, prompt, repositoryFullNames),
     "",
-    "This run was triggered by a GitHub webhook event.",
-    "Use the event JSON below as a signal, then inspect AK and GitHub state directly before taking action.",
-    "For issue and pull request comments or reviews, continue the conversation in the same GitHub thread when a maintainer response is useful.",
+    "Run type: GitHub webhook event.",
     "",
-    "{{ body.event_json }}",
+    "Event: {{ body.event }}.{{ body.action }}",
+    "Delivery: {{ body.delivery_id }}",
+    "Session key: {{ body.key }}",
+    "Repository: {{ body.repository.full_name }}",
+    "Repository URL: {{ body.repository.html_url }}",
+    "Sender: {{ body.sender.login }}",
+    '{{#if eq body.subject.type "issue"}}',
+    "Issue ID: {{ body.subject.id }}",
+    "Issue node ID: {{ body.subject.node_id }}",
+    "Issue number: {{ body.subject.number }}",
+    "Issue URL: {{ body.subject.html_url }}",
+    "{{/if}}",
+    '{{#if eq body.subject.type "pull"}}',
+    "Pull request ID: {{ body.subject.id }}",
+    "Pull request node ID: {{ body.subject.node_id }}",
+    "Pull request number: {{ body.subject.number }}",
+    "Pull request URL: {{ body.subject.html_url }}",
+    "{{/if}}",
+    "{{#if body.comment.id}}",
+    "Comment ID: {{ body.comment.id }}",
+    "Comment node ID: {{ body.comment.node_id }}",
+    "Comment author: {{ body.comment.user.login }}",
+    "Comment URL: {{ body.comment.html_url }}",
+    "{{/if}}",
+    "{{#if body.review.id}}",
+    "Review ID: {{ body.review.id }}",
+    "Review node ID: {{ body.review.node_id }}",
+    "Review author: {{ body.review.user.login }}",
+    "Review state: {{ body.review.state }}",
+    "Review URL: {{ body.review.html_url }}",
+    "{{/if}}",
+    "",
+    "Use the maintainer skill's GitHub event workflow to fetch issue, PR, comment, or review content before responding.",
   ].join("\n");
 }
 
 function initialMaintainerHeartbeat(input: { boardId: string; boardName: string; maintainerName: string; repositories: string[] }) {
   return [
-    "# Maintainer Scheduled Heartbeat",
+    "# Maintainer Heartbeat",
     "",
     `Maintainer: ${input.maintainerName}`,
     `Board: ${input.boardName} (${input.boardId})`,
     `Repositories: ${input.repositories.length > 0 ? input.repositories.join(", ") : "none associated yet"}`,
     `Created: ${new Date().toISOString()}`,
     "",
-    "## Scheduled Maintenance Checklist",
-    "",
-    "- Inspect new and stale issues for bugs, proposals, and questions that need maintainer action.",
-    "- Review open PRs for correctness, tests, scope, and merge readiness.",
-    "- Check recent task outcomes and close linked issues after accepted fixes merge.",
-    "- Look across associated repositories for functional gaps, implementation problems, and technical debt worth turning into AK tasks.",
-    "- Use AK repository commands to discover repos and authenticate GitHub before cloning or running gh; maintainer GitHub actions must use the AK GitHub App bot identity.",
-    "- Record durable decisions, unresolved questions, and follow-up checkpoints in focused memory files.",
-    "",
-    "## Notes",
-    "",
-    "- GitHub issue and pull request events can trigger event-driven maintainer runs for associated board repositories.",
-    "- Scheduled runs are for proactive maintenance, not event acknowledgement.",
+    `Follow ${AK_MAINTAINER_SKILL_REF} for scheduled and event-driven maintainer workflow.`,
   ].join("\n");
 }
 

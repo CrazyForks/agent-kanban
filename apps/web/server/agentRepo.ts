@@ -4,7 +4,7 @@ import { type D1, parseJsonFields } from "./db";
 import { addSubkey, getOrCreateRootKey } from "./gpgKeyRepo";
 import { runtimeReadyPredicateSql } from "./machineRepo";
 
-const parseAgent = <T extends Agent>(row: T) => parseJsonFields(row, ["skills", "subagents", "handoff_to", "metadata"]);
+const parseAgent = <T extends Agent>(row: T) => parseJsonFields(row, ["skills", "subagents", "taints", "handoff_to", "metadata"]);
 const SESSION_UNION_SQL = `
   SELECT agent_id, status, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_micro_usd FROM agent_sessions
   UNION ALL
@@ -27,7 +27,7 @@ async function shortHash(value: string): Promise<string> {
     .slice(0, 10);
 }
 
-type AgentProfile = Pick<Agent, "name" | "bio" | "soul" | "role" | "kind" | "handoff_to" | "runtime" | "model" | "skills" | "subagents">;
+type AgentProfile = Pick<Agent, "name" | "bio" | "soul" | "role" | "kind" | "handoff_to" | "runtime" | "model" | "skills" | "subagents" | "taints">;
 
 function profileJson(agent: AgentProfile): string {
   return JSON.stringify({
@@ -41,11 +41,12 @@ function profileJson(agent: AgentProfile): string {
     model: agent.model,
     skills: agent.skills ?? [],
     subagents: agent.subagents ?? [],
+    taints: agent.taints ?? [],
   });
 }
 
 async function profileVersion(
-  agent: Pick<Agent, "name" | "bio" | "soul" | "role" | "kind" | "handoff_to" | "runtime" | "model" | "skills" | "subagents">,
+  agent: Pick<Agent, "name" | "bio" | "soul" | "role" | "kind" | "handoff_to" | "runtime" | "model" | "skills" | "subagents" | "taints">,
 ): Promise<string> {
   return shortHash(profileJson(agent));
 }
@@ -87,6 +88,7 @@ export async function prepareAgent(
     model: input.model ?? null,
     skills: input.skills ?? null,
     subagents: input.subagents ?? null,
+    taints: input.taints ?? null,
     version: "latest",
     public_key: publicKeyBase64,
     fingerprint,
@@ -102,12 +104,13 @@ export async function prepareAgent(
 export async function insertAgent(db: D1, agent: PreparedAgent, extras?: { mailboxToken?: string; gpgSubkeyId?: string }): Promise<Agent> {
   const skillsJson = agent.skills ? JSON.stringify(agent.skills) : null;
   const subagentsJson = agent.subagents ? JSON.stringify(agent.subagents) : null;
+  const taintsJson = agent.taints ? JSON.stringify(agent.taints) : null;
   const handoffJson = agent.handoff_to ? JSON.stringify(agent.handoff_to) : null;
   const metadataJson = JSON.stringify(agent.metadata ?? {});
   await db
     .prepare(`
-    INSERT INTO agents (id, owner_id, name, username, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, version, public_key, private_key, fingerprint, builtin, mailbox_token, gpg_subkey_id, ama_agent_id, metadata, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO agents (id, owner_id, name, username, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, taints, version, public_key, private_key, fingerprint, builtin, mailbox_token, gpg_subkey_id, ama_agent_id, metadata, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
     .bind(
       agent.id,
@@ -123,6 +126,7 @@ export async function insertAgent(db: D1, agent: PreparedAgent, extras?: { mailb
       agent.model,
       skillsJson,
       subagentsJson,
+      taintsJson,
       agent.version,
       agent.public_key,
       JSON.stringify(agent.privateKeyJwk),
@@ -178,7 +182,7 @@ export async function seedBuiltinAgents(db: D1, ownerId: string): Promise<void> 
 export async function listAgents(db: D1, ownerId: string, filters: AgentListFilters = {}): Promise<AgentWithActivity[]> {
   const runtimeCutoff = new Date(Date.now() - MACHINE_STALE_TIMEOUT_MS).toISOString();
   let query = `
-    SELECT a.id, a.owner_id, a.name, a.username, a.gpg_subkey_id, a.bio, a.soul, a.role, a.kind, a.handoff_to, a.runtime, a.model, a.skills, a.subagents,
+    SELECT a.id, a.owner_id, a.name, a.username, a.gpg_subkey_id, a.bio, a.soul, a.role, a.kind, a.handoff_to, a.runtime, a.model, a.skills, a.subagents, a.taints,
       a.version,
       a.public_key, a.fingerprint, a.builtin, a.ama_agent_id, a.metadata, a.created_at, a.updated_at,
       CASE WHEN EXISTS (
@@ -232,7 +236,7 @@ export async function getAgent(db: D1, agentId: string, ownerId: string): Promis
   const runtimeCutoff = new Date(Date.now() - MACHINE_STALE_TIMEOUT_MS).toISOString();
   return db
     .prepare(`
-    SELECT a.id, a.owner_id, a.name, a.username, a.gpg_subkey_id, a.bio, a.soul, a.role, a.kind, a.handoff_to, a.runtime, a.model, a.skills, a.subagents,
+    SELECT a.id, a.owner_id, a.name, a.username, a.gpg_subkey_id, a.bio, a.soul, a.role, a.kind, a.handoff_to, a.runtime, a.model, a.skills, a.subagents, a.taints,
       a.version,
       a.public_key, a.fingerprint, a.builtin, a.ama_agent_id, a.metadata, a.created_at, a.updated_at,
       CASE WHEN EXISTS (
@@ -263,11 +267,11 @@ export async function getAgent(db: D1, agentId: string, ownerId: string): Promis
 export async function updateAgent(
   db: D1,
   agentId: string,
-  updates: Partial<Pick<Agent, "name" | "bio" | "soul" | "role" | "handoff_to" | "runtime" | "model" | "skills" | "subagents">>,
+  updates: Partial<Pick<Agent, "name" | "bio" | "soul" | "role" | "handoff_to" | "runtime" | "model" | "skills" | "subagents" | "taints">>,
 ): Promise<Agent | null> {
   const agent = await db
     .prepare(
-      "SELECT id, owner_id, name, username, gpg_subkey_id, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, version, public_key, private_key, fingerprint, builtin, mailbox_token, metadata, created_at, updated_at FROM agents WHERE id = ?",
+      "SELECT id, owner_id, name, username, gpg_subkey_id, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, taints, version, public_key, private_key, fingerprint, builtin, mailbox_token, metadata, created_at, updated_at FROM agents WHERE id = ?",
     )
     .bind(agentId)
     .first<Agent & { private_key: string; mailbox_token: string | null }>();
@@ -279,8 +283,8 @@ export async function updateAgent(
   const binds: unknown[] = [now];
   const applied: Partial<Agent> = {};
 
-  const jsonFields = new Set(["skills", "subagents", "handoff_to"]);
-  const fields = ["name", "bio", "soul", "role", "handoff_to", "runtime", "model", "skills", "subagents"] as const;
+  const jsonFields = new Set(["skills", "subagents", "taints", "handoff_to"]);
+  const fields = ["name", "bio", "soul", "role", "handoff_to", "runtime", "model", "skills", "subagents", "taints"] as const;
   for (const field of fields) {
     if (field in updates && (updates as any)[field] !== undefined) {
       sets.push(`${field} = ?`);
@@ -312,7 +316,7 @@ function jsonOrNull(value: unknown | null): string | null {
 async function getLatestAgentSnapshot(db: D1, username: string, ownerId: string): Promise<AgentSnapshot | null> {
   const row = await db
     .prepare(
-      "SELECT id, owner_id, name, username, gpg_subkey_id, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, version, public_key, private_key, fingerprint, builtin, mailbox_token, metadata, created_at, updated_at FROM agents WHERE username = ? AND owner_id = ? AND version = 'latest'",
+      "SELECT id, owner_id, name, username, gpg_subkey_id, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, taints, version, public_key, private_key, fingerprint, builtin, mailbox_token, metadata, created_at, updated_at FROM agents WHERE username = ? AND owner_id = ? AND version = 'latest'",
     )
     .bind(username, ownerId)
     .first<Agent & { private_key: string; mailbox_token: string | null }>();
@@ -321,7 +325,9 @@ async function getLatestAgentSnapshot(db: D1, username: string, ownerId: string)
 
 async function insertAgentSnapshot(db: D1, source: AgentSnapshot, version: string, now: string): Promise<string> {
   const existing = await db
-    .prepare("SELECT id, name, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents FROM agents WHERE username = ? AND version = ?")
+    .prepare(
+      "SELECT id, name, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, taints FROM agents WHERE username = ? AND version = ?",
+    )
     .bind(source.username, version)
     .first<AgentProfile & { id: string }>();
   if (existing) {
@@ -334,8 +340,8 @@ async function insertAgentSnapshot(db: D1, source: AgentSnapshot, version: strin
   const snapshotId = crypto.randomUUID();
   await db
     .prepare(`
-      INSERT INTO agents (id, owner_id, name, username, gpg_subkey_id, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, version, public_key, private_key, fingerprint, builtin, mailbox_token, metadata, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO agents (id, owner_id, name, username, gpg_subkey_id, bio, soul, role, kind, handoff_to, runtime, model, skills, subagents, taints, version, public_key, private_key, fingerprint, builtin, mailbox_token, metadata, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .bind(
       snapshotId,
@@ -352,6 +358,7 @@ async function insertAgentSnapshot(db: D1, source: AgentSnapshot, version: strin
       source.model,
       jsonOrNull(source.skills),
       jsonOrNull(source.subagents),
+      jsonOrNull(source.taints),
       version,
       source.public_key,
       source.private_key,
@@ -377,7 +384,7 @@ async function updateLatestFromPrepared(
     .prepare(`
       UPDATE agents
       SET name = ?, gpg_subkey_id = ?, bio = ?, soul = ?, role = ?, kind = ?, handoff_to = ?, runtime = ?, model = ?,
-          skills = ?, subagents = ?, public_key = ?, private_key = ?, fingerprint = ?, builtin = ?, mailbox_token = ?, metadata = ?, updated_at = ?
+          skills = ?, subagents = ?, taints = ?, public_key = ?, private_key = ?, fingerprint = ?, builtin = ?, mailbox_token = ?, metadata = ?, updated_at = ?
       WHERE id = ?
     `)
     .bind(
@@ -392,6 +399,7 @@ async function updateLatestFromPrepared(
       agent.model,
       jsonOrNull(agent.skills),
       jsonOrNull(agent.subagents),
+      jsonOrNull(agent.taints),
       latest.public_key,
       latest.private_key,
       latest.fingerprint,

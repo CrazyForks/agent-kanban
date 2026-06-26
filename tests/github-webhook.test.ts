@@ -194,7 +194,14 @@ describe("POST /api/webhooks/github-app route", () => {
     {
       event: "issues",
       subjectKey: "issue",
-      subject: { number: 42, title: "Webhook issue", html_url: "https://github.com/maintainer-org/maintainer-repo/issues/42" },
+      subject: {
+        id: 4200,
+        node_id: "I_issue",
+        number: 42,
+        title: "Webhook issue",
+        body: "Issue creation body",
+        html_url: "https://github.com/maintainer-org/maintainer-repo/issues/42",
+      },
       action: "opened",
       subjectPath: "issues",
       expectedKeyKind: "issue",
@@ -204,7 +211,15 @@ describe("POST /api/webhooks/github-app route", () => {
     {
       event: "pull_request",
       subjectKey: "pull_request",
-      subject: { number: 77, title: "Webhook PR", html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77", merged: false },
+      subject: {
+        id: 7700,
+        node_id: "PR_pull",
+        number: 77,
+        title: "Webhook PR",
+        body: "PR creation body",
+        html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77",
+        merged: false,
+      },
       action: "opened",
       subjectPath: "pull",
       expectedKeyKind: "pull",
@@ -213,45 +228,77 @@ describe("POST /api/webhooks/github-app route", () => {
     {
       event: "issue_comment",
       subjectKey: "issue",
-      subject: { number: 42, title: "Webhook issue", html_url: "https://github.com/maintainer-org/maintainer-repo/issues/42" },
+      subject: {
+        id: 4200,
+        node_id: "I_issue",
+        number: 42,
+        title: "Webhook issue",
+        body: "Issue creation body",
+        html_url: "https://github.com/maintainer-org/maintainer-repo/issues/42",
+      },
       action: "created",
       subjectPath: "issues",
       expectedKeyKind: "issue",
-      extraPayload: { comment: { id: 12345, body: "Can you look at this?" } },
+      extraPayload: {
+        comment: { id: 12345, node_id: "IC_issue_comment", body: "Can you look at this?", html_url: "https://github.com/comment/12345" },
+      },
     },
     {
       event: "issue_comment",
       subjectKey: "issue",
       subject: {
         number: 77,
+        id: 7700,
+        node_id: "PR_issue_comment_subject",
         title: "Webhook PR",
+        body: "PR issue-comment subject body",
         html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77",
         pull_request: {},
       },
       action: "created",
       subjectPath: "pull",
       expectedKeyKind: "pull",
-      extraPayload: { comment: { id: 23456, body: "PR conversation follow-up" } },
+      extraPayload: {
+        comment: { id: 23456, node_id: "IC_pr_comment", body: "PR conversation follow-up", html_url: "https://github.com/comment/23456" },
+      },
     },
     {
       event: "pull_request_review",
       subjectKey: "pull_request",
-      subject: { number: 77, title: "Webhook PR", html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77", merged: false },
+      subject: {
+        id: 7700,
+        node_id: "PR_pull",
+        number: 77,
+        title: "Webhook PR",
+        body: "PR creation body",
+        html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77",
+        merged: false,
+      },
       action: "submitted",
       subjectPath: "pull",
       expectedKeyKind: "pull",
-      extraPayload: { review: { id: 34567, body: "Review feedback", state: "commented" } },
+      extraPayload: {
+        review: { id: 34567, node_id: "PRR_review", body: "Review feedback", state: "commented", html_url: "https://github.com/review/34567" },
+      },
     },
     {
       event: "pull_request_review_comment",
       subjectKey: "pull_request",
-      subject: { number: 77, title: "Webhook PR", html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77", merged: false },
+      subject: {
+        id: 7700,
+        node_id: "PR_pull",
+        number: 77,
+        title: "Webhook PR",
+        body: "PR creation body",
+        html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77",
+        merged: false,
+      },
       action: "created",
       subjectPath: "pull",
       expectedKeyKind: "pull",
-      extraPayload: { comment: { id: 45678, body: "Inline comment" } },
+      extraPayload: { comment: { id: 45678, node_id: "PRRC_inline_comment", body: "Inline comment", html_url: "https://github.com/comment/45678" } },
     },
-  ])("dispatches $event events to active maintainer HTTP trigger with event_json and a stable subject key", async ({
+  ])("dispatches $event events to active maintainer HTTP trigger with compact event context and a stable subject key", async ({
     event,
     subjectKey,
     subject,
@@ -386,34 +433,43 @@ describe("POST /api/webhooks/github-app route", () => {
           repository_url: payload.repository.html_url,
           subject_type: expectedKeyKind,
           subject_number: subject.number,
-          subject_title: subject.title,
           subject_url: `https://github.com/${repoFullName}/${subjectPath}/${subject.number}`,
         },
       },
       repository: payload.repository,
-      subject: payload[subjectKey as keyof typeof payload],
-      comment: "comment" in extraPayload ? extraPayload.comment : null,
-      review: "review" in extraPayload ? extraPayload.review : null,
-      sender,
-    });
-    expect(JSON.parse(dispatched[0].body.event_json)).toMatchObject({
-      event,
-      action,
-      delivery_id: deliveryId,
-      key: `github:${repoFullName.toLowerCase()}:${expectedKeyKind}:${subject.number}`,
-      metadata: {
-        github: {
-          repository: repoFullName,
-          subject_type: expectedKeyKind,
-          subject_number: subject.number,
-        },
+      subject: {
+        type: expectedKeyKind,
+        id: subject.id,
+        node_id: subject.node_id,
+        number: subject.number,
+        html_url: `https://github.com/${repoFullName}/${subjectPath}/${subject.number}`,
       },
-      repository: payload.repository,
-      subject: payload[subjectKey as keyof typeof payload],
-      comment: "comment" in extraPayload ? extraPayload.comment : null,
-      review: "review" in extraPayload ? extraPayload.review : null,
+      comment:
+        "comment" in extraPayload
+          ? expect.objectContaining({ id: extraPayload.comment.id, node_id: extraPayload.comment.node_id, html_url: extraPayload.comment.html_url })
+          : { id: null, node_id: null, html_url: null },
+      review:
+        "review" in extraPayload
+          ? expect.objectContaining({
+              id: extraPayload.review.id,
+              node_id: extraPayload.review.node_id,
+              html_url: extraPayload.review.html_url,
+              state: extraPayload.review.state,
+            })
+          : { id: null, node_id: null, html_url: null, state: null },
       sender,
     });
+    expect(JSON.stringify(dispatched[0].body)).not.toContain("Can you look at this?");
+    expect(JSON.stringify(dispatched[0].body)).not.toContain("PR conversation follow-up");
+    expect(JSON.stringify(dispatched[0].body)).not.toContain("Review feedback");
+    expect(JSON.stringify(dispatched[0].body)).not.toContain("Inline comment");
+    expect(JSON.stringify(dispatched[0].body)).not.toContain("Webhook issue");
+    expect(JSON.stringify(dispatched[0].body)).not.toContain("Webhook PR");
+    expect(JSON.stringify(dispatched[0].body)).not.toContain("Issue creation body");
+    expect(JSON.stringify(dispatched[0].body)).not.toContain("PR creation body");
+    expect(JSON.stringify(dispatched[0].body)).not.toContain("PR issue-comment subject body");
+    expect(dispatched[0].body).not.toHaveProperty("event_json");
+    expect(dispatched[0].body).not.toHaveProperty("event_context_json");
   });
 
   it.each([

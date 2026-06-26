@@ -1,5 +1,5 @@
 import type { BoardAction, CreateTaskInput, IdentityType, Task, TaskAction, TaskActionType, TaskStatus, TaskWithNotes } from "@agent-kanban/shared";
-import { validateTransition } from "@agent-kanban/shared";
+import { hasNoScheduleTaint, validateTransition } from "@agent-kanban/shared";
 import { HTTPException } from "hono/http-exception";
 import { getDefaultBoard } from "./boardRepo";
 import { recordBoardRepository } from "./boardRepositoryRepo";
@@ -53,11 +53,14 @@ async function assertAssignableWorkerAgent(
   skipRuntimeAvailability = false,
 ): Promise<void> {
   const agent = await db
-    .prepare("SELECT kind, runtime FROM agents WHERE id = ? AND owner_id = ?")
+    .prepare("SELECT kind, runtime, taints FROM agents WHERE id = ? AND owner_id = ?")
     .bind(agentId, ownerId)
-    .first<{ kind: string; runtime: string }>();
+    .first<{ kind: string; runtime: string; taints: string | null }>();
   if (!agent) throw new HTTPException(missingStatus, { message: "Agent not found" });
   if (agent.kind !== "worker") throw new HTTPException(400, { message: "Tasks can only be assigned to worker agents" });
+  if (hasNoScheduleTaint(agent.taints ? JSON.parse(agent.taints) : null)) {
+    throw new HTTPException(409, { message: "Agent is tainted NoSchedule and cannot be assigned normal tasks" });
+  }
   if (skipRuntimeAvailability) return;
   if (!(await isRuntimeAvailable(db, ownerId, agent.runtime))) {
     throw new HTTPException(409, {

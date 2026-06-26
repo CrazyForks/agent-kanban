@@ -837,7 +837,7 @@ export async function createAmaScheduledAgentTrigger(env: Env, ownerId: string, 
       schedule: { type: "interval", intervalSeconds: input.intervalSeconds },
       enabled: (input.status ?? "active") !== "paused",
       metadata: input.metadata ?? {},
-    }),
+    } as Parameters<typeof client.triggers.create>[0]),
   );
   return toAmaScheduledTrigger(trigger);
 }
@@ -858,7 +858,7 @@ export async function createAmaHttpAgentTrigger(env: Env, ownerId: string, input
       schedule: null,
       enabled: (input.status ?? "active") !== "paused",
       metadata: input.metadata ?? {},
-    }),
+    } as Parameters<typeof client.triggers.create>[0]),
   );
   return toAmaHttpTrigger(trigger);
 }

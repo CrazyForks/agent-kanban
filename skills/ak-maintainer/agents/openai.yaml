@@ -1,0 +1,4 @@
+interface:
+  display_name: "AK Maintainer"
+  short_description: "Maintain AK boards and GitHub threads"
+  default_prompt: "Maintain this AK board using the AK maintainer workflow."

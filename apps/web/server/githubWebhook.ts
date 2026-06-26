@@ -201,31 +201,85 @@ function githubMaintainerMetadata(input: { event: string; deliveryId?: string | 
       repository_url: repository?.html_url ?? null,
       subject_type: number === null ? null : type,
       subject_number: number,
-      subject_title: typeof subject?.title === "string" ? subject.title : null,
       subject_url: githubSubjectUrl(repository, subject, type),
     },
   };
 }
 
+function recordField(value: Record<string, unknown> | undefined, key: string): Record<string, unknown> | undefined {
+  const item = value?.[key];
+  return item && typeof item === "object" && !Array.isArray(item) ? (item as Record<string, unknown>) : undefined;
+}
+
+function compactActor(actor: Record<string, unknown> | undefined) {
+  return {
+    login: typeof actor?.login === "string" ? actor.login : null,
+    type: typeof actor?.type === "string" ? actor.type : null,
+    html_url: typeof actor?.html_url === "string" ? actor.html_url : null,
+  };
+}
+
+function compactRepository(repository: MaintainerWebhookPayload["repository"]) {
+  return {
+    id: typeof repository?.id === "number" ? repository.id : null,
+    full_name: repository?.full_name ?? null,
+    html_url: repository?.html_url ?? null,
+    default_branch: repository?.default_branch ?? null,
+  };
+}
+
+function compactSubject(subject: Record<string, unknown> | undefined, type: "issue" | "pull") {
+  return {
+    type,
+    id: typeof subject?.id === "number" ? subject.id : null,
+    node_id: typeof subject?.node_id === "string" ? subject.node_id : null,
+    number: typeof subject?.number === "number" ? subject.number : null,
+    html_url: typeof subject?.html_url === "string" ? subject.html_url : null,
+    state: typeof subject?.state === "string" ? subject.state : null,
+    draft: typeof subject?.draft === "boolean" ? subject.draft : null,
+    merged: typeof subject?.merged === "boolean" ? subject.merged : null,
+  };
+}
+
+function compactComment(comment: Record<string, unknown> | undefined) {
+  return {
+    id: typeof comment?.id === "number" ? comment.id : null,
+    node_id: typeof comment?.node_id === "string" ? comment.node_id : null,
+    html_url: typeof comment?.html_url === "string" ? comment.html_url : null,
+    path: typeof comment?.path === "string" ? comment.path : null,
+    line: typeof comment?.line === "number" ? comment.line : null,
+    start_line: typeof comment?.start_line === "number" ? comment.start_line : null,
+    user: compactActor(recordField(comment, "user")),
+  };
+}
+
+function compactReview(review: Record<string, unknown> | undefined) {
+  return {
+    id: typeof review?.id === "number" ? review.id : null,
+    node_id: typeof review?.node_id === "string" ? review.node_id : null,
+    state: typeof review?.state === "string" ? review.state : null,
+    html_url: typeof review?.html_url === "string" ? review.html_url : null,
+    submitted_at: typeof review?.submitted_at === "string" ? review.submitted_at : null,
+    user: compactActor(recordField(review, "user")),
+  };
+}
+
 function githubMaintainerRunBody(input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload }): Record<string, unknown> {
-  const { subject } = githubMaintainerSubject(input);
+  const { subject, type } = githubMaintainerSubject(input);
   const key = githubMaintainerSessionKey(input);
   const body = {
     event: input.event,
     action: input.payload.action ?? "",
     delivery_id: input.deliveryId ?? null,
     key,
-    repository: input.payload.repository ?? null,
-    subject,
-    comment: input.payload.comment ?? null,
-    review: input.payload.review ?? null,
-    sender: input.payload.sender ?? null,
+    repository: compactRepository(input.payload.repository),
+    subject: compactSubject(subject, type),
+    comment: compactComment(input.payload.comment),
+    review: compactReview(input.payload.review),
+    sender: compactActor(input.payload.sender),
     metadata: githubMaintainerMetadata(input),
   };
-  return {
-    ...body,
-    event_json: JSON.stringify(body, null, 2),
-  };
+  return body;
 }
 
 // installation events: keep the installation row + its selected-repo snapshot in

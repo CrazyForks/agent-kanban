@@ -158,6 +158,19 @@ export interface MachineWithAgents extends Machine {
 export type AgentStatus = "online" | "offline";
 export type AgentKind = "worker" | "leader";
 export type AgentRuntime = "claude" | "codex" | "gemini" | "copilot" | "hermes" | "ama";
+export type AgentTaintEffect = "NoSchedule";
+
+export interface AgentTaint {
+  key: string;
+  value?: string | null;
+  effect: AgentTaintEffect;
+}
+
+export const MAINTAINER_TAINT_KEY = "agent-kanban.dev/maintainer";
+
+export function hasNoScheduleTaint(taints: AgentTaint[] | null | undefined): boolean {
+  return taints?.some((taint) => taint.effect === "NoSchedule") ?? false;
+}
 
 const USERNAME_RE = /^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$|^[a-z0-9]$/;
 const AGENT_ROLE_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
@@ -234,6 +247,7 @@ export interface Agent {
   model: string | null;
   skills: string[] | null;
   subagents: string[] | null;
+  taints?: AgentTaint[] | null;
   version: string;
   public_key: string;
   fingerprint: string;
@@ -438,6 +452,7 @@ export interface CreateAgentInput {
   model?: string;
   skills?: string[];
   subagents?: string[];
+  taints?: AgentTaint[];
 }
 
 export interface CreateSubagentInput {

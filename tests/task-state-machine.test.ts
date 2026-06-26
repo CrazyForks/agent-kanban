@@ -46,6 +46,7 @@ async function applyMigrations(db: D1Database) {
     "0022_ama_runtime_integration.sql",
     "0025_machine_hosting.sql",
     "0026_agent_ama_agent_id.sql",
+    "0030_agent_taints.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
@@ -562,11 +563,32 @@ describe("task lifecycle repo functions", () => {
       await expect(assignTask(env.DB, task.id, leaderAgentId, "machine", "system")).rejects.toThrow("Tasks can only be assigned to worker agents");
     });
 
+    it("rejects assign to NoSchedule-tainted worker agent", async () => {
+      const { assignTask } = await import("../apps/web/server/taskRepo");
+      const task = await createTestTask();
+      await env.DB.prepare("UPDATE agents SET taints = ? WHERE id = ?")
+        .bind(JSON.stringify([{ key: "agent-kanban.dev/maintainer", value: "board-maintainer", effect: "NoSchedule" }]), testAgentId)
+        .run();
+      await expect(assignTask(env.DB, task.id, testAgentId, "machine", "system")).rejects.toThrow("tainted NoSchedule");
+      await env.DB.prepare("UPDATE agents SET taints = NULL WHERE id = ?").bind(testAgentId).run();
+    });
+
     it("rejects createTask with assigned_to leader agent", async () => {
       const { createTask } = await import("../apps/web/server/taskRepo");
       await expect(createTask(env.DB, userId, { title: "Leader Task", board_id: boardId, assigned_to: leaderAgentId })).rejects.toThrow(
         "Tasks can only be assigned to worker agents",
       );
+    });
+
+    it("rejects createTask with assigned_to NoSchedule-tainted worker agent", async () => {
+      const { createTask } = await import("../apps/web/server/taskRepo");
+      await env.DB.prepare("UPDATE agents SET taints = ? WHERE id = ?")
+        .bind(JSON.stringify([{ key: "agent-kanban.dev/maintainer", value: "board-maintainer", effect: "NoSchedule" }]), testAgentId)
+        .run();
+      await expect(createTask(env.DB, userId, { title: "Tainted Worker Task", board_id: boardId, assigned_to: testAgentId })).rejects.toThrow(
+        "tainted NoSchedule",
+      );
+      await env.DB.prepare("UPDATE agents SET taints = NULL WHERE id = ?").bind(testAgentId).run();
     });
   });
 
