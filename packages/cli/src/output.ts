@@ -240,8 +240,8 @@ export function formatTaskRuntime(runtime: any): string {
 export function formatTaskSession(data: any): string {
   const session = data.session ?? {};
   const lines: string[] = [];
-  lines.push(`Task session`);
-  lines.push(`  Task:        ${data.task_id}`);
+  lines.push(data.task_id ? `Task session` : `Session`);
+  if (data.task_id) lines.push(`  Task:        ${data.task_id}`);
   lines.push(`  Session:     ${data.session_id}`);
   if (data.project_id) lines.push(`  Project:     ${data.project_id}`);
   lines.push(
@@ -279,30 +279,79 @@ function sessionMessageContentText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content
-    .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
+    .map((part: any) => {
+      if (typeof part?.text === "string") return part.text;
+      if (typeof part?.content === "string") return part.content;
+      if (typeof part?.output === "string") return part.output;
+      return "";
+    })
     .filter(Boolean)
     .join("");
 }
 
-function sessionEventToolSummary(event: any): string {
+function truncateSingleLine(value: string, maxLength: number): string {
+  const singleLine = value.replace(/\s+/g, " ").trim();
+  if (singleLine.length <= maxLength) return singleLine;
+  return `${singleLine.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function jsonPreview(value: unknown, maxLength: number): string {
+  if (value === undefined || value === null || value === "") return "";
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  return truncateSingleLine(text ?? "", maxLength);
+}
+
+function firstString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return "";
+}
+
+function sessionEventOutputText(event: any): string {
   const payload = sessionEventPayload(event);
   const embedded = payload.event && typeof payload.event === "object" ? payload.event : null;
   const block = embedded?.block && typeof embedded.block === "object" ? embedded.block : null;
-  if (block?.type === "tool_use") return `${block.name ?? "tool"} ${JSON.stringify(block.input ?? {})}`;
-  if (block?.type === "tool_result") return `result ${block.error ? "error " : ""}${block.output ?? ""}`.trimEnd();
-  const name = payload.toolName ?? payload.name ?? payload.id ?? payload.toolCallId ?? "tool";
-  if (event.type === "tool_execution_end") return `${name} done${payload.isError ? " error" : ""}`;
-  return `${name}`;
+  if (block?.type === "tool_result") return firstString(block.output, block.content, block.result);
+  if (event.type === "runtime.output") return firstString(payload.content, payload.output, payload.text);
+  return firstString(payload.output, payload.stdout, payload.stderr, payload.result, payload.content, payload.text, payload.error, payload.message);
 }
 
-export function formatSessionEvent(event: any, mode: "all" | "tool" | "assistant" = "all"): string {
+function sessionEventToolSummary(event: any, maxLength: number): string {
+  const payload = sessionEventPayload(event);
+  const embedded = payload.event && typeof payload.event === "object" ? payload.event : null;
+  const block = embedded?.block && typeof embedded.block === "object" ? embedded.block : null;
+  if (block?.type === "tool_use") return `${block.name ?? "tool"} ${jsonPreview(block.input ?? {}, maxLength)}`.trimEnd();
+  if (block?.type === "tool_result") {
+    const outputText = sessionEventOutputText(event);
+    return `result${block.error ? " error" : ""}${outputText ? ` ${truncateSingleLine(outputText, maxLength)}` : ""}`;
+  }
+  const name = payload.toolName ?? payload.name ?? payload.tool ?? payload.id ?? payload.toolCallId ?? "tool";
+  const input = payload.input ?? payload.arguments ?? payload.args ?? payload.command;
+  const outputText = sessionEventOutputText(event);
+  if (event.type === "tool_execution_end") {
+    const status = payload.isError || payload.error ? " error" : " done";
+    return `${name}${status}${outputText ? ` ${truncateSingleLine(outputText, maxLength)}` : ""}`;
+  }
+  return `${name}${input !== undefined ? ` ${jsonPreview(input, maxLength)}` : ""}`;
+}
+
+export function formatSessionEvent(
+  event: any,
+  mode: "all" | "tool" | "assistant" = "all",
+  options: { verbose?: boolean; maxLength?: number } = {},
+): string {
+  const maxLength = options.maxLength ?? (options.verbose ? 800 : 220);
   if (mode === "assistant") return sessionEventAssistantText(event);
   const sequence = event.sequence != null ? `#${event.sequence}`.padEnd(8) : "";
   const type = String(event.type ?? "event").padEnd(24);
   const role = event.role ? ` ${event.role}` : "";
-  if (mode === "tool") return `${sequence}${type}${role}  ${sessionEventToolSummary(event)}`.trimEnd();
+  if (mode === "tool") return `${sequence}${type}${role}  ${sessionEventToolSummary(event, maxLength)}`.trimEnd();
   const text = sessionEventAssistantText(event);
-  const summary = text ? `  ${text.replace(/\s+/g, " ").slice(0, 160)}` : "";
+  const toolSummary = event.type?.startsWith?.("tool_execution_") ? sessionEventToolSummary(event, maxLength) : "";
+  const outputText = text || sessionEventOutputText(event);
+  const summary = outputText ? `  ${truncateSingleLine(outputText, maxLength)}` : toolSummary ? `  ${toolSummary}` : "";
+  if (toolSummary) return `${sequence}${type}${role}  ${toolSummary}`.trimEnd();
   return `${sequence}${type}${role}${summary}`.trimEnd();
 }
 

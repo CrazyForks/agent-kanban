@@ -36,7 +36,7 @@ export async function mintGithubInstallationToken(env: Env, owner: string, repo:
     headers: { ...headers, "content-type": "application/json" },
     body: JSON.stringify({
       repositories: [repo],
-      permissions: { contents: "write", pull_requests: "write" },
+      permissions: { contents: "write", issues: "write", pull_requests: "write" },
     }),
   });
   if (!tokenRes.ok) {

@@ -10,6 +10,7 @@ import {
   formatMaintainerList,
   formatModelList,
   formatRepositoryList,
+  formatSessionEvent,
   formatTask,
   formatTaskList,
   formatTaskNotes,
@@ -221,6 +222,47 @@ describe("formatTaskRuntime", () => {
     expect(result).toContain("session-1");
     expect(result).toContain("idle");
     expect(result).toContain("message_end");
+  });
+});
+
+describe("formatSessionEvent", () => {
+  it("includes tool execution output in all mode", () => {
+    const result = formatSessionEvent({
+      sequence: 7,
+      type: "tool_execution_end",
+      payload: { toolName: "bash", output: "created comment as agent-kanban-local[bot]" },
+    });
+
+    expect(result).toContain("tool_execution_end");
+    expect(result).toContain("bash done");
+    expect(result).toContain("created comment");
+  });
+
+  it("includes tool result output in tool mode", () => {
+    const result = formatSessionEvent(
+      {
+        sequence: 8,
+        type: "runtime.event",
+        payload: { event: { type: "block.done", block: { type: "tool_result", output: "Resource not accessible by integration" } } },
+      },
+      "tool",
+    );
+
+    expect(result).toContain("result");
+    expect(result).toContain("Resource not accessible by integration");
+  });
+
+  it("prints assistant text without event framing in assistant mode", () => {
+    const result = formatSessionEvent(
+      {
+        sequence: 9,
+        type: "message_end",
+        payload: { message: { content: [{ type: "text", text: "ACK PR bot identity fixed" }] } },
+      },
+      "assistant",
+    );
+
+    expect(result).toBe("ACK PR bot identity fixed");
   });
 });
 

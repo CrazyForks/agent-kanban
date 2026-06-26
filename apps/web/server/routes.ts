@@ -65,6 +65,7 @@ import {
   isAmaTaskDispatchConfigured,
   listAmaMemoryStoreMemories,
   listAmaRunners,
+  listAmaSessions,
   listAmaTriggerRuns,
   readAmaSession,
   updateAmaHttpAgentTrigger,
@@ -97,7 +98,7 @@ import {
 import { listBoardRepositories } from "./boardRepositoryRepo";
 import { createBoardSSEResponse, createPublicBoardSSEResponse } from "./boardSSE";
 import { cliVersionMiddleware } from "./cliVersion";
-import type { D1 } from "./db";
+import { type D1, newLongId } from "./db";
 import { isGithubAppConfigured, listInstallationRepositories, mintGithubInstallationToken, recordInstallationFromSetup } from "./githubApp";
 import { getInstallationsForOwner, repoAppStatus, repoAppStatusBatch } from "./githubInstallations";
 import { addAgentEmail, getGithubToken, removeAgentEmail, syncGpgKey } from "./githubService";
@@ -733,7 +734,7 @@ api.post("/api/webhooks/github-app", async (c) => {
     });
     return c.json({ ok: true, ...taskSync, maintainer_dispatch: maintainerDispatch });
   }
-  if (event === "issues") {
+  if (event === "issues" || event === "issue_comment" || event === "pull_request_review" || event === "pull_request_review_comment") {
     return c.json({
       ok: true,
       ...(await handleGithubMaintainerEvent(c.env.DB, c.env, {
@@ -1499,6 +1500,41 @@ api.get("/api/tasks/:id/session", async (c) => {
   return c.json({ task_id: task.id, session_id: sessionId, project_id: projectId ?? null, ak_session_id: akSessionId ?? null, session });
 });
 
+async function ownerAmaProjectId(c: { env: Env; get: (key: "ownerId") => string }): Promise<string> {
+  const projectId = await getAmaProjectId(c.env.DB, c.get("ownerId"));
+  if (!projectId) throw new HTTPException(404, { message: "AMA project is not configured" });
+  return projectId;
+}
+
+api.get("/api/sessions", async (c) => {
+  const projectId = await ownerAmaProjectId(c);
+  const limit = Number.parseInt(c.req.query("limit") ?? "50", 10);
+  const normalizedLimit = Number.isFinite(limit) && limit > 0 ? Math.min(limit, 100) : 50;
+  const archivedQuery = c.req.query("archived");
+  const page = await listAmaSessions(c.env, c.get("ownerId"), projectId, {
+    limit: normalizedLimit,
+    cursor: c.req.query("cursor"),
+    state: c.req.query("state"),
+    labelSelector: c.req.query("labelSelector"),
+    ...(archivedQuery !== undefined ? { archived: archivedQuery === "true" } : {}),
+  });
+  return c.json(page);
+});
+
+api.get("/api/sessions/:sessionId", async (c) => {
+  const projectId = await ownerAmaProjectId(c);
+  const sessionId = c.req.param("sessionId");
+  const session = await readAmaSession(c.env, c.get("ownerId"), sessionId, projectId);
+  if (!session) throw new HTTPException(404, { message: "Session not found" });
+  return c.json({ session_id: sessionId, project_id: projectId, session });
+});
+
+api.get("/api/sessions/:sessionId/ws", async (c) => {
+  const projectId = await ownerAmaProjectId(c);
+  const url = await getAmaSessionSocketUrl(c.env, c.get("ownerId"), c.req.param("sessionId"), projectId);
+  return c.json({ url });
+});
+
 // The token-bearing AMA browser-socket URL the chat and CLI connect to directly:
 // history backfill and live events always flow over this WebSocket.
 api.get("/api/tasks/:id/session/ws", async (c) => {
@@ -1842,6 +1878,8 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     memoryEnabled: true,
   });
   const name = body.name?.trim() || `${board.name} maintainer`;
+  const maintainerId = newLongId();
+  const maintainerSessionMetadata = { labels: { maintainerId } };
   const sessionIdentity = await createAkAgentSessionIdentity(c.env.DB, c.env, ownerId, maintainerAgentId);
   const vaultId = await resolveAmaSessionSecretVaultId(c.env.DB, c.env, ownerId);
   const sessionSecret = await createAmaSessionSecret(c.env, ownerId, {
@@ -1852,14 +1890,13 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     metadata: { purpose: "board-maintainer-session", boardId, agentId: maintainerAgentId },
   });
   await setAmaAgentSessionSecretCredential(c.env.DB, sessionIdentity.sessionId, sessionSecret.credentialId);
-  const runtimeEnv = {
-    AK_WORKER: "1",
-    AK_AGENT_ID: maintainerAgentId,
-    AK_SESSION_ID: sessionIdentity.sessionId,
-    AK_BOARD_ID: boardId,
-    AK_BOARD_REPOSITORIES: JSON.stringify(boardRepositories.map((repo) => ({ id: repo.id, full_name: repo.full_name, url: repo.url }))),
-    AK_API_URL: apiUrl(c.env, new URL(c.req.url).origin),
-  };
+  const runtimeEnv = maintainerRuntimeEnv({
+    agentId: maintainerAgentId,
+    sessionId: sessionIdentity.sessionId,
+    boardId,
+    repositories: boardRepositories.map((repo) => ({ id: repo.id, full_name: repo.full_name, url: repo.url })),
+    apiUrl: apiUrl(c.env, new URL(c.req.url).origin),
+  });
   const runtimeSecretEnv = [{ name: "AK_AGENT_KEY", credentialId: sessionSecret.credentialId, versionId: sessionSecret.activeVersionId }];
   const memoryStore = await createAmaMemoryStore(c.env, ownerId, {
     projectId: amaProjectId,
@@ -1895,6 +1932,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     resourceRefs,
     runtimeEnv,
     runtimeSecretEnv,
+    metadata: maintainerSessionMetadata,
   });
   const httpTrigger = await createAmaHttpAgentTrigger(c.env, ownerId, {
     projectId: amaProjectId,
@@ -1910,9 +1948,11 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     resourceRefs,
     runtimeEnv,
     runtimeSecretEnv,
+    metadata: maintainerSessionMetadata,
   });
 
   const maintainer = await createBoardMaintainer(c.env.DB, ownerId, {
+    id: maintainerId,
     boardId,
     agentId: maintainerAgentId,
     amaScheduleId: schedule.id,
@@ -1975,18 +2015,18 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
     metadata: { purpose: "board-maintainer-session", boardId, agentId: maintainer.agent_id },
   });
   await setAmaAgentSessionSecretCredential(c.env.DB, sessionIdentity.sessionId, sessionSecret.credentialId);
-  const runtimeEnv = {
-    AK_WORKER: "1",
-    AK_AGENT_ID: maintainer.agent_id,
-    AK_SESSION_ID: sessionIdentity.sessionId,
-    AK_BOARD_ID: boardId,
-    AK_BOARD_REPOSITORIES: JSON.stringify(boardRepositories.map((repo) => ({ id: repo.id, full_name: repo.full_name, url: repo.url }))),
-    AK_API_URL: apiUrl(c.env, new URL(c.req.url).origin),
-  };
+  const runtimeEnv = maintainerRuntimeEnv({
+    agentId: maintainer.agent_id,
+    sessionId: sessionIdentity.sessionId,
+    boardId,
+    repositories: boardRepositories.map((repo) => ({ id: repo.id, full_name: repo.full_name, url: repo.url })),
+    apiUrl: apiUrl(c.env, new URL(c.req.url).origin),
+  });
   const runtimeSecretEnv = [{ name: "AK_AGENT_KEY", credentialId: sessionSecret.credentialId, versionId: sessionSecret.activeVersionId }];
   const resourceRefs = maintainer.ama_memory_store_id
     ? [{ type: "memory_store", storeId: maintainer.ama_memory_store_id, access: "read_write" }]
     : [];
+  const maintainerSessionMetadata = { labels: { maintainerId: maintainer.id } };
   const schedule = await updateAmaScheduledAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_schedule_id, {
     agentId: amaAgent.id,
     runtime: amaRuntime,
@@ -1997,6 +2037,7 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
     resourceRefs,
     runtimeEnv,
     runtimeSecretEnv,
+    metadata: maintainerSessionMetadata,
   });
   if (maintainer.ama_http_trigger_id) {
     await updateAmaHttpAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_http_trigger_id, {
@@ -2008,6 +2049,7 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
       resourceRefs,
       runtimeEnv,
       runtimeSecretEnv,
+      metadata: maintainerSessionMetadata,
     });
   }
   const updated = await updateBoardMaintainer(c.env.DB, ownerId, boardId, maintainer.id, {
@@ -2135,7 +2177,9 @@ function boardMaintainerBasePrompt(boardId: string, prompt: string, repositoryFu
       : "No GitHub repositories are currently associated with this board.",
     "Use the AK CLI/API as the source of truth for board workflow, tasks, reviews, and follow-up work.",
     `Discover current repository scope with: ak get repo --board ${boardId} -o json.`,
-    "Before cloning or using gh for a repository, run: ak github auth <repo-id>.",
+    "Maintainer GitHub actions must use the AK GitHub App bot identity, not any human user's GitHub login.",
+    "Before every gh command that reads from, writes to, or replies in a GitHub repository, run: ak github auth <repo-id> for that repository.",
+    "Do not use pre-existing gh login state or human GitHub tokens. If ak github auth fails, stop and report the failure instead of falling back to another identity.",
     "A read/write Memory Store is mounted. Search and read relevant memories before acting.",
     `Use ${MAINTAINER_HEARTBEAT_PATH} as the scheduled maintenance checklist. It is not the only memory file.`,
     "Create or update focused memory files for durable board-level observations, decisions, open questions, and follow-up checkpoints. Do not store secrets in notes, tasks, messages, or memory.",
@@ -2159,6 +2203,7 @@ function boardMaintainerHttpPrompt(boardId: string, prompt: string, repositoryFu
     "",
     "This run was triggered by a GitHub webhook event.",
     "Use the event JSON below as a signal, then inspect AK and GitHub state directly before taking action.",
+    "For issue and pull request comments or reviews, continue the conversation in the same GitHub thread when a maintainer response is useful.",
     "",
     "{{ body.event_json }}",
   ].join("\n");
@@ -2179,7 +2224,7 @@ function initialMaintainerHeartbeat(input: { boardId: string; boardName: string;
     "- Review open PRs for correctness, tests, scope, and merge readiness.",
     "- Check recent task outcomes and close linked issues after accepted fixes merge.",
     "- Look across associated repositories for functional gaps, implementation problems, and technical debt worth turning into AK tasks.",
-    "- Use AK repository commands to discover repos and authenticate GitHub before cloning or running gh.",
+    "- Use AK repository commands to discover repos and authenticate GitHub before cloning or running gh; maintainer GitHub actions must use the AK GitHub App bot identity.",
     "- Record durable decisions, unresolved questions, and follow-up checkpoints in focused memory files.",
     "",
     "## Notes",
@@ -2187,6 +2232,24 @@ function initialMaintainerHeartbeat(input: { boardId: string; boardName: string;
     "- GitHub issue and pull request events can trigger event-driven maintainer runs for associated board repositories.",
     "- Scheduled runs are for proactive maintenance, not event acknowledgement.",
   ].join("\n");
+}
+
+function maintainerRuntimeEnv(input: {
+  agentId: string;
+  sessionId: string;
+  boardId: string;
+  repositories: Array<{ id: string; full_name: string; url: string }>;
+  apiUrl: string;
+}): Record<string, string> {
+  return {
+    AK_WORKER: "1",
+    AK_AGENT_ID: input.agentId,
+    AK_SESSION_ID: input.sessionId,
+    AK_BOARD_ID: input.boardId,
+    AK_BOARD_REPOSITORIES: JSON.stringify(input.repositories),
+    AK_API_URL: input.apiUrl,
+    GH_CONFIG_DIR: `/tmp/ak-gh-${input.sessionId}`,
+  };
 }
 
 // ─── Admin ───

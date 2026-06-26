@@ -60,19 +60,53 @@ function isNotFound(error: unknown): boolean {
   return typeof error === "object" && error !== null && "status" in error && error.status === 404;
 }
 
-async function showTaskSession(client: any, taskId: string, opts: { watch?: boolean; all?: boolean; tool?: boolean; assistant?: boolean }) {
+async function showSession(
+  client: any,
+  sessionId: string,
+  opts: { watch?: boolean; all?: boolean; tool?: boolean; assistant?: boolean; verbose?: boolean; limit?: string; output?: string },
+  source: "session" | "task" = "session",
+) {
   if (opts.tool && opts.assistant) {
     console.error("--tool and --assistant cannot be used together");
     process.exit(1);
   }
+  const fmt = getOutputFormat(opts.output);
+  if (fmt !== "text" && opts.watch) {
+    console.error("--watch only supports text output");
+    process.exit(1);
+  }
 
   const mode: SessionEventFilter = opts.tool ? "tool" : opts.assistant ? "assistant" : "all";
-  const { url } = await client.getTaskSessionWs(taskId);
+  const { url } = source === "task" ? await client.getTaskSessionWs(sessionId) : await client.getSessionWs(sessionId);
+  let recentLimit: number | undefined;
+  if (opts.limit !== undefined) {
+    const parsedLimit = Number.parseInt(opts.limit, 10);
+    if (!Number.isFinite(parsedLimit) || parsedLimit <= 0) {
+      console.error("--limit must be a positive number");
+      process.exit(1);
+    }
+    recentLimit = parsedLimit;
+  }
+  const session = source === "task" ? await client.getTaskSession(sessionId) : await client.getSession(sessionId);
+
+  if (fmt !== "text") {
+    const events = await readSessionEvents(url, {
+      all: opts.all,
+      watch: false,
+      filter: mode,
+      recentLimit,
+    });
+    output({ ...session, events }, fmt, undefined, { kind: "session" });
+    if (!process.env.VITEST_WORKER_ID) {
+      process.exit(0);
+    }
+    return;
+  }
 
   if (!opts.tool && !opts.assistant) {
-    const session = await client.getTaskSession(taskId);
     console.log(formatTaskSession(session));
-    console.log(opts.all ? "\nEvents:" : "\nRecent events:");
+    const eventLabel = opts.all ? "Events" : `Recent events${recentLimit ? ` (last ${recentLimit})` : ""}`;
+    console.log(`\n${eventLabel}:`);
   }
 
   let printed = false;
@@ -80,9 +114,10 @@ async function showTaskSession(client: any, taskId: string, opts: { watch?: bool
     all: opts.all,
     watch: opts.watch,
     filter: mode,
+    recentLimit,
     onEvent: (event) => {
       printed = true;
-      const line = formatSessionEvent(event, mode);
+      const line = formatSessionEvent(event, mode, { verbose: opts.verbose });
       if (line) console.log(line);
     },
   });
@@ -156,14 +191,14 @@ export function registerGetCommand(program: Command) {
       const fmt = getOutputFormat(opts.output);
       if (id) {
         if (opts.session) {
-          await showTaskSession(client, id, opts);
+          await showSession(client, id, opts, "task");
         } else {
           const task = await client.getTask(id);
           output(task, fmt, formatTask, { kind: "task" });
         }
       } else {
         if (opts.session) {
-          console.error("Usage: ak get session <task-id>");
+          console.error("Usage: ak get task <task-id> --session");
           process.exit(1);
         }
         if (!opts.board) {
@@ -180,15 +215,18 @@ export function registerGetCommand(program: Command) {
     });
 
   getCmd
-    .command("session <taskId>")
-    .description("Show a task's session state and events")
+    .command("session <sessionId>")
+    .description("Show a runtime session state and events")
     .option("--watch", "Keep streaming new events")
     .option("--all", "Backfill all historical events")
+    .option("--limit <n>", "Number of recent events to show without --all", "20")
     .option("--tool", "Only show tool calls")
     .option("--assistant", "Only show agent text output")
-    .action(async (taskId: string, opts) => {
+    .option("--verbose", "Show longer event summaries")
+    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .action(async (sessionId: string, opts) => {
       const client = await createClient();
-      await showTaskSession(client, taskId, opts);
+      await showSession(client, sessionId, opts);
     });
 
   getCmd

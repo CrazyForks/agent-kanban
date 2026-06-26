@@ -93,6 +93,7 @@ export interface AmaScheduledTriggerInput {
   resourceRefs?: AmaResourceRef[];
   runtimeEnv?: Record<string, string>;
   runtimeSecretEnv?: AmaRuntimeSecretEnvRef[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface AmaScheduledTriggerUpdate {
@@ -106,6 +107,7 @@ export interface AmaScheduledTriggerUpdate {
   resourceRefs?: AmaResourceRef[];
   runtimeEnv?: Record<string, string>;
   runtimeSecretEnv?: AmaRuntimeSecretEnvRef[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface AmaHttpTriggerInput {
@@ -119,6 +121,7 @@ export interface AmaHttpTriggerInput {
   resourceRefs?: AmaResourceRef[];
   runtimeEnv?: Record<string, string>;
   runtimeSecretEnv?: AmaRuntimeSecretEnvRef[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface AmaHttpTriggerUpdate {
@@ -131,6 +134,7 @@ export interface AmaHttpTriggerUpdate {
   resourceRefs?: AmaResourceRef[];
   runtimeEnv?: Record<string, string>;
   runtimeSecretEnv?: AmaRuntimeSecretEnvRef[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface AmaScheduledTrigger {
@@ -630,6 +634,25 @@ export async function readAmaSession(env: Env, ownerId: string, sessionId: strin
   }
 }
 
+export async function listAmaSessions(
+  env: Env,
+  ownerId: string,
+  projectId: string,
+  options: { limit?: number; cursor?: string; state?: string; archived?: boolean; labelSelector?: string } = {},
+): Promise<AmaListResponse<Record<string, unknown>>> {
+  const client = await createAmaClient(env, ownerId, projectId);
+  type AmaSessionState = "pending" | "running" | "idle" | "stopped" | "error";
+  type AmaArchivedFilter = "true" | "false";
+  const query = {
+    limit: options.limit ?? 50,
+    ...(options.cursor ? { cursor: options.cursor } : {}),
+    ...(options.state ? { state: options.state as AmaSessionState } : {}),
+    ...(options.archived !== undefined ? { archived: (options.archived ? "true" : "false") as AmaArchivedFilter } : {}),
+    ...(options.labelSelector ? { labelSelector: options.labelSelector } : {}),
+  };
+  return (await client.sessions.list(query)) as unknown as AmaListResponse<Record<string, unknown>>;
+}
+
 export async function listAmaAgents(env: Env, ownerId: string): Promise<AmaListResponse<Record<string, unknown>>> {
   const client = await createAmaClient(env, ownerId);
   return (await client.agents.list({ limit: 100 })) as unknown as AmaListResponse<Record<string, unknown>>;
@@ -813,6 +836,7 @@ export async function createAmaScheduledAgentTrigger(env: Env, ownerId: string, 
       secretEnv: toAmaSecretEnv(input.runtimeSecretEnv ?? []),
       schedule: { type: "interval", intervalSeconds: input.intervalSeconds },
       enabled: (input.status ?? "active") !== "paused",
+      metadata: input.metadata ?? {},
     }),
   );
   return toAmaScheduledTrigger(trigger);
@@ -833,6 +857,7 @@ export async function createAmaHttpAgentTrigger(env: Env, ownerId: string, input
       secretEnv: toAmaSecretEnv(input.runtimeSecretEnv ?? []),
       schedule: null,
       enabled: (input.status ?? "active") !== "paused",
+      metadata: input.metadata ?? {},
     }),
   );
   return toAmaHttpTrigger(trigger);
@@ -856,6 +881,7 @@ export async function updateAmaScheduledAgentTrigger(
   if (input.resourceRefs !== undefined) body.resourceRefs = input.resourceRefs;
   if (input.runtimeEnv !== undefined) body.env = input.runtimeEnv;
   if (input.runtimeSecretEnv !== undefined) body.secretEnv = toAmaSecretEnv(input.runtimeSecretEnv);
+  if (input.metadata !== undefined) body.metadata = input.metadata;
   if (input.intervalSeconds !== undefined) body.schedule = { type: "interval", intervalSeconds: input.intervalSeconds };
   if (input.status !== undefined) body.enabled = input.status !== "paused";
   const client = await createAmaClient(env, ownerId, projectId);
@@ -879,6 +905,7 @@ export async function updateAmaHttpAgentTrigger(
   if (input.resourceRefs !== undefined) body.resourceRefs = input.resourceRefs;
   if (input.runtimeEnv !== undefined) body.env = input.runtimeEnv;
   if (input.runtimeSecretEnv !== undefined) body.secretEnv = toAmaSecretEnv(input.runtimeSecretEnv);
+  if (input.metadata !== undefined) body.metadata = input.metadata;
   if (input.status !== undefined) body.enabled = input.status !== "paused";
   const client = await createAmaClient(env, ownerId, projectId);
   const trigger = await withAmaErrorDetails("update HTTP trigger", () => client.triggers.update(triggerId, body));

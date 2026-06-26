@@ -20,6 +20,7 @@ export interface BoardMaintainer {
 }
 
 export interface CreateBoardMaintainerInput {
+  id?: string;
   boardId: string;
   agentId: string;
   amaScheduleId: string;
@@ -43,7 +44,7 @@ export async function getOwnedBoard(db: D1, ownerId: string, boardId: string) {
 }
 
 export async function createBoardMaintainer(db: D1, ownerId: string, input: CreateBoardMaintainerInput): Promise<BoardMaintainer> {
-  const id = newLongId();
+  const id = input.id ?? newLongId();
   const now = new Date().toISOString();
   await db
     .prepare(

@@ -129,6 +129,12 @@ export async function readSessionEvents(url: string, options: ReadSessionEventsO
       if (timeout) clearTimeout(timeout);
       closeSocket();
       events.sort((a, b) => eventSequence(a) - eventSequence(b));
+      if (!options.all && events.length > limit) {
+        events.splice(0, events.length - limit);
+      }
+      if (!options.watch) {
+        for (const event of events) options.onEvent?.(event);
+      }
       resolve(events);
     };
 
@@ -138,7 +144,7 @@ export async function readSessionEvents(url: string, options: ReadSessionEventsO
       seen.add(sequence);
       if (!matchesSessionEventFilter(event, filter)) return;
       events.push(event);
-      options.onEvent?.(event);
+      if (options.watch) options.onEvent?.(event);
     };
 
     ws.onopen = () => {

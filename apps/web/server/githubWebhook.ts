@@ -106,8 +106,12 @@ type MaintainerWebhookPayload = {
   };
   issue?: Record<string, unknown>;
   pull_request?: Record<string, unknown>;
+  comment?: Record<string, unknown>;
+  review?: Record<string, unknown>;
   sender?: Record<string, unknown>;
 };
+
+const MAINTAINER_GITHUB_EVENTS = new Set(["issues", "pull_request", "issue_comment", "pull_request_review", "pull_request_review_comment"]);
 
 function toRepoInputs(repos: WebhookRepo[] | undefined): { fullName: string; repoId: number | null }[] {
   return (repos ?? [])
@@ -120,10 +124,12 @@ export async function handleGithubMaintainerEvent(
   env: Env,
   input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload },
 ): Promise<{ handled: boolean; maintainers: string[] }> {
-  if (input.event !== "issues" && input.event !== "pull_request") return { handled: false, maintainers: [] };
+  if (!MAINTAINER_GITHUB_EVENTS.has(input.event)) return { handled: false, maintainers: [] };
+  if (isOwnGithubAppBotEvent(env, input)) return { handled: false, maintainers: [] };
   const fullName = input.payload.repository?.full_name?.toLowerCase();
   const installationId = input.payload.installation?.id;
   if (!fullName || !installationId) return { handled: false, maintainers: [] };
+  const body = githubMaintainerRunBody(input);
 
   const maintainers = await listActiveBoardMaintainersForRepository(db, installationId, fullName);
   if (maintainers.length === 0) return { handled: false, maintainers: [] };
@@ -139,22 +145,82 @@ export async function handleGithubMaintainerEvent(
       projectId,
       triggerId: maintainer.ama_http_trigger_id,
       idempotencyKey: input.deliveryId ?? `${input.event}:${input.payload.action ?? "unknown"}:${fullName}`,
-      body: githubMaintainerRunBody(input),
+      body,
     });
     dispatched.push(maintainer.id);
   }
   return { handled: dispatched.length > 0, maintainers: dispatched };
 }
 
+function isOwnGithubAppBotEvent(env: Env, input: { payload: MaintainerWebhookPayload }): boolean {
+  const slug = env.GITHUB_APP_SLUG;
+  if (!slug) return false;
+  return input.payload.sender?.type === "Bot" && input.payload.sender?.login === `${slug}[bot]`;
+}
+
+function subjectNumber(subject: Record<string, unknown> | undefined): number | null {
+  return typeof subject?.number === "number" ? subject.number : null;
+}
+
+function githubMaintainerSubject(input: { event: string; payload: MaintainerWebhookPayload }): {
+  subject: Record<string, unknown> | undefined;
+  type: "issue" | "pull";
+} {
+  if (input.event === "issues") return { subject: input.payload.issue, type: "issue" };
+  if (input.event === "issue_comment") {
+    return { subject: input.payload.issue, type: input.payload.issue?.pull_request ? "pull" : "issue" };
+  }
+  return { subject: input.payload.pull_request, type: "pull" };
+}
+
+function githubMaintainerSessionKey(input: { event: string; payload: MaintainerWebhookPayload }): string | null {
+  const fullName = input.payload.repository?.full_name?.toLowerCase();
+  const { subject, type } = githubMaintainerSubject(input);
+  const number = subjectNumber(subject);
+  return fullName && number !== null ? `github:${fullName}:${type}:${number}` : null;
+}
+
+function githubSubjectUrl(repository: MaintainerWebhookPayload["repository"], subject: Record<string, unknown> | undefined, type: "issue" | "pull") {
+  const number = subjectNumber(subject);
+  if (repository?.full_name && number !== null) {
+    return `https://github.com/${repository.full_name}/${type === "pull" ? "pull" : "issues"}/${number}`;
+  }
+  return typeof subject?.html_url === "string" ? subject.html_url : null;
+}
+
+function githubMaintainerMetadata(input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload }): Record<string, unknown> {
+  const { subject, type } = githubMaintainerSubject(input);
+  const repository = input.payload.repository;
+  const number = subjectNumber(subject);
+  return {
+    github: {
+      event: input.event,
+      action: input.payload.action ?? "",
+      delivery_id: input.deliveryId ?? null,
+      repository: repository?.full_name ?? null,
+      repository_url: repository?.html_url ?? null,
+      subject_type: number === null ? null : type,
+      subject_number: number,
+      subject_title: typeof subject?.title === "string" ? subject.title : null,
+      subject_url: githubSubjectUrl(repository, subject, type),
+    },
+  };
+}
+
 function githubMaintainerRunBody(input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload }): Record<string, unknown> {
-  const subject = input.event === "issues" ? input.payload.issue : input.payload.pull_request;
+  const { subject } = githubMaintainerSubject(input);
+  const key = githubMaintainerSessionKey(input);
   const body = {
     event: input.event,
     action: input.payload.action ?? "",
     delivery_id: input.deliveryId ?? null,
+    key,
     repository: input.payload.repository ?? null,
     subject,
+    comment: input.payload.comment ?? null,
+    review: input.payload.review ?? null,
     sender: input.payload.sender ?? null,
+    metadata: githubMaintainerMetadata(input),
   };
   return {
     ...body,

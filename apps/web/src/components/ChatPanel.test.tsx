@@ -2,16 +2,20 @@ import "@testing-library/jest-dom/vitest";
 import { act, render, screen } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ChatPanel } from "./ChatPanel";
+import { AmaSessionChat, ChatPanel } from "./ChatPanel";
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
 const sessionWsMock = vi.fn();
+const directSessionWsMock = vi.fn();
 
 vi.mock("../lib/api", () => ({
   api: {
     tasks: {
       sessionWs: (...args: unknown[]) => sessionWsMock(...args),
+    },
+    sessions: {
+      sessionWs: (...args: unknown[]) => directSessionWsMock(...args),
     },
   },
 }));
@@ -126,6 +130,7 @@ describe("ChatPanel", () => {
 
     // Default: socket url for AMA branch.
     sessionWsMock.mockResolvedValue({ url: "wss://test/socket" });
+    directSessionWsMock.mockResolvedValue({ url: "wss://direct-session/socket" });
 
     // Install the fake WebSocket globally so source code that does
     // `new WebSocket(url)` uses the fake instead of the real browser API.
@@ -404,6 +409,16 @@ describe("ChatPanel", () => {
       });
 
       expect(screen.getByText("Loading runtime history...")).toBeInTheDocument();
+    });
+
+    it("can open an AMA websocket directly by session id", async () => {
+      render(React.createElement(AmaSessionChat, { sessionId: "session_direct", taskDone: true }));
+
+      await deliverBackfill();
+
+      expect(directSessionWsMock).toHaveBeenCalledWith("session_direct");
+      expect(sessionWsMock).not.toHaveBeenCalled();
+      expect(lastWebSocket!.url).toBe("wss://direct-session/socket");
     });
   });
 });

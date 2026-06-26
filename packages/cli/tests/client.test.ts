@@ -1024,6 +1024,24 @@ describe("ApiClient method stubs", () => {
     expect(opts.method).toBe("GET");
   });
 
+  it("getSession calls GET /api/sessions/:id", async () => {
+    const c = await makeAgentClient();
+    stubOk({ session_id: "session-1", session: {} });
+    await c.getSession("session-1");
+    const [url, opts] = lastCall();
+    expect(url).toContain("/api/sessions/session-1");
+    expect(opts.method).toBe("GET");
+  });
+
+  it("getSessionWs calls GET /api/sessions/:id/ws", async () => {
+    const c = await makeAgentClient();
+    stubOk({ url: "wss://session.test" });
+    await c.getSessionWs("session-1");
+    const [url, opts] = lastCall();
+    expect(url).toContain("/api/sessions/session-1/ws");
+    expect(opts.method).toBe("GET");
+  });
+
   it("getTaskNotes appends since query when provided", async () => {
     const c = await makeAgentClient();
     stubOk([]);

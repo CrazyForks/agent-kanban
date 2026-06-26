@@ -9,15 +9,21 @@ vi.mock("../apps/web/src/components/Header", () => ({
   Header: () => React.createElement("header", { "data-testid": "header" }),
 }));
 
+vi.mock("../apps/web/src/components/ChatPanel", () => ({
+  AmaSessionChat: ({ sessionId }: { sessionId: string }) => React.createElement("div", { "data-testid": "maintainer-session-chat" }, sessionId),
+}));
+
 const useBoard = vi.fn();
 const useBoardMaintainer = vi.fn();
 const useBoardMaintainerRuns = vi.fn();
+const useBoardMaintainerSessions = vi.fn();
 const useBoardMaintainerMemories = vi.fn();
 
 vi.mock("../apps/web/src/hooks/useBoard", () => ({
   useBoard: (...args: unknown[]) => useBoard(...args),
   useBoardMaintainer: (...args: unknown[]) => useBoardMaintainer(...args),
   useBoardMaintainerRuns: (...args: unknown[]) => useBoardMaintainerRuns(...args),
+  useBoardMaintainerSessions: (...args: unknown[]) => useBoardMaintainerSessions(...args),
   useBoardMaintainerMemories: (...args: unknown[]) => useBoardMaintainerMemories(...args),
 }));
 
@@ -66,6 +72,66 @@ describe("MaintainerDetailPage", () => {
           error_message: null,
           metadata: { attempt: 1 },
         },
+        {
+          id: "run_duplicate",
+          scheduled_for: null,
+          heartbeat_at: null,
+          triggered_at: "2026-06-08T12:05:00.000Z",
+          status: "dispatched",
+          session_id: "session_1",
+          error_message: null,
+          metadata: {
+            sessionMetadata: {
+              github: {
+                event: "issues",
+                action: "opened",
+                repository: "saltbo/slink",
+                repository_url: "https://github.com/saltbo/slink",
+                subject_type: "issue",
+                subject_number: 42,
+                subject_title: "Webhook issue",
+                subject_url: "https://github.com/saltbo/slink/issues/42",
+              },
+            },
+          },
+        },
+        {
+          id: "run_failed_without_session",
+          scheduled_for: null,
+          heartbeat_at: null,
+          triggered_at: "2026-06-08T12:06:00.000Z",
+          status: "failed",
+          session_id: null,
+          error_message: "No session created",
+          metadata: { event: "issues" },
+        },
+      ],
+    });
+    useBoardMaintainerSessions.mockReturnValue({
+      loading: false,
+      refresh: vi.fn(),
+      sessions: [
+        {
+          id: "session_1",
+          state: "idle",
+          agentId: "ama_agent_1",
+          title: "Daily maintainer",
+          metadata: {
+            labels: { maintainerId: "maintainer-1" },
+            github: {
+              event: "issues",
+              action: "opened",
+              repository: "saltbo/slink",
+              repository_url: "https://github.com/saltbo/slink",
+              subject_type: "issue",
+              subject_number: 42,
+              subject_title: "Webhook issue",
+              subject_url: "https://github.com/saltbo/slink/issues/42",
+            },
+          },
+          createdAt: "2026-06-08T12:00:00.000Z",
+          updatedAt: "2026-06-08T12:08:00.000Z",
+        },
       ],
     });
     useBoardMaintainerMemories.mockReturnValue({
@@ -97,8 +163,15 @@ describe("MaintainerDetailPage", () => {
     renderMaintainerDetail();
 
     expect(screen.getByRole("heading", { name: "Daily maintainer" })).toBeInTheDocument();
-    expect(screen.getByText("run_1")).toBeInTheDocument();
-    expect(screen.getAllByText("completed")[0]).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Sessions\s*1/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /session_1/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /saltbo\/slink Issue #42/ })).toHaveAttribute("href", "https://github.com/saltbo/slink/issues/42");
+    expect(screen.queryByText("run_duplicate")).not.toBeInTheDocument();
+    expect(screen.queryByText("run_failed_without_session")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Activity/ }));
+    expect(screen.getByText("issues.opened")).toBeInTheDocument();
+    expect(screen.getByText("dispatched")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: /Memory/ }));
 
@@ -108,5 +181,13 @@ describe("MaintainerDetailPage", () => {
 
     fireEvent.click(screen.getByText("notes/2026-06-08.md"));
     expect(screen.getByText("Follow up later.")).toBeInTheDocument();
+  });
+
+  it("opens a maintainer session chat drawer from the sessions table", () => {
+    renderMaintainerDetail();
+
+    fireEvent.click(screen.getByRole("button", { name: /session_1/ }));
+
+    expect(screen.getByTestId("maintainer-session-chat")).toHaveTextContent("session_1");
   });
 });

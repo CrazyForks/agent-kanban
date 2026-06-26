@@ -365,7 +365,7 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/triggers" && method === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         triggerRequests.push(body);
-        expect(body.metadata).toBeUndefined();
+        expect(body.metadata).toEqual({ labels: { maintainerId: expect.any(String) } });
         expect(body.agentId).toBe("ama_agent_maintainer");
         expect(body.environmentId).toBeUndefined();
         expect(body.resourceRefs).toEqual([{ type: "memory_store", storeId: "mem_maintainer", access: "read_write" }]);
@@ -381,6 +381,7 @@ describe("routes", () => {
         expect(body.env).not.toHaveProperty("AK_REPOSITORY_ID");
         expect(body.env).not.toHaveProperty("AK_REPOSITORY_FULL_NAME");
         expect(body.env.AK_SESSION_ID).toEqual(expect.any(String));
+        expect(body.env.GH_CONFIG_DIR).toBe(`/tmp/ak-gh-${body.env.AK_SESSION_ID}`);
         expect(body.secretEnv).toEqual([
           { name: "AK_AGENT_KEY", credentialRef: { credentialId: "vaultcred_maintainer", versionId: "vaultver_maintainer" } },
         ]);
@@ -388,6 +389,8 @@ describe("routes", () => {
         expect(body.promptTemplate).toContain(`GitHub repository scope: maintainer-org/maintainer-repo.`);
         expect(body.promptTemplate).toContain(`ak get repo --board ${maintainerBoard.id} -o json`);
         expect(body.promptTemplate).toContain("ak github auth <repo-id>");
+        expect(body.promptTemplate).toContain("AK GitHub App bot identity");
+        expect(body.promptTemplate).toContain("Do not use pre-existing gh login state or human GitHub tokens");
         if (body.type === "http") {
           expect(body.schedule).toBeNull();
           expect(body.name).toBe("Daily maintainer GitHub events");
@@ -446,7 +449,7 @@ describe("routes", () => {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         const triggerId = url.endsWith("/http_maintainer") ? "http_maintainer" : "sched_maintainer";
         updateRequests.push({ triggerId, body });
-        expect(body.metadata).toBeUndefined();
+        expect(body.metadata).toEqual({ labels: { maintainerId: expect.any(String) } });
         return jsonResponse({
           id: triggerId,
           agentId: "ama_agent_maintainer",
@@ -493,7 +496,7 @@ describe("routes", () => {
               scheduledFor: null,
               heartbeatAt: null,
               triggeredAt: "2026-06-08T12:10:00.000Z",
-              state: "session_created",
+              state: "dispatched",
               sessionId: "session_maintainer_http_1",
               errorMessage: null,
               metadata: { event: "issues" },
@@ -579,7 +582,7 @@ describe("routes", () => {
           scheduled_for: null,
           heartbeat_at: null,
           triggered_at: "2026-06-08T12:10:00.000Z",
-          status: "session_created",
+          status: "dispatched",
           session_id: "session_maintainer_http_1",
           error_message: null,
           metadata: { event: "issues" },
@@ -592,6 +595,8 @@ describe("routes", () => {
       expect(sessionSecretRequests).toHaveLength(1);
       expect(triggerRequests).toHaveLength(2);
       expect(triggerRequests.map((request) => request.type).sort()).toEqual(["http", "scheduled"]);
+      expect(triggerRequests[0].metadata).toEqual({ labels: { maintainerId: maintainer.id } });
+      expect(triggerRequests[1].metadata).toEqual(triggerRequests[0].metadata);
       expect(triggerRequests[0].env).toMatchObject({ AK_AGENT_ID: maintainerAgent.id, AK_BOARD_ID: maintainerBoard.id });
       expect(triggerRequests[0].env.AK_SESSION_ID).toEqual(expect.any(String));
       expect(triggerRequests[1].env.AK_SESSION_ID).toBe(triggerRequests[0].env.AK_SESSION_ID);
@@ -663,6 +668,7 @@ describe("routes", () => {
           agentId: "ama_agent_maintainer",
           runtime: "codex",
           enabled: false,
+          metadata: { labels: { maintainerId: maintainer.id } },
           resourceRefs: [{ type: "memory_store", storeId: "mem_maintainer", access: "read_write" }],
           env: {
             AK_WORKER: "1",
@@ -672,6 +678,7 @@ describe("routes", () => {
           },
           secretEnv: [{ name: "AK_AGENT_KEY", credentialRef: { credentialId: "vaultcred_maintainer", versionId: "vaultver_maintainer" } }],
         });
+        expect(request.body.env.GH_CONFIG_DIR).toBe(`/tmp/ak-gh-${request.body.env.AK_SESSION_ID}`);
         expect(request.body.env.AK_SESSION_ID).toEqual(expect.any(String));
         expect(JSON.parse(request.body.env.AK_BOARD_REPOSITORIES)).toEqual([
           { id: maintainerRepository.id, full_name: "maintainer-org/maintainer-repo", url: "https://github.com/maintainer-org/maintainer-repo" },
@@ -717,7 +724,7 @@ describe("routes", () => {
             scheduled_for: null,
             heartbeat_at: null,
             triggered_at: "2026-06-08T12:10:00.000Z",
-            status: "session_created",
+            status: "dispatched",
             session_id: "session_maintainer_http_1",
             error_message: null,
             metadata: { event: "issues" },
@@ -3214,6 +3221,136 @@ describe("routes", () => {
       expect(url.pathname).toBe("/api/v1/sessions/session_runtime_123/socket");
       expect(url.searchParams.get("access_token")).toBe("user-token");
       expect(url.searchParams.get("x-ama-project-id")).toBe("project_runtime_123");
+    } finally {
+      Object.assign(env, previousAma);
+    }
+  });
+
+  it("GET /api/sessions/:sessionId returns an AMA session by session id", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth2/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    });
+
+    const sessionId = "session_direct_123";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = reqUrl(input);
+        if (url === "https://auth.test/oauth2/token") return jsonResponse({ access_token: "user-token" });
+        if (url === `https://ama.test/api/v1/sessions/${sessionId}`) {
+          return jsonResponse({ id: sessionId, state: "running", title: "Maintainer run" });
+        }
+        return jsonResponse({ error: "unexpected", url }, 500);
+      }),
+    );
+
+    try {
+      await configureAmaOwnerRuntime(userId, "codex", "env_direct_session", "project_direct_session");
+      const res = await apiRequest("GET", `/api/sessions/${sessionId}`, undefined, apiKey);
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toMatchObject({
+        session_id: sessionId,
+        project_id: "project_direct_session",
+        session: { id: sessionId, state: "running", title: "Maintainer run" },
+      });
+    } finally {
+      Object.assign(env, previousAma);
+    }
+  });
+
+  it("GET /api/sessions lists AMA sessions with a metadata label selector", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth2/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = reqUrl(input);
+        if (url === "https://auth.test/oauth2/token") return jsonResponse({ access_token: "user-token" });
+        const requestUrl = new URL(url);
+        if (requestUrl.origin === "https://ama.test" && requestUrl.pathname === "/api/v1/sessions") {
+          expect(requestUrl.searchParams.get("limit")).toBe("25");
+          expect(requestUrl.searchParams.get("labelSelector")).toBe("maintainerId=maintainer_123");
+          return jsonResponse({
+            data: [
+              {
+                id: "session_maintainer_123",
+                state: "idle",
+                agentId: "ama_agent_123",
+                metadata: { labels: { maintainerId: "maintainer_123" } },
+              },
+            ],
+            pagination: { limit: 25, hasMore: false },
+          });
+        }
+        return jsonResponse({ error: "unexpected", url }, 500);
+      }),
+    );
+
+    try {
+      await configureAmaOwnerRuntime(userId, "codex", "env_session_list", "project_session_list");
+      const res = await apiRequest("GET", "/api/sessions?limit=25&labelSelector=maintainerId%3Dmaintainer_123", undefined, apiKey);
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toMatchObject({
+        data: [{ id: "session_maintainer_123", metadata: { labels: { maintainerId: "maintainer_123" } } }],
+        pagination: { limit: 25, hasMore: false },
+      });
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("GET /api/sessions/:sessionId/ws returns a browser socket URL by session id", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OAUTH_TOKEN_URL: env.AMA_OAUTH_TOKEN_URL,
+      AMA_OAUTH_CLIENT_ID: env.AMA_OAUTH_CLIENT_ID,
+      AMA_OAUTH_CLIENT_SECRET: env.AMA_OAUTH_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OAUTH_TOKEN_URL: "https://auth.test/oauth2/token",
+      AMA_OAUTH_CLIENT_ID: "ak-app",
+      AMA_OAUTH_CLIENT_SECRET: "ak-secret",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = reqUrl(input);
+        if (url === "https://auth.test/oauth2/token") return jsonResponse({ access_token: "user-token" });
+        return jsonResponse({ error: "unexpected", url }, 500);
+      }),
+    );
+
+    try {
+      await configureAmaOwnerRuntime(userId, "codex", "env_direct_session_ws", "project_direct_session_ws");
+      const res = await apiRequest("GET", "/api/sessions/session_direct_ws/ws", undefined, apiKey);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { url: string };
+      const url = new URL(body.url);
+      expect(url.origin).toBe("wss://ama.test");
+      expect(url.pathname).toBe("/api/v1/sessions/session_direct_ws/socket");
+      expect(url.searchParams.get("access_token")).toBe("user-token");
+      expect(url.searchParams.get("x-ama-project-id")).toBe("project_direct_session_ws");
     } finally {
       Object.assign(env, previousAma);
     }

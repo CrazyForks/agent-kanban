@@ -75,6 +75,20 @@ export const api = {
     create: (taskId: string, body: { sender_type: string; sender_id: string; content: string }) =>
       request<any>("POST", `/tasks/${taskId}/messages`, body),
   },
+  sessions: {
+    list: (params?: { limit?: number; cursor?: string; state?: string; archived?: boolean; labelSelector?: string }) => {
+      const query = new URLSearchParams();
+      if (params?.limit !== undefined) query.set("limit", String(params.limit));
+      if (params?.cursor) query.set("cursor", params.cursor);
+      if (params?.state) query.set("state", params.state);
+      if (params?.archived !== undefined) query.set("archived", String(params.archived));
+      if (params?.labelSelector) query.set("labelSelector", params.labelSelector);
+      const qs = query.size > 0 ? `?${query.toString()}` : "";
+      return request<{ data: any[]; pagination: any }>("GET", `/sessions${qs}`);
+    },
+    get: (id: string) => request<any>("GET", `/sessions/${id}`),
+    sessionWs: (id: string) => request<{ url: string }>("GET", `/sessions/${id}/ws`),
+  },
   agents: {
     list: () => request<any[]>("GET", "/agents"),
     get: (id: string) => request<any>("GET", `/agents/${id}`),

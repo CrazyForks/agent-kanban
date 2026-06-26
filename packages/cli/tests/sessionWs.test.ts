@@ -52,6 +52,15 @@ it("requests recent events over WebSocket by default", async () => {
   await expect(promise).resolves.toEqual([expect.objectContaining({ sequence: 2 }), expect.objectContaining({ sequence: 3 })]);
 });
 
+it("trims recent events locally when the server returns too many", async () => {
+  const seen: number[] = [];
+  const promise = readSessionEvents("wss://session.test", { recentLimit: 2, onEvent: (item) => seen.push(item.sequence) });
+  await vi.waitFor(() => expect(sockets[0]?.sent[0]).toMatchObject({ type: "backfill", order: "desc", limit: 2 }));
+  sockets[0].emit({ type: "backfill", events: [event(4), event(3), event(2), event(1)], hasMore: false });
+  await expect(promise).resolves.toEqual([expect.objectContaining({ sequence: 3 }), expect.objectContaining({ sequence: 4 })]);
+  expect(seen).toEqual([3, 4]);
+});
+
 it("follows backfill pages when --all is enabled", async () => {
   const promise = readSessionEvents("wss://session.test", { all: true });
   await vi.waitFor(() => expect(sockets[0]?.sent[0]).toMatchObject({ type: "backfill", order: "asc", limit: 200 }));

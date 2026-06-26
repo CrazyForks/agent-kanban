@@ -81,6 +81,12 @@ export abstract class ApiClient {
   getTaskSessionWs(id: string) {
     return this.request<{ url: string }>("GET", `/api/tasks/${id}/session/ws`);
   }
+  getSession(id: string) {
+    return this.request("GET", `/api/sessions/${id}`);
+  }
+  getSessionWs(id: string) {
+    return this.request<{ url: string }>("GET", `/api/sessions/${id}/ws`);
+  }
   claimTask(id: string) {
     return this.request("POST", `/api/tasks/${id}/claim`);
   }

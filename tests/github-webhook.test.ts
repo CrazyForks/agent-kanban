@@ -195,13 +195,72 @@ describe("POST /api/webhooks/github-app route", () => {
       event: "issues",
       subjectKey: "issue",
       subject: { number: 42, title: "Webhook issue", html_url: "https://github.com/maintainer-org/maintainer-repo/issues/42" },
+      action: "opened",
+      subjectPath: "issues",
+      expectedKeyKind: "issue",
+      extraPayload: {},
+      sender: { login: "renovate[bot]", type: "Bot" },
     },
     {
       event: "pull_request",
       subjectKey: "pull_request",
       subject: { number: 77, title: "Webhook PR", html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77", merged: false },
+      action: "opened",
+      subjectPath: "pull",
+      expectedKeyKind: "pull",
+      extraPayload: {},
     },
-  ])("dispatches $event events to active maintainer HTTP trigger with event_json", async ({ event, subjectKey, subject }) => {
+    {
+      event: "issue_comment",
+      subjectKey: "issue",
+      subject: { number: 42, title: "Webhook issue", html_url: "https://github.com/maintainer-org/maintainer-repo/issues/42" },
+      action: "created",
+      subjectPath: "issues",
+      expectedKeyKind: "issue",
+      extraPayload: { comment: { id: 12345, body: "Can you look at this?" } },
+    },
+    {
+      event: "issue_comment",
+      subjectKey: "issue",
+      subject: {
+        number: 77,
+        title: "Webhook PR",
+        html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77",
+        pull_request: {},
+      },
+      action: "created",
+      subjectPath: "pull",
+      expectedKeyKind: "pull",
+      extraPayload: { comment: { id: 23456, body: "PR conversation follow-up" } },
+    },
+    {
+      event: "pull_request_review",
+      subjectKey: "pull_request",
+      subject: { number: 77, title: "Webhook PR", html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77", merged: false },
+      action: "submitted",
+      subjectPath: "pull",
+      expectedKeyKind: "pull",
+      extraPayload: { review: { id: 34567, body: "Review feedback", state: "commented" } },
+    },
+    {
+      event: "pull_request_review_comment",
+      subjectKey: "pull_request",
+      subject: { number: 77, title: "Webhook PR", html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77", merged: false },
+      action: "created",
+      subjectPath: "pull",
+      expectedKeyKind: "pull",
+      extraPayload: { comment: { id: 45678, body: "Inline comment" } },
+    },
+  ])("dispatches $event events to active maintainer HTTP trigger with event_json and a stable subject key", async ({
+    event,
+    subjectKey,
+    subject,
+    action,
+    subjectPath,
+    expectedKeyKind,
+    extraPayload,
+    sender = { login: "octocat" },
+  }) => {
     const ownerId = `webhook-maintainer-${event}-${randomUUID()}`;
     const triggerSuffix = event.replace(/[^a-z_]/g, "_");
     const httpTriggerId = `http_webhook_${triggerSuffix}_${randomUUID()}`;
@@ -272,7 +331,7 @@ describe("POST /api/webhooks/github-app route", () => {
               scheduledFor: null,
               heartbeatAt: null,
               triggeredAt: "2026-06-09T01:02:03.000Z",
-              state: "session_created",
+              state: "dispatched",
               sessionId: "session_webhook",
               errorMessage: null,
               metadata: {},
@@ -287,14 +346,15 @@ describe("POST /api/webhooks/github-app route", () => {
     );
 
     const payload = {
-      action: "opened",
+      action,
       installation: { id: installationId },
       repository: { id: 123, full_name: repoFullName, html_url: `https://github.com/${repoFullName}` },
       [subjectKey]: {
         ...subject,
-        html_url: `https://github.com/${repoFullName}/${event === "issues" ? "issues" : "pull"}/${subject.number}`,
+        html_url: `https://github.com/${repoFullName}/${subjectPath}/${subject.number}`,
       },
-      sender: { login: "octocat" },
+      ...extraPayload,
+      sender,
     };
     const body = JSON.stringify(payload);
     const sig = await signWebhookBody(body);
@@ -314,20 +374,78 @@ describe("POST /api/webhooks/github-app route", () => {
     expect(dispatched[0].headers["x-ama-project-id"]).toBe("project_webhook");
     expect(dispatched[0].body).toMatchObject({
       event,
-      action: "opened",
+      action,
       delivery_id: deliveryId,
+      key: `github:${repoFullName.toLowerCase()}:${expectedKeyKind}:${subject.number}`,
+      metadata: {
+        github: {
+          event,
+          action,
+          delivery_id: deliveryId,
+          repository: repoFullName,
+          repository_url: payload.repository.html_url,
+          subject_type: expectedKeyKind,
+          subject_number: subject.number,
+          subject_title: subject.title,
+          subject_url: `https://github.com/${repoFullName}/${subjectPath}/${subject.number}`,
+        },
+      },
       repository: payload.repository,
       subject: payload[subjectKey as keyof typeof payload],
-      sender: { login: "octocat" },
+      comment: "comment" in extraPayload ? extraPayload.comment : null,
+      review: "review" in extraPayload ? extraPayload.review : null,
+      sender,
     });
     expect(JSON.parse(dispatched[0].body.event_json)).toMatchObject({
       event,
-      action: "opened",
+      action,
       delivery_id: deliveryId,
+      key: `github:${repoFullName.toLowerCase()}:${expectedKeyKind}:${subject.number}`,
+      metadata: {
+        github: {
+          repository: repoFullName,
+          subject_type: expectedKeyKind,
+          subject_number: subject.number,
+        },
+      },
       repository: payload.repository,
       subject: payload[subjectKey as keyof typeof payload],
-      sender: { login: "octocat" },
+      comment: "comment" in extraPayload ? extraPayload.comment : null,
+      review: "review" in extraPayload ? extraPayload.review : null,
+      sender,
     });
+  });
+
+  it.each([
+    "issues",
+    "pull_request",
+    "issue_comment",
+    "pull_request_review",
+    "pull_request_review_comment",
+  ])("does not dispatch maintainer events emitted by the configured GitHub App bot for %s", async (event) => {
+    const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      throw new Error(`Unexpected fetch: ${reqUrl(input)}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await handleGithubMaintainerEvent(db, makeEnv({ GITHUB_APP_SLUG: "agent-kanban-local" }), {
+      event,
+      deliveryId: `delivery-self-${event}-${randomUUID()}`,
+      payload: {
+        action: event === "pull_request_review" ? "submitted" : event === "issues" || event === "pull_request" ? "opened" : "created",
+        installation: { id: 123 },
+        repository: { id: 456, full_name: "maintainer-org/maintainer-repo" },
+        issue: { number: 42, title: "Webhook issue", html_url: "https://github.com/maintainer-org/maintainer-repo/issues/42" },
+        pull_request: { number: 77, title: "Webhook PR", html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77" },
+        comment: { id: 12345, body: "ACK" },
+        review: { id: 23456, body: "ACK", state: "commented" },
+        sender: { login: "agent-kanban-local[bot]", type: "Bot" },
+      },
+    });
+
+    expect(result).toEqual({ handled: false, maintainers: [] });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("does not dispatch maintainer events without a matching installation", async () => {

@@ -44,7 +44,7 @@ export function ChatPanel({ taskId, agentId, taskDone, amaSessionId, relaySessio
   }
 
   if (amaSessionId) {
-    return <AmaSessionChat taskId={taskId} taskDone={taskDone} />;
+    return <AmaSessionChat taskId={taskId} taskDone={taskDone} unavailableMessage="Session history is not available for this task." />;
   }
 
   if (relaySessionId) {
@@ -66,7 +66,17 @@ export function ChatPanel({ taskId, agentId, taskDone, amaSessionId, relaySessio
 // The AMA path: the task's events live in the AMA control plane (the Session DO
 // for cloud-loop runtimes, the runner store for self-hosted CLI runtimes), read
 // back through AK's server as a paginated snapshot and live-tailed.
-function AmaSessionChat({ taskId, taskDone }: { taskId: string; taskDone: boolean }) {
+export function AmaSessionChat({
+  taskId,
+  sessionId,
+  taskDone,
+  unavailableMessage = "Session history is not available.",
+}: {
+  taskId?: string;
+  sessionId?: string;
+  taskDone: boolean;
+  unavailableMessage?: string;
+}) {
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
 
@@ -83,7 +93,7 @@ function AmaSessionChat({ taskId, taskDone }: { taskId: string; taskDone: boolea
 
     const connect = async () => {
       try {
-        const { url } = await api.tasks.sessionWs(taskId);
+        const { url } = sessionId ? await api.sessions.sessionWs(sessionId) : await api.tasks.sessionWs(taskId!);
         if (!active) return;
         ws = new WebSocket(url);
         ws.onopen = () => {
@@ -127,7 +137,7 @@ function AmaSessionChat({ taskId, taskDone }: { taskId: string; taskDone: boolea
       if (reconnect) clearTimeout(reconnect);
       ws?.close();
     };
-  }, [taskId, taskDone]);
+  }, [sessionId, taskId, taskDone]);
 
   if (phase === "loading") {
     return (
@@ -140,7 +150,7 @@ function AmaSessionChat({ taskId, taskDone }: { taskId: string; taskDone: boolea
   if (phase === "error") {
     return (
       <div className="flex-1 flex items-center justify-center px-6">
-        <p className="text-sm text-content-tertiary text-center">Session history is not available for this task.</p>
+        <p className="text-sm text-content-tertiary text-center">{unavailableMessage}</p>
       </div>
     );
   }

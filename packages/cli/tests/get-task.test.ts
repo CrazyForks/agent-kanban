@@ -16,15 +16,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mockGetTask = vi.fn();
 const mockGetTaskSession = vi.fn();
 const mockGetTaskSessionWs = vi.fn();
+const mockGetSession = vi.fn();
+const mockGetSessionWs = vi.fn();
 const mockListTasks = vi.fn();
 const mockClient = {
   getTask: mockGetTask,
   getTaskSession: mockGetTaskSession,
   getTaskSessionWs: mockGetTaskSessionWs,
+  getSession: mockGetSession,
+  getSessionWs: mockGetSessionWs,
   listTasks: mockListTasks,
 };
 const mockCreateClient = vi.fn(() => Promise.resolve(mockClient));
 const mockReadSessionEvents = vi.fn();
+const mockFormatSessionEvent = vi.fn(() => "event");
+const mockOutput = vi.fn();
 
 vi.mock("../src/agent/leader.js", () => ({
   createClient: mockCreateClient,
@@ -36,9 +42,9 @@ vi.mock("../src/sessionWs.js", () => ({
 
 // Silence output helpers — we don't test formatting
 vi.mock("../src/output.js", () => ({
-  getOutputFormat: vi.fn(() => "text"),
-  output: vi.fn(),
-  formatSessionEvent: vi.fn(() => "event"),
+  getOutputFormat: vi.fn((format?: string) => format ?? "text"),
+  output: (...args: unknown[]) => mockOutput(...args),
+  formatSessionEvent: (...args: unknown[]) => mockFormatSessionEvent(...args),
   formatTask: vi.fn(),
   formatTaskList: vi.fn(),
   formatTaskListWide: vi.fn(),
@@ -50,6 +56,11 @@ vi.mock("../src/output.js", () => ({
   formatRepository: vi.fn(),
   formatRepositoryList: vi.fn(),
   formatTaskNotes: vi.fn(),
+  formatMaintainer: vi.fn(),
+  formatMaintainerList: vi.fn(),
+  formatModelList: vi.fn(),
+  formatSubagent: vi.fn(),
+  formatSubagentList: vi.fn(),
 }));
 
 const { registerGetCommand } = await import("../src/commands/get.js");
@@ -74,6 +85,8 @@ beforeEach(() => {
   mockGetTask.mockResolvedValue({ id: "task-1", title: "Test task" });
   mockGetTaskSession.mockResolvedValue({ task_id: "task-1", session_id: "session-1", session: { state: "idle" } });
   mockGetTaskSessionWs.mockResolvedValue({ url: "wss://session.test" });
+  mockGetSession.mockResolvedValue({ session_id: "session-1", session: { state: "idle" } });
+  mockGetSessionWs.mockResolvedValue({ url: "wss://session.test" });
   mockReadSessionEvents.mockResolvedValue([]);
 
   exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
@@ -171,27 +184,64 @@ describe("get task — single-task fetch by ID", () => {
   it("requires a task id when --session is provided", async () => {
     const program = makeProgram();
     await expect(program.parseAsync(["get", "task", "--session"], { from: "user" })).rejects.toThrow("process.exit called");
-    expect(errorSpy).toHaveBeenCalledWith("Usage: ak get session <task-id>");
+    expect(errorSpy).toHaveBeenCalledWith("Usage: ak get task <task-id> --session");
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });
 
 describe("get session", () => {
-  it("loads session metadata and events for a task", async () => {
+  it("loads session metadata and events by session id", async () => {
     const program = makeProgram();
-    await program.parseAsync(["get", "session", "task-42"], { from: "user" });
-    expect(mockGetTaskSession).toHaveBeenCalledWith("task-42");
-    expect(mockGetTaskSessionWs).toHaveBeenCalledWith("task-42");
+    await program.parseAsync(["get", "session", "session-42"], { from: "user" });
+    expect(mockGetSession).toHaveBeenCalledWith("session-42");
+    expect(mockGetSessionWs).toHaveBeenCalledWith("session-42");
+    expect(mockGetTaskSession).not.toHaveBeenCalled();
+    expect(mockGetTaskSessionWs).not.toHaveBeenCalled();
     expect(mockReadSessionEvents).toHaveBeenCalledWith(
       "wss://session.test",
-      expect.objectContaining({ all: undefined, watch: undefined, filter: "all" }),
+      expect.objectContaining({ all: undefined, watch: undefined, filter: "all", recentLimit: 20 }),
     );
   });
 
   it("passes --watch, --all, and --tool to the WebSocket event reader", async () => {
     const program = makeProgram();
-    await program.parseAsync(["get", "session", "task-42", "--watch", "--all", "--tool"], { from: "user" });
+    await program.parseAsync(["get", "session", "session-42", "--watch", "--all", "--tool"], { from: "user" });
     expect(mockReadSessionEvents).toHaveBeenCalledWith("wss://session.test", expect.objectContaining({ all: true, watch: true, filter: "tool" }));
+  });
+
+  it("passes --limit to the WebSocket event reader", async () => {
+    const program = makeProgram();
+    await program.parseAsync(["get", "session", "session-42", "--limit", "5"], { from: "user" });
+    expect(mockReadSessionEvents).toHaveBeenCalledWith("wss://session.test", expect.objectContaining({ recentLimit: 5 }));
+  });
+
+  it("passes --verbose to the session event formatter", async () => {
+    mockReadSessionEvents.mockImplementationOnce(async (_url, options) => {
+      options.onEvent?.({ sequence: 1, type: "tool_execution_end" });
+      return [];
+    });
+    const program = makeProgram();
+    await program.parseAsync(["get", "session", "session-42", "--verbose"], { from: "user" });
+    expect(mockFormatSessionEvent).toHaveBeenCalledWith(expect.objectContaining({ sequence: 1 }), "all", expect.objectContaining({ verbose: true }));
+  });
+
+  it("supports json output with collected events", async () => {
+    mockReadSessionEvents.mockResolvedValueOnce([{ sequence: 1, type: "message_end" }]);
+    const program = makeProgram();
+    await program.parseAsync(["get", "session", "session-42", "-o", "json"], { from: "user" });
+    expect(mockOutput).toHaveBeenCalledWith(
+      expect.objectContaining({ session_id: "session-1", events: [{ sequence: 1, type: "message_end" }] }),
+      "json",
+      undefined,
+      expect.objectContaining({ kind: "session" }),
+    );
+  });
+
+  it("rejects invalid --limit values", async () => {
+    const program = makeProgram();
+    await expect(program.parseAsync(["get", "session", "session-42", "--limit", "nope"], { from: "user" })).rejects.toThrow("process.exit called");
+    expect(errorSpy).toHaveBeenCalledWith("--limit must be a positive number");
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
   it("rejects combining --tool and --assistant", async () => {

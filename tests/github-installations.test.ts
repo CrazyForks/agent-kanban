@@ -1498,7 +1498,7 @@ describe("recordInstallationFromSetup", () => {
     expect(tokenRequest?.method).toBe("POST");
     expect(JSON.parse(tokenRequest?.body ?? "{}")).toEqual({
       repositories: ["auth-repo"],
-      permissions: { contents: "write", pull_requests: "write" },
+      permissions: { contents: "write", issues: "write", pull_requests: "write" },
     });
   });
 
@@ -1553,7 +1553,7 @@ describe("recordInstallationFromSetup", () => {
           const body = input instanceof Request ? await input.clone().text() : String((init as any)?.body ?? "");
           expect(JSON.parse(body)).toEqual({
             repositories: ["maintainer-auth-repo"],
-            permissions: { contents: "write", pull_requests: "write" },
+            permissions: { contents: "write", issues: "write", pull_requests: "write" },
           });
           return new Response(JSON.stringify({ token: "ghs_maintainer_worker", expires_at: "2026-06-25T14:00:00Z" }), {
             status: 201,

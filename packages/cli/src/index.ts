@@ -36,7 +36,7 @@ const helpSections: [string, [string, string][]][] = [
       ["get maintainer --board <id>", "List board maintainers"],
       ["update maintainer <id> --board <id>", "Update or pause/resume a maintainer"],
       ["delete maintainer <id> --board <id>", "Delete (archive) a maintainer"],
-      ["get session <task-id>", "Show task session state and events"],
+      ["get session <session-id>", "Show runtime session state and events"],
       ["github auth <repo-id>", "Configure git and gh auth for a repository"],
     ],
   ],
