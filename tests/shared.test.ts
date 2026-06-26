@@ -77,7 +77,7 @@ describe("isValidSkillRef", () => {
   it("accepts installable owner/repo[#ref]@skill-name refs", () => {
     expect(isValidSkillRef("trailofbits/skills@differential-review")).toBe(true);
     expect(isValidSkillRef("obra/superpowers@verification-before-completion")).toBe(true);
-    expect(isValidSkillRef("saltbo/agent-kanban#codex/ama-runtime-integration@ak-maintainer")).toBe(true);
+    expect(isValidSkillRef("saltbo/agent-kanban#feature/maintainer@ak-maintainer")).toBe(true);
   });
 
   it("rejects short names and malformed refs", () => {

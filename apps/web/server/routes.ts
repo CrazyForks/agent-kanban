@@ -2262,7 +2262,7 @@ api.delete("/api/boards/:id", async (c) => {
   return c.json({ ok: true });
 });
 
-const AK_MAINTAINER_SKILL_REF = "saltbo/agent-kanban#codex/ama-runtime-integration@ak-maintainer";
+const AK_MAINTAINER_SKILL_REF = "saltbo/agent-kanban@ak-maintainer";
 const AK_MAINTAINER_TAINT: AgentTaint = { key: MAINTAINER_TAINT_KEY, value: "board-maintainer", effect: "NoSchedule" };
 
 function sameTaint(a: AgentTaint, b: AgentTaint): boolean {
