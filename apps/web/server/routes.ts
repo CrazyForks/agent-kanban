@@ -15,6 +15,7 @@ import {
   parseScheduledAt,
   RESERVED_ROLES,
   type Task,
+  type IdentityType as TaskIdentityType,
   type UsageInfo,
   type UsageWindow,
   validateTransition,
@@ -35,11 +36,11 @@ import {
 } from "./agentRepo";
 import {
   closeSession,
+  createAmaAgentSession,
   createSession,
   getAmaAgentSession,
   listSessions,
   reopenSession,
-  setAmaAgentSessionSecretCredential,
   updateSessionUsage,
 } from "./agentSessionRepo";
 import {
@@ -142,12 +143,10 @@ import {
   amaRuntimeName,
   apiUrl,
   clearAmaDispatchClaim,
-  createAkAgentSessionIdentity,
   createAmaAgentForAkProfile,
   dispatchTaskToAma,
   ensureAmaAgentForAkAgent,
   releaseTaskRuntimeBinding,
-  secretReferenceName,
   sendTaskMessageToAma,
   sendTaskRejectToAma,
   syncAmaAgentForAkProfile,
@@ -359,12 +358,24 @@ function readyAmaRuntimeNames(runtimes: MachineRuntime[]): string[] {
 
 function publicBoardMaintainer(
   maintainer: BoardMaintainer,
-): Omit<BoardMaintainer, "ama_schedule_id" | "ama_http_trigger_id" | "ama_memory_store_id" | "last_ama_session_id"> {
+): Omit<
+  BoardMaintainer,
+  | "ama_schedule_id"
+  | "ama_http_trigger_id"
+  | "ama_memory_store_id"
+  | "last_ama_session_id"
+  | "api_key_id"
+  | "api_key_credential_id"
+  | "api_key_credential_version_id"
+> {
   const {
     ama_schedule_id: _scheduleId,
     ama_http_trigger_id: _httpTriggerId,
     ama_memory_store_id: _memoryStoreId,
     last_ama_session_id: _lastAmaSessionId,
+    api_key_id: _apiKeyId,
+    api_key_credential_id: _apiKeyCredentialId,
+    api_key_credential_version_id: _apiKeyCredentialVersionId,
     ...publicMaintainer
   } = maintainer;
   return publicMaintainer;
@@ -680,6 +691,12 @@ function resolveActor(c: { get: (key: string) => any }): { actorType: string; ac
   else actorId = c.get("agentId") || "unknown";
   const sessionId: string | null = c.get("sessionId") || null;
   return { actorType: identity, actorId, sessionId };
+}
+
+function taskIdentity(c: { get: (key: string) => any }): TaskIdentityType {
+  const identity = c.get("identityType");
+  if (identity === "maintainer:key") throw new HTTPException(403, { message: "Agent session required" });
+  return identity;
 }
 
 // Access log
@@ -1622,7 +1639,7 @@ api.post("/api/tasks/:id/claim", async (c) => {
   const agentId = c.get("agentId");
   if (!agentId) throw new HTTPException(400, { message: "agent_id is required" });
 
-  const task = await claimTask(c.env.DB, c.req.param("id"), agentId, c.get("identityType"), c.get("sessionId") || null);
+  const task = await claimTask(c.env.DB, c.req.param("id"), agentId, taskIdentity(c), c.get("sessionId") || null);
   return c.json(task);
 });
 
@@ -1630,13 +1647,13 @@ api.post("/api/tasks/:id/complete", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
   const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) return c.json(task);
-  const transitionError = validateTransition("complete", task.status, c.get("identityType"));
+  const transitionError = validateTransition("complete", task.status, taskIdentity(c));
   if (transitionError) {
     throw new HTTPException(transitionError.code === "FORBIDDEN" ? 403 : 409, { message: transitionError.message });
   }
 
   await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
-  const completed = await completeTask(c.env.DB, task.id, actorType, actorId, c.get("identityType"), sessionId);
+  const completed = await completeTask(c.env.DB, task.id, actorType, actorId, taskIdentity(c), sessionId);
   return c.json(completed);
 });
 
@@ -1644,14 +1661,14 @@ api.post("/api/tasks/:id/release", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
   const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) return c.json(task);
-  const transitionError = validateTransition("release", task.status, c.get("identityType"));
+  const transitionError = validateTransition("release", task.status, taskIdentity(c));
   if (transitionError) {
     throw new HTTPException(transitionError.code === "FORBIDDEN" ? 403 : 409, { message: transitionError.message });
   }
 
   const unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
   await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), { ...unbound, status: "todo" }, { apiOrigin: new URL(c.req.url).origin });
-  const released = await releaseTask(c.env.DB, task.id, actorType, actorId, c.get("identityType"), "released", sessionId);
+  const released = await releaseTask(c.env.DB, task.id, actorType, actorId, taskIdentity(c), "released", sessionId);
   return c.json(released);
 });
 
@@ -1709,13 +1726,13 @@ api.post("/api/tasks/:id/cancel", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
   const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) throw new HTTPException(404, { message: "Task not found" });
-  const transitionError = validateTransition("cancel", task.status, c.get("identityType"));
+  const transitionError = validateTransition("cancel", task.status, taskIdentity(c));
   if (transitionError) {
     throw new HTTPException(transitionError.code === "FORBIDDEN" ? 403 : 409, { message: transitionError.message });
   }
 
   await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
-  const cancelled = await cancelTask(c.env.DB, task.id, actorType, actorId, c.get("identityType"), sessionId);
+  const cancelled = await cancelTask(c.env.DB, task.id, actorType, actorId, taskIdentity(c), sessionId);
   if (!cancelled) throw new HTTPException(404, { message: "Task not found" });
   return c.json(cancelled);
 });
@@ -1724,7 +1741,7 @@ api.post("/api/tasks/:id/review", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { pr_url?: string };
   const { actorType, actorId, sessionId } = resolveActor(c);
 
-  const task = await reviewTask(c.env.DB, c.req.param("id"), actorType, actorId, body.pr_url || null, c.get("identityType"), sessionId);
+  const task = await reviewTask(c.env.DB, c.req.param("id"), actorType, actorId, body.pr_url || null, taskIdentity(c), sessionId);
   return c.json(task);
 });
 
@@ -1733,7 +1750,7 @@ api.post("/api/tasks/:id/reject", async (c) => {
   const body = await c.req.json<{ reason?: string }>().catch(() => ({}) as { reason?: string });
   const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) throw new HTTPException(404, { message: "Task not found" });
-  const transitionError = validateTransition("reject", task.status, c.get("identityType"));
+  const transitionError = validateTransition("reject", task.status, taskIdentity(c));
   if (transitionError) {
     throw new HTTPException(transitionError.code === "FORBIDDEN" ? 403 : 409, { message: transitionError.message });
   }
@@ -1751,7 +1768,7 @@ api.post("/api/tasks/:id/reject", async (c) => {
     throw error;
   }
 
-  const rejected = await rejectTask(c.env.DB, task.id, actorType, actorId, c.get("identityType"), body.reason, sessionId);
+  const rejected = await rejectTask(c.env.DB, task.id, actorType, actorId, taskIdentity(c), body.reason, sessionId);
   if (!rejected) throw new HTTPException(404, { message: "Task not found" });
   return c.json(rejected);
 });
@@ -1911,24 +1928,24 @@ api.post("/api/boards/:id/maintainers", async (c) => {
   const maintainerId = newLongId();
   const triggerName = `${board.name} maintainer ${maintainerId}`;
   const maintainerSessionMetadata = { labels: { maintainerId } };
-  const sessionIdentity = await createAkAgentSessionIdentity(c.env.DB, c.env, ownerId, maintainerAgentId);
   const vaultId = await resolveAmaSessionSecretVaultId(c.env.DB, c.env, ownerId);
-  const sessionSecret = await createAmaSessionSecret(c.env, ownerId, {
-    projectId: amaProjectId,
+  const maintainerKey = await createMaintainerApiKeySecret({
+    env: c.env,
+    ownerId,
+    amaProjectId,
     vaultId,
-    name: secretReferenceName(sessionIdentity.sessionId),
-    secretValue: JSON.stringify(sessionIdentity.privateKeyJwk),
-    metadata: { purpose: "board-maintainer-session", boardId, agentId: maintainerAgentId },
+    boardId,
+    maintainerId,
+    agentId: maintainerAgentId,
   });
-  await setAmaAgentSessionSecretCredential(c.env.DB, sessionIdentity.sessionId, sessionSecret.credentialId);
   const runtimeEnv = maintainerRuntimeEnv({
     agentId: maintainerAgentId,
-    sessionId: sessionIdentity.sessionId,
     boardId,
+    maintainerId,
     repositories: boardRepositories.map((repo) => ({ id: repo.id, full_name: repo.full_name, url: repo.url })),
     apiUrl: apiUrl(c.env, new URL(c.req.url).origin),
   });
-  const runtimeSecretEnv = [{ name: "AK_AGENT_KEY", credentialId: sessionSecret.credentialId, versionId: sessionSecret.activeVersionId }];
+  const runtimeSecretEnv = [{ name: "AK_API_KEY", credentialId: maintainerKey.credentialId, versionId: maintainerKey.versionId }];
   const memoryStore = await createAmaMemoryStore(c.env, ownerId, {
     projectId: amaProjectId,
     name: `${triggerName} memory`,
@@ -1991,6 +2008,9 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     prompt: body.prompt,
     intervalSeconds,
     status: schedule.status === "paused" ? "paused" : "active",
+    apiKeyId: maintainerKey.apiKeyId,
+    apiKeyCredentialId: maintainerKey.credentialId,
+    apiKeyCredentialVersionId: maintainerKey.versionId,
   });
   return c.json(await publicBoardMaintainerWithAmaStatus(c.env.DB, c.env, ownerId, maintainer), 201);
 });
@@ -2008,6 +2028,45 @@ api.get("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
   if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
   return c.json(await publicBoardMaintainerWithAmaStatus(c.env.DB, c.env, ownerId, maintainer));
+});
+
+api.post("/api/boards/:id/maintainers/:maintainerId/sessions", async (c) => {
+  const ownerId = c.get("ownerId");
+  const boardId = c.req.param("id");
+  const maintainerId = c.req.param("maintainerId");
+  const metadata = c.get("apiKeyMetadata") ?? {};
+  if (metadata.boardId !== boardId || metadata.maintainerId !== maintainerId) {
+    throw new HTTPException(403, { message: "API key is bound to a different maintainer" });
+  }
+
+  const body = await c.req.json<{
+    session_id?: string;
+    session_public_key?: string;
+    ama_session_id?: string | null;
+    ama_trigger_run_id?: string | null;
+  }>();
+  if (!body.session_id || typeof body.session_id !== "string") {
+    throw new HTTPException(400, { message: "session_id is required" });
+  }
+  if (!body.session_public_key || typeof body.session_public_key !== "string") {
+    throw new HTTPException(400, { message: "session_public_key is required" });
+  }
+
+  const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, maintainerId);
+  if (!maintainer || maintainer.status === "archived") throw new HTTPException(404, { message: "Board maintainer not found" });
+  if (maintainer.status !== "active") throw new HTTPException(409, { message: "Board maintainer is not active" });
+  if (metadata.agentId !== maintainer.agent_id) {
+    throw new HTTPException(403, { message: "API key is bound to a different agent" });
+  }
+
+  const result = await createAmaAgentSession(c.env.DB, c.env, {
+    ownerId,
+    agentId: maintainer.agent_id,
+    sessionId: body.session_id,
+    sessionPublicKey: body.session_public_key,
+    amaSessionId: body.ama_session_id ?? null,
+  });
+  return c.json({ agent_id: maintainer.agent_id, session_id: body.session_id, ...result }, 201);
 });
 
 api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
@@ -2033,24 +2092,35 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   const amaAgent = await ensureAmaAgentForAkAgent(c.env.DB, c.env, ownerId, maintainer.agent_id, amaProjectId, amaRuntime, {
     memoryEnabled: true,
   });
-  const sessionIdentity = await createAkAgentSessionIdentity(c.env.DB, c.env, ownerId, maintainer.agent_id);
-  const vaultId = await resolveAmaSessionSecretVaultId(c.env.DB, c.env, ownerId);
-  const sessionSecret = await createAmaSessionSecret(c.env, ownerId, {
-    projectId: amaProjectId,
-    vaultId,
-    name: secretReferenceName(sessionIdentity.sessionId),
-    secretValue: JSON.stringify(sessionIdentity.privateKeyJwk),
-    metadata: { purpose: "board-maintainer-session", boardId, agentId: maintainer.agent_id },
-  });
-  await setAmaAgentSessionSecretCredential(c.env.DB, sessionIdentity.sessionId, sessionSecret.credentialId);
+  let apiKeyCredentialId = maintainer.api_key_credential_id;
+  let apiKeyCredentialVersionId = maintainer.api_key_credential_version_id;
+  if (!maintainer.api_key_id || !apiKeyCredentialId || !apiKeyCredentialVersionId) {
+    const vaultId = await resolveAmaSessionSecretVaultId(c.env.DB, c.env, ownerId);
+    const maintainerKey = await createMaintainerApiKeySecret({
+      env: c.env,
+      ownerId,
+      amaProjectId,
+      vaultId,
+      boardId,
+      maintainerId: maintainer.id,
+      agentId: maintainer.agent_id,
+    });
+    await c.env.DB.prepare(
+      "UPDATE board_maintainers SET api_key_id = ?, api_key_credential_id = ?, api_key_credential_version_id = ?, updated_at = ? WHERE owner_id = ? AND board_id = ? AND id = ?",
+    )
+      .bind(maintainerKey.apiKeyId, maintainerKey.credentialId, maintainerKey.versionId, new Date().toISOString(), ownerId, boardId, maintainer.id)
+      .run();
+    apiKeyCredentialId = maintainerKey.credentialId;
+    apiKeyCredentialVersionId = maintainerKey.versionId;
+  }
   const runtimeEnv = maintainerRuntimeEnv({
     agentId: maintainer.agent_id,
-    sessionId: sessionIdentity.sessionId,
     boardId,
+    maintainerId: maintainer.id,
     repositories: boardRepositories.map((repo) => ({ id: repo.id, full_name: repo.full_name, url: repo.url })),
     apiUrl: apiUrl(c.env, new URL(c.req.url).origin),
   });
-  const runtimeSecretEnv = [{ name: "AK_AGENT_KEY", credentialId: sessionSecret.credentialId, versionId: sessionSecret.activeVersionId }];
+  const runtimeSecretEnv = [{ name: "AK_API_KEY", credentialId: apiKeyCredentialId, versionId: apiKeyCredentialVersionId }];
   const resourceRefs = maintainer.ama_memory_store_id
     ? [{ type: "memory_store", storeId: maintainer.ama_memory_store_id, access: "read_write" }]
     : [];
@@ -2302,21 +2372,60 @@ function initialMaintainerHeartbeat(input: { boardId: string; boardName: string;
   ].join("\n");
 }
 
+const MAINTAINER_API_KEY_PERMISSIONS = { maintainerSession: ["create"] };
+
+function maintainerApiKeySecretName(maintainerId: string) {
+  return `AK_API_KEY_${maintainerId.replaceAll(/[^A-Za-z0-9_]/g, "_")}`;
+}
+
+async function createMaintainerApiKeySecret(input: {
+  env: Env;
+  ownerId: string;
+  amaProjectId: string;
+  vaultId: string;
+  boardId: string;
+  maintainerId: string;
+  agentId: string;
+}) {
+  const auth = createAuth(input.env);
+  const apiKey = await auth.api.createApiKey({
+    body: {
+      configId: "maintainer",
+      userId: input.ownerId,
+      name: `Board maintainer ${input.maintainerId}`,
+      permissions: MAINTAINER_API_KEY_PERMISSIONS,
+      metadata: {
+        boardId: input.boardId,
+        maintainerId: input.maintainerId,
+        agentId: input.agentId,
+      },
+    },
+  });
+  const secret = await createAmaSessionSecret(input.env, input.ownerId, {
+    projectId: input.amaProjectId,
+    vaultId: input.vaultId,
+    name: maintainerApiKeySecretName(input.maintainerId),
+    secretValue: apiKey.key,
+    metadata: { purpose: "board-maintainer-api-key", boardId: input.boardId, maintainerId: input.maintainerId, agentId: input.agentId },
+  });
+  return { apiKeyId: apiKey.id, credentialId: secret.credentialId, versionId: secret.activeVersionId };
+}
+
 function maintainerRuntimeEnv(input: {
   agentId: string;
-  sessionId: string;
   boardId: string;
+  maintainerId: string;
   repositories: Array<{ id: string; full_name: string; url: string }>;
   apiUrl: string;
 }): Record<string, string> {
   return {
     AK_WORKER: "1",
     AK_AGENT_ID: input.agentId,
-    AK_SESSION_ID: input.sessionId,
     AK_BOARD_ID: input.boardId,
+    AK_MAINTAINER_ID: input.maintainerId,
     AK_BOARD_REPOSITORIES: JSON.stringify(input.repositories),
     AK_API_URL: input.apiUrl,
-    GH_CONFIG_DIR: `/tmp/ak-gh-${input.sessionId}`,
+    GH_CONFIG_DIR: `/tmp/ak-gh-${input.maintainerId}`,
   };
 }
 

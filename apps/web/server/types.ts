@@ -36,8 +36,11 @@ export interface Env {
 declare module "hono" {
   interface ContextVariableMap {
     ownerId: string;
-    identityType: "user" | "machine" | "agent:worker" | "agent:leader";
+    identityType: "user" | "machine" | "maintainer:key" | "agent:worker" | "agent:leader";
     apiKeyId?: string;
+    apiKeyConfigId?: string;
+    apiKeyPermissions?: Record<string, string[]> | null;
+    apiKeyMetadata?: Record<string, any> | null;
     machineId?: string;
     agentId?: string;
     sessionId?: string;

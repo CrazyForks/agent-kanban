@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { SignJWT } from "jose";
+import { readWorkerAuthSession } from "../auth/session.js";
 import { ApiClient } from "./base.js";
 
 export class AgentClient extends ApiClient {
@@ -19,7 +20,13 @@ export class AgentClient extends ApiClient {
     const sessionId = process.env.AK_SESSION_ID;
     const keyJson = process.env.AK_AGENT_KEY;
     const apiUrl = process.env.AK_API_URL;
-    if (!agentId || !sessionId || !keyJson || !apiUrl) return null;
+    if (!agentId || !sessionId || !keyJson || !apiUrl) {
+      if (process.env.AK_WORKER !== "1") return null;
+      const cached = readWorkerAuthSession();
+      if (!cached) return null;
+      const privateKey = await crypto.subtle.importKey("jwk", cached.privateKeyJwk, { name: "Ed25519" } as any, false, ["sign"]);
+      return new AgentClient(cached.apiUrl, cached.agentId, cached.sessionId, privateKey);
+    }
 
     const privateKey = await crypto.subtle.importKey("jwk", JSON.parse(keyJson), { name: "Ed25519" } as any, false, ["sign"]);
     return new AgentClient(apiUrl, agentId, sessionId, privateKey);

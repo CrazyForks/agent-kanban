@@ -111,11 +111,23 @@ export function createAuth(env: Env) {
         defaultRole: "user",
         adminRoles: ["admin"],
       }),
-      apiKey({
-        defaultPrefix: "ak_",
-        enableMetadata: true,
-        rateLimit: { enabled: false },
-      }),
+      apiKey([
+        {
+          configId: "default",
+          defaultPrefix: "ak_",
+          enableMetadata: true,
+          rateLimit: { enabled: false },
+        },
+        {
+          configId: "maintainer",
+          defaultPrefix: "ak_maint_",
+          enableMetadata: true,
+          rateLimit: { enabled: true, maxRequests: 60, timeWindow: 60_000 },
+          permissions: {
+            defaultPermissions: { maintainerSession: ["create"] },
+          },
+        },
+      ]),
       agentAuth({
         allowedKeyAlgorithms: ["Ed25519"],
         agentSessionTTL: 86400,

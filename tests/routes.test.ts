@@ -297,6 +297,7 @@ describe("routes", () => {
     const memoryStoreRequests: any[] = [];
     const memoryRequests: any[] = [];
     const sessionSecretRequests: any[] = [];
+    let maintainerApiKey: string | null = null;
     const triggerRequests: any[] = [];
     const updateRequests: Array<{ triggerId: string; body: any }> = [];
     const archiveRequests: string[] = [];
@@ -339,11 +340,17 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials" && method === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         sessionSecretRequests.push(body);
-        expect(body.name).toMatch(/^AK_AGENT_KEY_/);
+        expect(body.name).toMatch(/^AK_API_KEY_/);
         expect(body.type).toBe("session_env_secret");
-        expect(body.metadata).toEqual({ purpose: "board-maintainer-session", boardId: maintainerBoard.id, agentId: maintainerAgent.id });
+        expect(body.metadata).toEqual({
+          purpose: "board-maintainer-api-key",
+          boardId: maintainerBoard.id,
+          maintainerId: expect.any(String),
+          agentId: maintainerAgent.id,
+        });
         expect(body.secret.referenceName).toBe(body.name);
-        expect(JSON.parse(body.secret.secretValue)).toHaveProperty("kty", "OKP");
+        expect(body.secret.secretValue).toMatch(/^ak_maint_/);
+        maintainerApiKey = body.secret.secretValue;
         return jsonResponse({ id: "vaultcred_maintainer", activeVersionId: "vaultver_maintainer" }, 201);
       }
       if (url === "https://ama.test/api/v1/memory-stores" && method === "POST") {
@@ -373,6 +380,7 @@ describe("routes", () => {
         expect(body.env).toMatchObject({
           AK_WORKER: "1",
           AK_BOARD_ID: maintainerBoard.id,
+          AK_MAINTAINER_ID: body.metadata.labels.maintainerId,
           AK_API_URL: "https://ak.test",
         });
         expect(JSON.parse(body.env.AK_BOARD_REPOSITORIES)).toEqual([
@@ -381,10 +389,11 @@ describe("routes", () => {
         expect(body.env.AK_AGENT_ID).toBe(maintainerAgent.id);
         expect(body.env).not.toHaveProperty("AK_REPOSITORY_ID");
         expect(body.env).not.toHaveProperty("AK_REPOSITORY_FULL_NAME");
-        expect(body.env.AK_SESSION_ID).toEqual(expect.any(String));
-        expect(body.env.GH_CONFIG_DIR).toBe(`/tmp/ak-gh-${body.env.AK_SESSION_ID}`);
+        expect(body.env).not.toHaveProperty("AK_SESSION_ID");
+        expect(body.env).not.toHaveProperty("AK_AGENT_KEY");
+        expect(body.env.GH_CONFIG_DIR).toBe(`/tmp/ak-gh-${body.metadata.labels.maintainerId}`);
         expect(body.secretEnv).toEqual([
-          { name: "AK_AGENT_KEY", credentialRef: { credentialId: "vaultcred_maintainer", versionId: "vaultver_maintainer" } },
+          { name: "AK_API_KEY", credentialRef: { credentialId: "vaultcred_maintainer", versionId: "vaultver_maintainer" } },
         ]);
         expect(body.promptTemplate).toContain(`AK board ${maintainerBoard.id}`);
         expect(body.promptTemplate).toContain(`GitHub repository scope: maintainer-org/maintainer-repo.`);
@@ -611,6 +620,9 @@ describe("routes", () => {
       expect(maintainer).not.toHaveProperty("repository_id");
       expect(maintainer).not.toHaveProperty("ama_schedule_id");
       expect(maintainer).not.toHaveProperty("last_ama_session_id");
+      expect(maintainer).not.toHaveProperty("api_key_id");
+      expect(maintainer).not.toHaveProperty("api_key_credential_id");
+      expect(maintainer).not.toHaveProperty("api_key_credential_version_id");
       expect(maintainer).not.toHaveProperty("name");
       const updatedMaintainerAgent = await env.DB.prepare("SELECT skills, taints FROM agents WHERE id = ?").bind(maintainerAgent.id).first<{
         skills: string;
@@ -648,9 +660,13 @@ describe("routes", () => {
       expect(triggerRequests.map((request) => request.type).sort()).toEqual(["http", "scheduled"]);
       expect(triggerRequests[0].metadata).toEqual({ labels: { maintainerId: maintainer.id } });
       expect(triggerRequests[1].metadata).toEqual(triggerRequests[0].metadata);
-      expect(triggerRequests[0].env).toMatchObject({ AK_AGENT_ID: maintainerAgent.id, AK_BOARD_ID: maintainerBoard.id });
-      expect(triggerRequests[0].env.AK_SESSION_ID).toEqual(expect.any(String));
-      expect(triggerRequests[1].env.AK_SESSION_ID).toBe(triggerRequests[0].env.AK_SESSION_ID);
+      expect(triggerRequests[0].env).toMatchObject({
+        AK_AGENT_ID: maintainerAgent.id,
+        AK_BOARD_ID: maintainerBoard.id,
+        AK_MAINTAINER_ID: maintainer.id,
+      });
+      expect(triggerRequests[0].env).not.toHaveProperty("AK_SESSION_ID");
+      expect(triggerRequests[1].env).not.toHaveProperty("AK_SESSION_ID");
       expect(triggerRequests[0].secretEnv).toEqual(triggerRequests[1].secretEnv);
 
       const duplicateRes = await apiRequest(
@@ -669,22 +685,59 @@ describe("routes", () => {
       expect(memoryRequests).toHaveLength(1);
       expect(triggerRequests).toHaveLength(2);
 
-      const maintainerSession = await env.DB.prepare(
-        "SELECT agent_id, status, secret_credential_id FROM ama_agent_sessions WHERE id = ? AND owner_id = ?",
-      )
-        .bind(triggerRequests[0].env.AK_SESSION_ID, userTokenOwnerId)
-        .first<{ agent_id: string; status: string; secret_credential_id: string }>();
-      expect(maintainerSession).toEqual({ agent_id: maintainerAgent.id, status: "active", secret_credential_id: "vaultcred_maintainer" });
+      const sessionBeforeLogin = await env.DB.prepare("SELECT COUNT(*) AS count FROM ama_agent_sessions WHERE agent_id = ? AND owner_id = ?")
+        .bind(maintainerAgent.id, userTokenOwnerId)
+        .first<{ count: number }>();
+      expect(sessionBeforeLogin?.count).toBe(0);
       const maintainerRow = await env.DB.prepare(
-        "SELECT ama_schedule_id, ama_http_trigger_id, ama_memory_store_id FROM board_maintainers WHERE id = ?",
+        "SELECT ama_schedule_id, ama_http_trigger_id, ama_memory_store_id, api_key_id, api_key_credential_id, api_key_credential_version_id FROM board_maintainers WHERE id = ?",
       )
         .bind(maintainer.id)
-        .first<{ ama_schedule_id: string; ama_http_trigger_id: string; ama_memory_store_id: string }>();
-      expect(maintainerRow).toEqual({
+        .first<{
+          ama_schedule_id: string;
+          ama_http_trigger_id: string;
+          ama_memory_store_id: string;
+          api_key_id: string;
+          api_key_credential_id: string;
+          api_key_credential_version_id: string;
+        }>();
+      expect(maintainerRow).toMatchObject({
         ama_schedule_id: "sched_maintainer",
         ama_http_trigger_id: "http_maintainer",
         ama_memory_store_id: "mem_maintainer",
+        api_key_id: expect.any(String),
+        api_key_credential_id: "vaultcred_maintainer",
+        api_key_credential_version_id: "vaultver_maintainer",
       });
+      expect(maintainerApiKey).toEqual(expect.any(String));
+      const { publicKey } = (await crypto.subtle.generateKey({ name: "Ed25519" } as any, true, ["sign", "verify"])) as CryptoKeyPair;
+      const pubJwk = await crypto.subtle.exportKey("jwk", publicKey);
+      const maintainerSessionId = crypto.randomUUID();
+      const sessionRes = await apiRequest(
+        "POST",
+        `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/sessions`,
+        { session_id: maintainerSessionId, session_public_key: pubJwk.x, ama_session_id: "ama_maintainer_session_1" },
+        maintainerApiKey!,
+      );
+      expect(sessionRes.status).toBe(201);
+      await expect(sessionRes.json()).resolves.toMatchObject({
+        agent_id: maintainerAgent.id,
+        session_id: maintainerSessionId,
+        delegation_proof: expect.any(String),
+      });
+      const maintainerSession = await env.DB.prepare(
+        "SELECT agent_id, ama_session_id, status, secret_credential_id FROM ama_agent_sessions WHERE id = ? AND owner_id = ?",
+      )
+        .bind(maintainerSessionId, userTokenOwnerId)
+        .first<{ agent_id: string; ama_session_id: string; status: string; secret_credential_id: string | null }>();
+      expect(maintainerSession).toEqual({
+        agent_id: maintainerAgent.id,
+        ama_session_id: "ama_maintainer_session_1",
+        status: "active",
+        secret_credential_id: null,
+      });
+      const maintainerKeyBoardsRes = await apiRequest("GET", "/api/boards", undefined, maintainerApiKey!);
+      expect(maintainerKeyBoardsRes.status).toBe(403);
 
       const listRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers`, undefined, userToken);
       expect(listRes.status).toBe(200);
@@ -709,6 +762,9 @@ describe("routes", () => {
       expect(detail).not.toHaveProperty("ama_schedule_id");
       expect(detail).not.toHaveProperty("ama_http_trigger_id");
       expect(detail).not.toHaveProperty("ama_memory_store_id");
+      expect(detail).not.toHaveProperty("api_key_id");
+      expect(detail).not.toHaveProperty("api_key_credential_id");
+      expect(detail).not.toHaveProperty("api_key_credential_version_id");
 
       const pauseRes = await apiRequest("PATCH", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`, { status: "paused" }, userToken);
       expect(pauseRes.status).toBe(200);
@@ -724,12 +780,14 @@ describe("routes", () => {
             AK_WORKER: "1",
             AK_AGENT_ID: maintainerAgent.id,
             AK_BOARD_ID: maintainerBoard.id,
+            AK_MAINTAINER_ID: maintainer.id,
             AK_API_URL: "https://ak.test",
           },
-          secretEnv: [{ name: "AK_AGENT_KEY", credentialRef: { credentialId: "vaultcred_maintainer", versionId: "vaultver_maintainer" } }],
+          secretEnv: [{ name: "AK_API_KEY", credentialRef: { credentialId: "vaultcred_maintainer", versionId: "vaultver_maintainer" } }],
         });
-        expect(request.body.env.GH_CONFIG_DIR).toBe(`/tmp/ak-gh-${request.body.env.AK_SESSION_ID}`);
-        expect(request.body.env.AK_SESSION_ID).toEqual(expect.any(String));
+        expect(request.body.env.GH_CONFIG_DIR).toBe(`/tmp/ak-gh-${maintainer.id}`);
+        expect(request.body.env).not.toHaveProperty("AK_SESSION_ID");
+        expect(request.body.env).not.toHaveProperty("AK_AGENT_KEY");
         expect(JSON.parse(request.body.env.AK_BOARD_REPOSITORIES)).toEqual([
           { id: maintainerRepository.id, full_name: "maintainer-org/maintainer-repo", url: "https://github.com/maintainer-org/maintainer-repo" },
         ]);

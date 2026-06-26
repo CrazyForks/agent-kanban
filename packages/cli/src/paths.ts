@@ -23,6 +23,7 @@ export const WORKTREES_DIR = join(DATA_DIR, "worktrees");
 export const SESSIONS_DIR = join(STATE_DIR, "sessions");
 export const TRACKED_TASKS_FILE = join(STATE_DIR, "tracked-tasks.json");
 export const IDENTITIES_DIR = join(STATE_DIR, "identities");
+export const WORKER_AUTH_SESSION_FILE = join(STATE_DIR, "worker-auth-session.json");
 
 // Legacy paths — used only for migration, then removed
 export const LEGACY_SAVED_SESSIONS_FILE = join(DATA_DIR, "saved-sessions.json");

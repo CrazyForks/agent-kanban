@@ -2,11 +2,15 @@ import type { Context, Next } from "hono";
 import { createAuth } from "./betterAuth";
 import type { Env } from "./types";
 
-type IdentityType = "user" | "machine" | "agent:worker" | "agent:leader";
+type IdentityType = "user" | "machine" | "maintainer:key" | "agent:worker" | "agent:leader";
 
 interface RouteRule {
   allow: IdentityType[];
   capability?: string; // required agent capability (only checked for agent identities)
+  apiKey?: {
+    configId?: string;
+    permissions?: Record<string, string[]>;
+  };
 }
 
 const LEADER_CAPABILITIES = ["task:complete", "task:reject", "task:cancel", "task:log", "task:message", "agent:usage"];
@@ -62,6 +66,11 @@ const ROUTE_RULES: { method: string; pattern: RegExp; rule: RouteRule }[] = [
   { method: "PATCH", pattern: /^\/api\/boards\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
   { method: "DELETE", pattern: /^\/api\/boards\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
   { method: "POST", pattern: /^\/api\/boards\/[^/]+\/maintainers$/, rule: { allow: ["user", "agent:leader"] } },
+  {
+    method: "POST",
+    pattern: /^\/api\/boards\/[^/]+\/maintainers\/[^/]+\/sessions$/,
+    rule: { allow: ["maintainer:key"], apiKey: { configId: "maintainer", permissions: { maintainerSession: ["create"] } } },
+  },
   { method: "PATCH", pattern: /^\/api\/boards\/[^/]+\/maintainers\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
   { method: "DELETE", pattern: /^\/api\/boards\/[^/]+\/maintainers\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
 
@@ -178,7 +187,8 @@ async function handleUserSession(c: Context<{ Bindings: Env }>, auth: any, heade
 async function handleApiKey(c: Context<{ Bindings: Env }>, auth: any, token: string, next: Next) {
   let result: any;
   try {
-    result = await auth.api.verifyApiKey({ body: { key: token } });
+    const rule = matchRouteRule(c.req.method, c.req.path);
+    result = await auth.api.verifyApiKey({ body: { key: token, ...rule?.apiKey } });
   } catch (err: any) {
     return c.json({ error: { code: "UNAUTHORIZED", message: err?.message || "Invalid API key" } }, 401);
   }
@@ -187,9 +197,12 @@ async function handleApiKey(c: Context<{ Bindings: Env }>, auth: any, token: str
   }
 
   c.set("ownerId", result.key.referenceId);
-  c.set("identityType", "machine");
   c.set("apiKeyId", result.key.id);
+  c.set("apiKeyConfigId", result.key.configId);
+  c.set("apiKeyPermissions", result.key.permissions ?? null);
   const metadata = result.key.metadata as Record<string, any> | null;
+  c.set("apiKeyMetadata", metadata ?? null);
+  c.set("identityType", result.key.configId === "maintainer" ? "maintainer:key" : "machine");
   if (metadata?.machineId) c.set("machineId", metadata.machineId);
 
   return enforceRouteRule(c, next);
@@ -246,9 +259,14 @@ function decodeJwtClaim(token: string, claim: string): string | null {
 
 function enforceRouteRule(c: Context<{ Bindings: Env }>, next: Next) {
   const rule = matchRouteRule(c.req.method, c.req.path);
-  if (!rule) return next(); // no rule = open to any authenticated identity
-
   const identity = c.get("identityType") as IdentityType;
+  if (!rule) {
+    if (identity === "maintainer:key") {
+      return c.json({ error: { code: "FORBIDDEN", message: "Agent session required" } }, 403);
+    }
+    return next(); // no rule = open to any authenticated user/machine/agent identity
+  }
+
   if (!rule.allow.includes(identity)) {
     return c.json({ error: { code: "FORBIDDEN", message: `${rule.allow.join(" or ")} required` } }, 403);
   }

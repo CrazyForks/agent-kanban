@@ -14,6 +14,9 @@ export interface BoardMaintainer {
   last_run_at: string | null;
   last_ama_session_id: string | null;
   last_error_message: string | null;
+  api_key_id: string | null;
+  api_key_credential_id: string | null;
+  api_key_credential_version_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -28,6 +31,9 @@ export interface CreateBoardMaintainerInput {
   prompt: string;
   intervalSeconds: number;
   status: "active" | "paused";
+  apiKeyId?: string | null;
+  apiKeyCredentialId?: string | null;
+  apiKeyCredentialVersionId?: string | null;
 }
 
 export interface UpdateBoardMaintainerInput {
@@ -47,8 +53,8 @@ export async function createBoardMaintainer(db: D1, ownerId: string, input: Crea
     .prepare(
       `INSERT INTO board_maintainers (
         id, owner_id, board_id, agent_id, ama_schedule_id, ama_http_trigger_id, ama_memory_store_id,
-        prompt, interval_seconds, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        prompt, interval_seconds, status, api_key_id, api_key_credential_id, api_key_credential_version_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -61,6 +67,9 @@ export async function createBoardMaintainer(db: D1, ownerId: string, input: Crea
       input.prompt,
       input.intervalSeconds,
       input.status,
+      input.apiKeyId ?? null,
+      input.apiKeyCredentialId ?? null,
+      input.apiKeyCredentialVersionId ?? null,
       now,
       now,
     )

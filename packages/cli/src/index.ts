@@ -4,6 +4,7 @@ import { createClient, createIdentity, getIdentity } from "./agent/leader.js";
 import { detectRuntime } from "./agent/runtime.js";
 import { registerAgentCommand } from "./commands/agent.js";
 import { registerApplyCommand } from "./commands/apply.js";
+import { registerAuthCommand } from "./commands/auth.js";
 import { registerCreateCommand } from "./commands/create.js";
 import { registerDeleteCommand } from "./commands/delete.js";
 import { registerDescribeCommand } from "./commands/describe.js";
@@ -37,6 +38,7 @@ const helpSections: [string, [string, string][]][] = [
       ["update maintainer <id> --board <id>", "Update or pause/resume a maintainer"],
       ["delete maintainer <id> --board <id>", "Delete (archive) a maintainer"],
       ["get session <session-id>", "Show runtime session state and events"],
+      ["auth git <repo-id>", "Configure git auth for a repository"],
       ["github auth <repo-id>", "Configure git and gh auth for a repository"],
     ],
   ],
@@ -212,6 +214,7 @@ taskCmd
 // ─── Top-level CRUD ───
 
 registerAgentCommand(program);
+registerAuthCommand(program);
 registerGetCommand(program);
 registerGithubCommand(program);
 registerDescribeCommand(program);
