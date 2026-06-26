@@ -11,7 +11,7 @@ test.describe("Agents Page", () => {
     await page.goto("/agents/new");
     await page.getByRole("button", { name: "Custom Build your own from" }).click();
 
-    const skillsInput = page.getByRole("textbox", { name: "owner/repo@skill-name" });
+    const skillsInput = page.getByRole("textbox", { name: "owner/repo[#ref]@skill-name" });
     await skillsInput.click();
     await skillsInput.fill("owner/skills@python");
     await page.keyboard.press("Enter");

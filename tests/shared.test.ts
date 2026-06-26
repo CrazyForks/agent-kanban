@@ -74,9 +74,10 @@ describe("deriveUsername", () => {
 });
 
 describe("isValidSkillRef", () => {
-  it("accepts installable owner/repo@skill-name refs", () => {
+  it("accepts installable owner/repo[#ref]@skill-name refs", () => {
     expect(isValidSkillRef("trailofbits/skills@differential-review")).toBe(true);
     expect(isValidSkillRef("obra/superpowers@verification-before-completion")).toBe(true);
+    expect(isValidSkillRef("saltbo/agent-kanban#codex/ama-runtime-integration@ak-maintainer")).toBe(true);
   });
 
   it("rejects short names and malformed refs", () => {
@@ -84,6 +85,7 @@ describe("isValidSkillRef", () => {
     expect(isValidSkillRef("trailofbits/skills")).toBe(false);
     expect(isValidSkillRef("trailofbits/skills@")).toBe(false);
     expect(isValidSkillRef("trailofbits/skills@bad skill")).toBe(false);
+    expect(isValidSkillRef("trailofbits/skills#@bad")).toBe(false);
   });
 
   it("returns the first invalid skill ref", () => {

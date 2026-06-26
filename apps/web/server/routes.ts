@@ -186,11 +186,11 @@ const SUBAGENT_RUNTIMES = new Set(["claude", "codex", "copilot"]);
 function assertValidSkillRefs(skills: unknown) {
   if (skills === undefined) return;
   if (!Array.isArray(skills) || skills.some((skill) => typeof skill !== "string")) {
-    throw new HTTPException(400, { message: "skills must be an array of source/repo@skill-name strings" });
+    throw new HTTPException(400, { message: "skills must be an array of source/repo[#ref]@skill-name strings" });
   }
   const invalid = findInvalidSkillRef(skills);
   if (invalid) {
-    throw new HTTPException(400, { message: `Invalid skill "${invalid}". Use source/repo@skill-name format.` });
+    throw new HTTPException(400, { message: `Invalid skill "${invalid}". Use source/repo[#ref]@skill-name format.` });
   }
 }
 
@@ -2196,7 +2196,7 @@ api.delete("/api/boards/:id", async (c) => {
   return c.json({ ok: true });
 });
 
-const AK_MAINTAINER_SKILL_REF = "saltbo/agent-kanban@ak-maintainer";
+const AK_MAINTAINER_SKILL_REF = "saltbo/agent-kanban#codex/ama-runtime-integration@ak-maintainer";
 const AK_MAINTAINER_TAINT: AgentTaint = { key: MAINTAINER_TAINT_KEY, value: "board-maintainer", effect: "NoSchedule" };
 
 function sameTaint(a: AgentTaint, b: AgentTaint): boolean {

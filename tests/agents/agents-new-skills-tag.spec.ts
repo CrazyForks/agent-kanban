@@ -13,7 +13,7 @@ test.describe("Agents Page", () => {
 
     // expect: Skills tag input is visible with placeholder text
     const workflowGroup = page.getByRole("group", { name: "Workflow" });
-    const skillsInput = workflowGroup.getByRole("textbox", { name: "owner/repo@skill-name" });
+    const skillsInput = workflowGroup.getByRole("textbox", { name: "owner/repo[#ref]@skill-name" });
     await expect(skillsInput).toBeVisible();
 
     // 2. Click the Skills field, type a valid skill ref, and press Enter

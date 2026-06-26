@@ -331,7 +331,7 @@ describe("routes", () => {
       }
       if (url === "https://ama.test/api/v1/agents/ama_agent_maintainer" && reqMethod(input, init) === "PATCH") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        expect(body.skills).toEqual(["saltbo/agent-kanban@agent-kanban", "saltbo/agent-kanban@ak-maintainer"]);
+        expect(body.skills).toEqual(["saltbo/agent-kanban@agent-kanban", "saltbo/agent-kanban#codex/ama-runtime-integration@ak-maintainer"]);
         expect(body.handoffPolicy).toEqual({ enabled: true, targets: [{ role: "worker" }] });
         expect(body.memoryPolicy).toEqual({ enabled: true, mode: "notebook", scope: "project_agent" });
         return jsonResponse({ id: "ama_agent_maintainer", projectId: "project_123", name: "agent" });
@@ -388,7 +388,7 @@ describe("routes", () => {
         ]);
         expect(body.promptTemplate).toContain(`AK board ${maintainerBoard.id}`);
         expect(body.promptTemplate).toContain(`GitHub repository scope: maintainer-org/maintainer-repo.`);
-        expect(body.promptTemplate).toContain("saltbo/agent-kanban@ak-maintainer");
+        expect(body.promptTemplate).toContain("saltbo/agent-kanban#codex/ama-runtime-integration@ak-maintainer");
         expect(body.promptTemplate).toContain("Maintainer instructions:");
         expect(body.promptTemplate).not.toContain("Do not use pre-existing gh login state or human GitHub tokens");
         if (body.type === "http") {
@@ -595,7 +595,10 @@ describe("routes", () => {
         skills: string;
         taints: string;
       }>();
-      expect(JSON.parse(updatedMaintainerAgent!.skills)).toEqual(["saltbo/agent-kanban@agent-kanban", "saltbo/agent-kanban@ak-maintainer"]);
+      expect(JSON.parse(updatedMaintainerAgent!.skills)).toEqual([
+        "saltbo/agent-kanban@agent-kanban",
+        "saltbo/agent-kanban#codex/ama-runtime-integration@ak-maintainer",
+      ]);
       expect(JSON.parse(updatedMaintainerAgent!.taints)).toContainEqual({
         key: "agent-kanban.dev/maintainer",
         value: "board-maintainer",
