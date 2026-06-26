@@ -36,9 +36,9 @@ Event runs are reactive. Use the provided event context as a signal, then inspec
 
 - For issue and pull request comments or reviews, continue in the same GitHub thread when a maintainer response is useful.
 - Do not answer only from webhook context. Fetch the current issue, PR, review, or comment state first.
-- To read the current issue title or body, use the subject number from the trigger:
+- To read the current issue title or body, use the subject number from the trigger. Do not use GitHub database ids with `gh issue view`:
   `gh issue view <issue-number> -R <owner/repo> --json title,body --jq '{title,body}'`
-- To read the current pull request title or description, use the subject number from the trigger:
+- To read the current pull request title or description, use the subject number from the trigger. Do not use GitHub database ids with `gh pr view`:
   `gh pr view <pr-number> -R <owner/repo> --json title,body --jq '{title,body}'`
 - To read an issue conversation comment body, match the event's comment URL:
   `gh issue view <issue-number> -R <owner/repo> --json comments --jq '.comments[] | select(.url=="<comment-url>") | .body'`

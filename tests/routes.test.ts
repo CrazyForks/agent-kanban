@@ -400,8 +400,8 @@ describe("routes", () => {
           expect(body.promptTemplate).toContain('{{#if eq body.subject.type "pull"}}');
           expect(body.promptTemplate).toContain("{{#if body.comment.id}}");
           expect(body.promptTemplate).toContain("{{#if body.review.id}}");
-          expect(body.promptTemplate).toContain("{{ body.subject.id }}");
-          expect(body.promptTemplate).toContain("{{ body.subject.node_id }}");
+          expect(body.promptTemplate).not.toContain("{{ body.subject.id }}");
+          expect(body.promptTemplate).not.toContain("{{ body.subject.node_id }}");
           expect(body.promptTemplate).toContain("{{ body.subject.number }}");
           expect(body.promptTemplate).toContain("{{ body.comment.id }}");
           expect(body.promptTemplate).toContain("{{ body.comment.node_id }}");

@@ -17,7 +17,8 @@ set -euo pipefail
 #     isolated worker HOME
 #
 # Layer B (--live, minutes): real AMA maintainer runs.
-#   - sends a signed GitHub issues webhook for the board repository
+#   - creates a real GitHub issue in the board repository
+#   - sends a signed GitHub issues webhook with the real issue payload
 #   - waits for the event-triggered maintainer to triage the issue into a repo task
 #   - creates a second scheduled maintainer and waits for its marker task
 #
@@ -88,6 +89,8 @@ HTTP_TRIAGE_TASK_ID=""
 HTTP_ISSUE_NUMBER=""
 HTTP_ISSUE_TITLE=""
 HTTP_ISSUE_URL=""
+HTTP_ISSUE_REST_JSON=""
+HTTP_REPOSITORY_REST_JSON=""
 SCHEDULED_MARKER_TASK_ID=""
 TEMP_WORKER_HOME=""
 
@@ -98,6 +101,9 @@ cleanup() {
   if [ -n "$MAINTAINER_ID" ]; then ak delete maintainer "$MAINTAINER_ID" --board "$BOARD_ID" >/dev/null 2>&1 || true; fi
   if [ -n "$HTTP_MAINTAINER_ID" ]; then ak delete maintainer "$HTTP_MAINTAINER_ID" --board "$BOARD_ID" >/dev/null 2>&1 || true; fi
   if [ -n "$SCHEDULED_MAINTAINER_ID" ]; then ak delete maintainer "$SCHEDULED_MAINTAINER_ID" --board "$BOARD_ID" >/dev/null 2>&1 || true; fi
+  if [ "$KEEP_ARTIFACTS" != 1 ] && [ -n "$HTTP_ISSUE_NUMBER" ]; then
+    gh issue close "$HTTP_ISSUE_NUMBER" -R "$REPO_FULL_NAME" --reason "not planned" --comment "Closed by AK maintainer smoke test cleanup." >/dev/null 2>&1 || true
+  fi
   if [ "$KEEP_ARTIFACTS" != 1 ]; then
     if [ -n "$HTTP_TRIAGE_TASK_ID" ]; then ak task cancel "$HTTP_TRIAGE_TASK_ID" >/dev/null 2>&1 || true; ak delete task "$HTTP_TRIAGE_TASK_ID" >/dev/null 2>&1 || true; fi
     if [ -n "$SCHEDULED_MARKER_TASK_ID" ]; then ak task cancel "$SCHEDULED_MARKER_TASK_ID" >/dev/null 2>&1 || true; ak delete task "$SCHEDULED_MARKER_TASK_ID" >/dev/null 2>&1 || true; fi
@@ -202,6 +208,20 @@ discover_installation_id() {
   (cd apps/web && npx wrangler d1 execute agent-kanban-db --local --json --command \
     "SELECT installation_id FROM github_installations WHERE owner_id = '$owner_id' AND suspended_at IS NULL ORDER BY updated_at DESC LIMIT 1;" 2>/dev/null) \
     | json_query "data[0]?.results?.[0]?.installation_id"
+}
+
+create_real_github_issue() {
+  local created_url issue_json
+  created_url="$(gh issue create \
+    -R "$REPO_FULL_NAME" \
+    --title "$HTTP_ISSUE_TITLE" \
+    --body "Temporary issue created by AK maintainer smoke test $TIMESTAMP. It will be closed by the smoke cleanup unless --keep-artifacts is set.")"
+  issue_json="$(gh issue view "$created_url" -R "$REPO_FULL_NAME" --json number,title,url)"
+  HTTP_ISSUE_NUMBER="$(printf '%s' "$issue_json" | json_query "data.number")"
+  HTTP_ISSUE_TITLE="$(printf '%s' "$issue_json" | json_query "data.title")"
+  HTTP_ISSUE_URL="$(printf '%s' "$issue_json" | json_query "data.url")"
+  HTTP_ISSUE_REST_JSON="$(gh api "repos/$REPO_FULL_NAME/issues/$HTTP_ISSUE_NUMBER" --jq '{ id, node_id, number, title, html_url, state, user: { login: .user.login, id: .user.id, node_id: .user.node_id, type: .user.type } }')"
+  HTTP_REPOSITORY_REST_JSON="$(gh api "repos/$REPO_FULL_NAME" --jq '{ id, node_id, full_name, html_url, private, owner: { login: .owner.login, id: .owner.id, node_id: .owner.node_id, type: .owner.type } }')"
 }
 
 ensure_board_repo_mapping() {
@@ -361,37 +381,32 @@ assert_issue_triage_task() {
     fail "HTTP issue triage task assigned_to=$assigned_to, expected unassigned"
   fi
 
-  if [[ "$description" == *"Issue Number: #$HTTP_ISSUE_NUMBER"* ]] && [[ "$description" == *"$HTTP_ISSUE_URL"* ]] && [[ "$description" == *"$HTTP_ISSUE_TITLE"* ]]; then
-    pass "HTTP issue triage task description carries webhook issue context"
+  if [[ "$description" == *"Issue Number: #$HTTP_ISSUE_NUMBER"* ]] && [[ "$description" == *"$HTTP_ISSUE_URL"* ]]; then
+    pass "HTTP issue triage task description carries webhook issue number and URL"
   else
-    fail "HTTP issue triage task description is missing issue context"
+    fail "HTTP issue triage task description is missing issue number or URL"
     echo "    description: $description"
   fi
 }
 
 post_github_issue_event() {
   local suffix="$1"
-  local issue_number="$2"
-  local issue_title="$3"
   local base_url secret payload signature delivery
   base_url="$(api_url)"
   secret="$(dev_var GITHUB_APP_WEBHOOK_SECRET)"
   delivery="maintainer-smoke-${TIMESTAMP}-${suffix}"
-  payload=$(node -e "
+  payload=$(ISSUE_JSON="$HTTP_ISSUE_REST_JSON" REPOSITORY_JSON="$HTTP_REPOSITORY_REST_JSON" node -e "
+const issue = JSON.parse(process.env.ISSUE_JSON);
+const repository = JSON.parse(process.env.REPOSITORY_JSON);
 const payload = {
   action: 'opened',
   installation: { id: Number(process.argv[1]) },
-  repository: { id: 1, full_name: process.argv[2] },
-  issue: {
-    id: Date.now(),
-    number: Number(process.argv[3]),
-    title: process.argv[4],
-    html_url: 'https://github.com/' + process.argv[2] + '/issues/' + process.argv[3],
-    user: { login: 'agent-kanban-smoke' },
-  },
+  repository,
+  issue,
+  sender: issue.user,
 };
 process.stdout.write(JSON.stringify(payload));
-" "$INSTALLATION_ID" "$REPO_FULL_NAME" "$issue_number" "$issue_title")
+" "$INSTALLATION_ID")
   signature=$(node -e "
 const crypto = require('crypto');
 const secret = process.argv[1];
@@ -604,13 +619,13 @@ if [ "$LIVE" = 1 ]; then
   echo "  GitHub installation: $INSTALLATION_ID"
 
   HTTP_TRIAGE_TITLE="maintainer-smoke-triage-$TIMESTAMP"
-  HTTP_ISSUE_NUMBER="${TIMESTAMP: -6}"
   HTTP_ISSUE_TITLE="Maintainer smoke issue $TIMESTAMP"
-  HTTP_ISSUE_URL="https://github.com/$REPO_FULL_NAME/issues/$HTTP_ISSUE_NUMBER"
+  create_real_github_issue
+  echo "  GitHub issue: $REPO_FULL_NAME#$HTTP_ISSUE_NUMBER ($HTTP_ISSUE_URL)"
   SCHEDULED_MARKER_TITLE="maintainer-smoke-scheduled-$TIMESTAMP"
   LIVE_BASELINE_SEQ="$(max_task_seq)"
 
-  HTTP_PROMPT="This is a maintainer issue triage smoke test. The system prompt includes a GitHub webhook event JSON. Treat only an issues.opened event as actionable. First run: ak get repo --board $BOARD_ID -o json. Confirm repository $REPO_ID ($REPO_FULL_NAME) is present. Then run: ak github auth $REPO_ID --print-token. Do not print or store the token. After both commands succeed, extract issue.number, issue.title, and issue.html_url from the webhook event JSON. Create exactly one unassigned triage task with: ak create task --board $BOARD_ID --repo $REPO_ID --title \"$HTTP_TRIAGE_TITLE\" --description \"Source: GitHub issues.opened maintainer smoke. Issue Number: #<issue.number>. Issue Title: <issue.title>. Issue URL: <issue.html_url>. Requested Action: triage the issue and decide the implementation path.\" Use the values from the event JSON in the description. Do not modify GitHub or the repository."
+  HTTP_PROMPT="This is a maintainer issue triage smoke test. Treat only an issues.opened event as actionable. First run: ak get repo --board $BOARD_ID -o json. Confirm repository $REPO_ID ($REPO_FULL_NAME) is present. Then run: ak github auth $REPO_ID --print-token. Do not print or store the token. After both commands succeed, use the issue number and issue URL from the trigger context. Create exactly one unassigned triage task with: ak create task --board $BOARD_ID --repo $REPO_ID --title \"$HTTP_TRIAGE_TITLE\" --description \"Source: GitHub issues.opened maintainer smoke. Issue Number: #<issue.number>. Issue URL: <issue.html_url>. Requested Action: triage the issue and decide the implementation path.\" Do not modify GitHub or the repository."
   HTTP_MAINTAINER_ID=$(ak create maintainer \
     --board "$BOARD_ID" \
     --agent "$AGENT_ID" \
@@ -621,7 +636,7 @@ if [ "$LIVE" = 1 ]; then
   echo "  HTTP maintainer: $HTTP_MAINTAINER_ID"
 
   HTTP_BASELINE="$(maintainer_runs_count "$HTTP_MAINTAINER_ID")"
-  post_github_issue_event "issue" "$HTTP_ISSUE_NUMBER" "$HTTP_ISSUE_TITLE"
+  post_github_issue_event "issue"
   sleep 5
   HTTP_AFTER="$(maintainer_runs_count "$HTTP_MAINTAINER_ID")"
   if [ "${HTTP_AFTER:-0}" -gt "${HTTP_BASELINE:-0}" ]; then
@@ -638,6 +653,14 @@ if [ "$LIVE" = 1 ]; then
     echo "    latest HTTP run: $(latest_run_summary "$HTTP_MAINTAINER_ID")"
   fi
   assert_no_caller_created_tasks_since "$LIVE_BASELINE_SEQ" "HTTP maintainer event window"
+
+  DELETE_OK=$(ak delete maintainer "$HTTP_MAINTAINER_ID" --board "$BOARD_ID" -o json 2>/dev/null | json_query "data.ok" || echo "")
+  if [ "$DELETE_OK" = "true" ]; then
+    pass "HTTP maintainer deleted before scheduled maintainer phase"
+    HTTP_MAINTAINER_ID=""
+  else
+    fail "HTTP maintainer delete before scheduled maintainer phase did not return ok"
+  fi
 
   SCHEDULED_PROMPT="This is a scheduled maintainer smoke test. First run: ak get repo --board $BOARD_ID -o json. Confirm repository $REPO_ID ($REPO_FULL_NAME) is present. Then run: ak github auth $REPO_ID --print-token. Do not print or store the token. After both commands succeed, create exactly one unassigned marker task with: ak create task --board $BOARD_ID --repo $REPO_ID --title \"$SCHEDULED_MARKER_TITLE\" --description \"Scheduled maintainer smoke marker\". Do not modify any repository."
   SCHEDULED_MAINTAINER_ID=$(ak create maintainer \
