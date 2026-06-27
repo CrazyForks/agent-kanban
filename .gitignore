@@ -28,6 +28,7 @@ Thumbs.db
 coverage/
 playwright-report/
 test-results/
+.maintainer-smoke/
 
 # Symlink (local dev workaround)
 /functions
