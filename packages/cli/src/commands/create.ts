@@ -138,7 +138,6 @@ export function registerCreateCommand(program: Command) {
     .description("Create an AI maintainer for a board")
     .requiredOption("--board <id>", "Board ID")
     .requiredOption("--agent <id>", "Maintainer agent ID")
-    .requiredOption("--prompt <prompt>", "Maintainer heartbeat prompt")
     .option("--interval-seconds <seconds>", "Heartbeat interval in seconds", String(MAINTAINER_HEARTBEAT_DEFAULT_INTERVAL_SECONDS))
     .option("--heartbeat <on|off>", "Scheduled heartbeat switch", "on")
     .option("--paused", "Create maintainer paused")
@@ -152,7 +151,6 @@ export function registerCreateCommand(program: Command) {
       const client = await createClient();
       const body: Record<string, unknown> = {
         agent_id: opts.agent,
-        prompt: opts.prompt,
         interval_seconds: intervalSeconds,
         heartbeat_enabled: parseHeartbeat(String(opts.heartbeat)),
       };

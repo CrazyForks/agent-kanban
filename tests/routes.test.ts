@@ -363,11 +363,7 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/memory-stores/mem_maintainer/memories" && method === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         memoryRequests.push(body);
-        expect(body.path).toBe("HEARTBEAT.md");
-        expect(body.content).toContain(`Board: ${maintainerBoard.name} (${maintainerBoard.id})`);
-        expect(body.content).toContain("Repositories: maintainer-org/maintainer-repo");
-        expect(body.metadata).toEqual({ purpose: "ak-board-maintainer-heartbeat", boardId: maintainerBoard.id });
-        return jsonResponse({ id: "memory_heartbeat", ...body }, 201);
+        return jsonResponse({ id: "memory_unexpected", ...body }, 201);
       }
       if (url === "https://ama.test/api/v1/triggers" && method === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
@@ -383,22 +379,22 @@ describe("routes", () => {
           AK_MAINTAINER_ID: body.metadata.labels.maintainerId,
           AK_API_URL: "https://ak.test",
         });
-        expect(JSON.parse(body.env.AK_BOARD_REPOSITORIES)).toEqual([
-          { id: maintainerRepository.id, full_name: "maintainer-org/maintainer-repo", url: "https://github.com/maintainer-org/maintainer-repo" },
-        ]);
+        expect(body.env).not.toHaveProperty("AK_BOARD_REPOSITORIES");
         expect(body.env.AK_AGENT_ID).toBe(maintainerAgent.id);
         expect(body.env).not.toHaveProperty("AK_REPOSITORY_ID");
         expect(body.env).not.toHaveProperty("AK_REPOSITORY_FULL_NAME");
         expect(body.env).not.toHaveProperty("AK_SESSION_ID");
         expect(body.env).not.toHaveProperty("AK_AGENT_KEY");
-        expect(body.env.GH_CONFIG_DIR).toBe(`/tmp/ak-gh-${body.metadata.labels.maintainerId}`);
+        expect(body.env).not.toHaveProperty("GH_CONFIG_DIR");
         expect(body.secretEnv).toEqual([
           { name: "AK_API_KEY", credentialRef: { credentialId: "vaultcred_maintainer", versionId: "vaultver_maintainer" } },
         ]);
         expect(body.promptTemplate).toContain(`AK board ${maintainerBoard.id}`);
-        expect(body.promptTemplate).toContain(`GitHub repository scope: maintainer-org/maintainer-repo.`);
+        expect(body.promptTemplate).toContain(`Discover the current repository scope with AK`);
+        expect(body.promptTemplate).toContain(`Every repository currently attached to board ${maintainerBoard.id} is in your maintenance scope.`);
+        expect(body.promptTemplate).not.toContain("maintainer-org/maintainer-repo");
         expect(body.promptTemplate).toContain("saltbo/agent-kanban@ak-maintainer");
-        expect(body.promptTemplate).toContain("Maintainer instructions:");
+        expect(body.promptTemplate).not.toContain("Maintainer instructions:");
         expect(body.promptTemplate).not.toContain("Do not use pre-existing gh login state or human GitHub tokens");
         if (body.type === "http") {
           expect(body.schedule).toBeNull();
@@ -572,7 +568,6 @@ describe("routes", () => {
         `/api/boards/${maintainerBoard.id}/maintainers`,
         {
           agent_id: maintainerAgent.id,
-          prompt: "Too frequent",
           interval_seconds: 3599,
         },
         userToken,
@@ -593,7 +588,6 @@ describe("routes", () => {
         `/api/boards/${maintainerBoard.id}/maintainers`,
         {
           agent_id: ordinaryAgent.id,
-          prompt: "Inspect open work.",
           interval_seconds: 3600,
         },
         userToken,
@@ -606,7 +600,6 @@ describe("routes", () => {
         `/api/boards/${maintainerBoard.id}/maintainers`,
         {
           agent_id: maintainerAgent.id,
-          prompt: "Inspect open work and create follow-up tasks when needed.",
           interval_seconds: 3600,
         },
         userToken,
@@ -653,7 +646,7 @@ describe("routes", () => {
       expect(maintainer.latest_run).not.toHaveProperty("sessionId");
       expect(maintainer.latest_run).not.toHaveProperty("scheduledFor");
       expect(memoryStoreRequests).toHaveLength(1);
-      expect(memoryRequests).toHaveLength(1);
+      expect(memoryRequests).toHaveLength(0);
       expect(sessionSecretRequests).toHaveLength(1);
       expect(triggerRequests).toHaveLength(2);
       expect(triggerRequests.map((request) => request.type).sort()).toEqual(["http", "scheduled"]);
@@ -673,7 +666,6 @@ describe("routes", () => {
         `/api/boards/${maintainerBoard.id}/maintainers`,
         {
           agent_id: maintainerAgent.id,
-          prompt: "Inspect the same board twice.",
           interval_seconds: 3600,
         },
         userToken,
@@ -681,7 +673,7 @@ describe("routes", () => {
       expect(duplicateRes.status).toBe(409);
       await expect(duplicateRes.json()).resolves.toMatchObject({ error: { message: "Board already has a maintainer" } });
       expect(memoryStoreRequests).toHaveLength(1);
-      expect(memoryRequests).toHaveLength(1);
+      expect(memoryRequests).toHaveLength(0);
       expect(triggerRequests).toHaveLength(2);
 
       const sessionBeforeLogin = await env.DB.prepare("SELECT COUNT(*) AS count FROM ama_agent_sessions WHERE agent_id = ? AND owner_id = ?")
@@ -788,12 +780,10 @@ describe("routes", () => {
           },
           secretEnv: [{ name: "AK_API_KEY", credentialRef: { credentialId: "vaultcred_maintainer", versionId: "vaultver_maintainer" } }],
         });
-        expect(request.body.env.GH_CONFIG_DIR).toBe(`/tmp/ak-gh-${maintainer.id}`);
+        expect(request.body.env).not.toHaveProperty("GH_CONFIG_DIR");
         expect(request.body.env).not.toHaveProperty("AK_SESSION_ID");
         expect(request.body.env).not.toHaveProperty("AK_AGENT_KEY");
-        expect(JSON.parse(request.body.env.AK_BOARD_REPOSITORIES)).toEqual([
-          { id: maintainerRepository.id, full_name: "maintainer-org/maintainer-repo", url: "https://github.com/maintainer-org/maintainer-repo" },
-        ]);
+        expect(request.body.env).not.toHaveProperty("AK_BOARD_REPOSITORIES");
       }
 
       const heartbeatOffRes = await apiRequest(
@@ -825,11 +815,11 @@ describe("routes", () => {
       const updateRes = await apiRequest(
         "PATCH",
         `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}`,
-        { prompt: "Inspect stale work.", interval_seconds: 7200 },
+        { interval_seconds: 7200 },
         userToken,
       );
       expect(updateRes.status).toBe(200);
-      await expect(updateRes.json()).resolves.toEqual(expect.objectContaining({ prompt: "Inspect stale work.", interval_seconds: 7200 }));
+      await expect(updateRes.json()).resolves.toEqual(expect.objectContaining({ interval_seconds: 7200 }));
       expect(
         updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.schedule?.intervalSeconds === 7200)?.body,
       ).toMatchObject({
@@ -841,7 +831,7 @@ describe("routes", () => {
       expect(
         updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.schedule?.intervalSeconds === 7200)?.body
           .promptTemplate,
-      ).toContain(`AK board ${maintainerBoard.id}`);
+      ).toBeUndefined();
       expect(
         updateRequests.find((request) => request.triggerId === "http_maintainer" && request.body.promptTemplate?.includes("{{ body.comment.id }}"))
           ?.body.name,
@@ -853,7 +843,7 @@ describe("routes", () => {
       expect(
         updateRequests.find((request) => request.triggerId === "http_maintainer" && request.body.promptTemplate?.includes("{{ body.comment.id }}"))
           ?.body.promptTemplate,
-      ).toContain("{{ body.comment.id }}");
+      ).toBeUndefined();
 
       const runsRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/runs?limit=2`, undefined, userToken);
       expect(runsRes.status).toBe(200);
@@ -1074,7 +1064,6 @@ describe("routes", () => {
         {
           agent_id: patchAgent.id,
           name: "Patch header agent",
-          prompt: "Inspect open work.",
           interval_seconds: 3600,
         },
         patchToken,
@@ -1221,7 +1210,6 @@ describe("routes", () => {
         {
           agent_id: deleteAgent.id,
           name: "Delete header agent",
-          prompt: "Inspect open work.",
           interval_seconds: 3600,
         },
         deleteToken,

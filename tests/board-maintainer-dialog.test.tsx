@@ -38,7 +38,6 @@ function renderDialog() {
         maintainer: {
           id: "maintainer-1",
           agent_id: "agent-1",
-          prompt: "Inspect open work.",
           interval_seconds: 3600,
           heartbeat_enabled: false,
         },
@@ -61,7 +60,6 @@ describe("BoardMaintainerDialog", () => {
     renderDialog();
 
     fireEvent.change(screen.getByLabelText("Interval seconds"), { target: { value: "3600" } });
-    fireEvent.change(screen.getByLabelText("Prompt"), { target: { value: "Inspect open work." } });
     expect(await screen.findByRole("switch", { name: "Scheduled heartbeat" })).not.toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
@@ -69,7 +67,6 @@ describe("BoardMaintainerDialog", () => {
       expect(updateMutateAsync).toHaveBeenCalledWith({
         maintainerId: "maintainer-1",
         body: {
-          prompt: "Inspect open work.",
           interval_seconds: 3600,
           heartbeat_enabled: false,
         },

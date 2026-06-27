@@ -109,7 +109,6 @@ export function MaintainerDetailPage() {
                 <h1 className="truncate text-xl font-bold text-content-primary">Board maintainer</h1>
                 <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-content-tertiary">{maintainer.status}</span>
               </div>
-              <p className="mt-2 max-w-3xl text-sm text-content-secondary">{maintainer.prompt}</p>
             </div>
             <Button variant="outline" size="sm" onClick={refreshAll}>
               <RefreshCw className="size-3.5" />

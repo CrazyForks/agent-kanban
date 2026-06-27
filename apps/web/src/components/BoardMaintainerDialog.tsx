@@ -9,11 +9,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Switch } from "./ui/switch";
-import { Textarea } from "./ui/textarea";
 
 interface BoardMaintainer {
   id: string;
-  prompt: string;
   agent_id?: string;
   interval_seconds: number;
   heartbeat_enabled?: boolean;
@@ -42,14 +40,12 @@ export function BoardMaintainerDialog({ boardId, maintainer, open, onOpenChange 
     queryFn: () => api.agents.list({ kind: "worker", maintainer: "true" }),
     enabled: open && !isEditing,
   });
-  const [prompt, setPrompt] = useState("");
   const [agentId, setAgentId] = useState("");
   const [intervalSeconds, setIntervalSeconds] = useState(String(MAINTAINER_HEARTBEAT_DEFAULT_INTERVAL_SECONDS));
   const [heartbeatEnabled, setHeartbeatEnabled] = useState(true);
 
   useEffect(() => {
     if (!open) return;
-    setPrompt(maintainer?.prompt ?? "");
     setAgentId(maintainer?.agent_id ?? "");
     setIntervalSeconds(String(maintainer?.interval_seconds ?? MAINTAINER_HEARTBEAT_DEFAULT_INTERVAL_SECONDS));
     setHeartbeatEnabled(maintainer?.heartbeat_enabled ?? true);
@@ -64,15 +60,11 @@ export function BoardMaintainerDialog({ boardId, maintainer, open, onOpenChange 
       toast.error("Interval must be at least 3600 seconds");
       return;
     }
-    if (!prompt.trim()) {
-      toast.error("Prompt is required");
-      return;
-    }
     try {
       if (maintainer) {
         await updateMaintainer.mutateAsync({
           maintainerId: maintainer.id,
-          body: { prompt: prompt.trim(), interval_seconds: seconds, heartbeat_enabled: heartbeatEnabled },
+          body: { interval_seconds: seconds, heartbeat_enabled: heartbeatEnabled },
         });
         toast.success("Maintainer updated");
       } else {
@@ -81,7 +73,6 @@ export function BoardMaintainerDialog({ boardId, maintainer, open, onOpenChange 
           return;
         }
         await createMaintainer.mutateAsync({
-          prompt: prompt.trim(),
           agent_id: agentId,
           interval_seconds: seconds,
           heartbeat_enabled: heartbeatEnabled,
@@ -140,18 +131,6 @@ export function BoardMaintainerDialog({ boardId, maintainer, open, onOpenChange 
               <p className="mt-0.5 text-xs text-content-tertiary">GitHub events stay active when this is off.</p>
             </div>
             <Switch id="maintainer-heartbeat" checked={heartbeatEnabled} onCheckedChange={setHeartbeatEnabled} disabled={pending} />
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="maintainer-prompt">Prompt</Label>
-            <Textarea
-              id="maintainer-prompt"
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              rows={6}
-              placeholder="Inspect open work, create follow-up tasks when needed, and escalate proposals for human review."
-              className="resize-none"
-            />
           </div>
         </div>
 

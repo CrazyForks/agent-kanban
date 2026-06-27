@@ -207,7 +207,6 @@ export function registerUpdateCommand(program: Command) {
     .command("maintainer <id>")
     .description("Update a board maintainer")
     .option("--board <id>", "Board ID")
-    .option("--prompt <prompt>", "Heartbeat prompt")
     .option("--interval-seconds <seconds>", "Heartbeat interval in seconds")
     .option("--heartbeat <on|off>", "Scheduled heartbeat switch")
     .option("--status <status>", "active or paused")
@@ -218,7 +217,6 @@ export function registerUpdateCommand(program: Command) {
         process.exit(1);
       }
       const body: Record<string, unknown> = {};
-      if (opts.prompt) body.prompt = opts.prompt;
       if (opts.intervalSeconds !== undefined) {
         const intervalSeconds = Number.parseInt(String(opts.intervalSeconds), 10);
         if (!Number.isInteger(intervalSeconds) || intervalSeconds < MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS) {
@@ -236,7 +234,7 @@ export function registerUpdateCommand(program: Command) {
         body.status = opts.status;
       }
       if (Object.keys(body).length === 0) {
-        console.error("Nothing to update. Provide --prompt, --interval-seconds, --heartbeat, or --status.");
+        console.error("Nothing to update. Provide --interval-seconds, --heartbeat, or --status.");
         process.exit(1);
       }
       const client = await createClient();

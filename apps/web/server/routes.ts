@@ -63,7 +63,6 @@ import {
   createAmaEnvironment,
   createAmaHttpAgentTrigger,
   createAmaMemoryStore,
-  createAmaMemoryStoreMemory,
   createAmaScheduledAgentTrigger,
   createAmaSessionSecret,
   deleteAmaScheduledAgentTrigger,
@@ -385,6 +384,7 @@ function publicBoardMaintainer(
   | "ama_http_trigger_id"
   | "ama_memory_store_id"
   | "last_ama_session_id"
+  | "prompt"
   | "api_key_id"
   | "api_key_credential_id"
   | "api_key_credential_version_id"
@@ -394,6 +394,7 @@ function publicBoardMaintainer(
     ama_http_trigger_id: _httpTriggerId,
     ama_memory_store_id: _memoryStoreId,
     last_ama_session_id: _lastAmaSessionId,
+    prompt: _prompt,
     api_key_id: _apiKeyId,
     api_key_credential_id: _apiKeyCredentialId,
     api_key_credential_version_id: _apiKeyCredentialVersionId,
@@ -1941,7 +1942,6 @@ api.post("/api/boards/:id/maintainers", async (c) => {
   const ownerId = c.get("ownerId");
   const boardId = c.req.param("id");
   const body = await c.req.json<{
-    prompt: string;
     agent_id?: string;
     interval_seconds?: number;
     heartbeat_enabled?: boolean;
@@ -1949,7 +1949,6 @@ api.post("/api/boards/:id/maintainers", async (c) => {
   }>();
   const maintainerAgentId = body.agent_id;
   if (!maintainerAgentId) throw new HTTPException(400, { message: "agent_id is required" });
-  if (!body.prompt || typeof body.prompt !== "string") throw new HTTPException(400, { message: "prompt is required" });
   const intervalSeconds = body.interval_seconds ?? MAINTAINER_HEARTBEAT_DEFAULT_INTERVAL_SECONDS;
   validateMaintainerHeartbeatInterval(intervalSeconds);
   validateMaintainerHeartbeatEnabled(body.heartbeat_enabled);
@@ -1965,8 +1964,6 @@ api.post("/api/boards/:id/maintainers", async (c) => {
   if (existingMaintainers.length > 0) {
     throw new HTTPException(409, { message: "Board already has a maintainer" });
   }
-  const boardRepositories = await listBoardRepositories(c.env.DB, ownerId, boardId);
-
   const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
   const maintainerAgent = await ensureMaintainerAgentProfile(c.env.DB, ownerId, maintainerAgentId);
   // The trigger is left unpinned: AMA resolves a runner-capable environment for
@@ -1993,7 +1990,6 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     agentId: maintainerAgentId,
     boardId,
     maintainerId,
-    repositories: boardRepositories.map((repo) => ({ id: repo.id, full_name: repo.full_name, url: repo.url })),
     apiUrl: apiUrl(c.env, new URL(c.req.url).origin),
   });
   const runtimeSecretEnv = [{ name: "AK_API_KEY", credentialId: maintainerKey.credentialId, versionId: maintainerKey.versionId }];
@@ -2003,28 +1999,13 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     description: `Persistent memory for AK board ${boardId} maintainer.`,
     metadata: { purpose: "ak-board-maintainer", boardId, agentId: maintainerAgentId },
   });
-  await createAmaMemoryStoreMemory(c.env, ownerId, {
-    projectId: amaProjectId,
-    storeId: memoryStore.id,
-    path: MAINTAINER_HEARTBEAT_PATH,
-    content: initialMaintainerHeartbeat({
-      boardId,
-      boardName: board.name,
-      repositories: boardRepositories.map((repo) => repo.full_name),
-    }),
-    metadata: { purpose: "ak-board-maintainer-heartbeat", boardId },
-  });
   const resourceRefs = [{ type: "memory_store", storeId: memoryStore.id, access: "read_write" }];
   const schedule = await createAmaScheduledAgentTrigger(c.env, ownerId, {
     projectId: amaProjectId,
     agentId: amaAgent.id,
     runtime: amaRuntime,
     name: triggerName,
-    promptTemplate: boardMaintainerScheduledPrompt(
-      boardId,
-      body.prompt,
-      boardRepositories.map((repo) => repo.full_name),
-    ),
+    promptTemplate: boardMaintainerScheduledPrompt(boardId),
     intervalSeconds,
     status: maintainerScheduledStatus(maintainerStatus, heartbeatEnabled),
     resourceRefs,
@@ -2037,11 +2018,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     agentId: amaAgent.id,
     runtime: amaRuntime,
     name: `${triggerName} GitHub events`,
-    promptTemplate: boardMaintainerHttpPrompt(
-      boardId,
-      body.prompt,
-      boardRepositories.map((repo) => repo.full_name),
-    ),
+    promptTemplate: boardMaintainerHttpPrompt(boardId),
     status: maintainerStatus,
     resourceRefs,
     runtimeEnv,
@@ -2056,7 +2033,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     amaScheduleId: schedule.id,
     amaHttpTriggerId: httpTrigger.id,
     amaMemoryStoreId: memoryStore.id,
-    prompt: body.prompt,
+    prompt: "",
     intervalSeconds,
     heartbeatEnabled,
     status: maintainerStatus,
@@ -2129,7 +2106,7 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   const boardId = c.req.param("id");
   const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
   if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
-  const body = await c.req.json<{ prompt?: string; interval_seconds?: number; heartbeat_enabled?: boolean; status?: "active" | "paused" }>();
+  const body = await c.req.json<{ interval_seconds?: number; heartbeat_enabled?: boolean; status?: "active" | "paused" }>();
   if (body.interval_seconds !== undefined) validateMaintainerHeartbeatInterval(body.interval_seconds);
   validateMaintainerHeartbeatEnabled(body.heartbeat_enabled);
   if (body.status !== undefined && body.status !== "active" && body.status !== "paused") {
@@ -2138,8 +2115,6 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   const nextStatus = body.status ?? (maintainer.status === "archived" ? "paused" : maintainer.status);
   const nextHeartbeatEnabled = body.heartbeat_enabled ?? maintainer.heartbeat_enabled;
   const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
-  const boardRepositories = await listBoardRepositories(c.env.DB, ownerId, boardId);
-  const boardRepositoryNames = boardRepositories.map((repo) => repo.full_name);
   const maintainerAgent = await ensureMaintainerAgentProfile(c.env.DB, ownerId, maintainer.agent_id);
   const amaRuntime = amaRuntimeName(maintainerAgent.runtime);
   const amaAgent = await ensureAmaAgentForAkAgent(c.env.DB, c.env, ownerId, maintainer.agent_id, amaProjectId, amaRuntime, {
@@ -2170,7 +2145,6 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
     agentId: maintainer.agent_id,
     boardId,
     maintainerId: maintainer.id,
-    repositories: boardRepositories.map((repo) => ({ id: repo.id, full_name: repo.full_name, url: repo.url })),
     apiUrl: apiUrl(c.env, new URL(c.req.url).origin),
   });
   const runtimeSecretEnv = [{ name: "AK_API_KEY", credentialId: apiKeyCredentialId, versionId: apiKeyCredentialVersionId }];
@@ -2181,7 +2155,6 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   const schedule = await updateAmaScheduledAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_schedule_id, {
     agentId: amaAgent.id,
     runtime: amaRuntime,
-    promptTemplate: body.prompt ? boardMaintainerScheduledPrompt(boardId, body.prompt, boardRepositoryNames) : undefined,
     intervalSeconds: body.interval_seconds,
     status:
       body.status !== undefined || body.heartbeat_enabled !== undefined ? maintainerScheduledStatus(nextStatus, nextHeartbeatEnabled) : undefined,
@@ -2190,11 +2163,10 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
     runtimeSecretEnv,
     metadata: maintainerSessionMetadata,
   });
-  if (maintainer.ama_http_trigger_id && (body.prompt !== undefined || body.status !== undefined)) {
+  if (maintainer.ama_http_trigger_id && body.status !== undefined) {
     await updateAmaHttpAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_http_trigger_id, {
       agentId: amaAgent.id,
       runtime: amaRuntime,
-      promptTemplate: body.prompt ? boardMaintainerHttpPrompt(boardId, body.prompt, boardRepositoryNames) : undefined,
       status: body.status,
       resourceRefs,
       runtimeEnv,
@@ -2203,7 +2175,6 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
     });
   }
   const updated = await updateBoardMaintainer(c.env.DB, ownerId, boardId, maintainer.id, {
-    prompt: body.prompt,
     intervalSeconds: body.interval_seconds ?? schedule.schedule.intervalSeconds,
     heartbeatEnabled: body.heartbeat_enabled,
     status: body.status,
@@ -2368,28 +2339,22 @@ async function ensureMaintainerAgentProfile(db: D1, ownerId: string, agentId: st
   if (!updated) throw new HTTPException(404, { message: "Agent not found" });
   return updated;
 }
-const MAINTAINER_HEARTBEAT_PATH = "HEARTBEAT.md";
-
-function boardMaintainerBasePrompt(boardId: string, prompt: string, repositoryFullNames: string[]) {
+function boardMaintainerBasePrompt(boardId: string) {
   return [
     `You are the maintainer for AK board ${boardId}.`,
-    repositoryFullNames.length > 0
-      ? `GitHub repository scope: ${repositoryFullNames.join(", ")}.`
-      : "No GitHub repositories are currently associated with this board.",
-    `Follow the installed ${AK_MAINTAINER_SKILL_REF} skill for maintainer workflow, GitHub identity, memory, and response rules.`,
-    "",
-    "Maintainer instructions:",
-    prompt,
+    `Discover the current repository scope with AK. Every repository currently attached to board ${boardId} is in your maintenance scope.`,
+    `Follow the installed ${AK_MAINTAINER_SKILL_REF} skill. The skill is the source of truth for maintainer workflow, GitHub identity, heartbeat behavior, memory policy, task creation, and response rules.`,
+    "Read or create HEARTBEAT.md before acting when memory is available, and update it before finishing scheduled heartbeat runs.",
   ];
 }
 
-function boardMaintainerScheduledPrompt(boardId: string, prompt: string, repositoryFullNames: string[]) {
-  return [...boardMaintainerBasePrompt(boardId, prompt, repositoryFullNames), "", "Run type: scheduled maintenance."].join("\n");
+function boardMaintainerScheduledPrompt(boardId: string) {
+  return [...boardMaintainerBasePrompt(boardId), "", "Run type: scheduled heartbeat."].join("\n");
 }
 
-function boardMaintainerHttpPrompt(boardId: string, prompt: string, repositoryFullNames: string[]) {
+function boardMaintainerHttpPrompt(boardId: string) {
   return [
-    ...boardMaintainerBasePrompt(boardId, prompt, repositoryFullNames),
+    ...boardMaintainerBasePrompt(boardId),
     "",
     "Run type: GitHub webhook event.",
     "",
@@ -2422,18 +2387,6 @@ function boardMaintainerHttpPrompt(boardId: string, prompt: string, repositoryFu
     "{{/if}}",
     "",
     "Use the maintainer skill's GitHub event workflow to fetch issue, PR, comment, or review content before responding.",
-  ].join("\n");
-}
-
-function initialMaintainerHeartbeat(input: { boardId: string; boardName: string; repositories: string[] }) {
-  return [
-    "# Maintainer Heartbeat",
-    "",
-    `Board: ${input.boardName} (${input.boardId})`,
-    `Repositories: ${input.repositories.length > 0 ? input.repositories.join(", ") : "none associated yet"}`,
-    `Created: ${new Date().toISOString()}`,
-    "",
-    `Follow ${AK_MAINTAINER_SKILL_REF} for scheduled and event-driven maintainer workflow.`,
   ].join("\n");
 }
 
@@ -2476,21 +2429,13 @@ async function createMaintainerApiKeySecret(input: {
   return { apiKeyId: apiKey.id, credentialId: secret.credentialId, versionId: secret.activeVersionId };
 }
 
-function maintainerRuntimeEnv(input: {
-  agentId: string;
-  boardId: string;
-  maintainerId: string;
-  repositories: Array<{ id: string; full_name: string; url: string }>;
-  apiUrl: string;
-}): Record<string, string> {
+function maintainerRuntimeEnv(input: { agentId: string; boardId: string; maintainerId: string; apiUrl: string }): Record<string, string> {
   return {
     AK_WORKER: "1",
     AK_AGENT_ID: input.agentId,
     AK_BOARD_ID: input.boardId,
     AK_MAINTAINER_ID: input.maintainerId,
-    AK_BOARD_REPOSITORIES: JSON.stringify(input.repositories),
     AK_API_URL: input.apiUrl,
-    GH_CONFIG_DIR: `/tmp/ak-gh-${input.maintainerId}`,
   };
 }
 

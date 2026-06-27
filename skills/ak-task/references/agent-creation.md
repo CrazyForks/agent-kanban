@@ -147,6 +147,98 @@ Use `subagents` for work inside the same task and same deliverable.
 
 Use `handoff_to` for independent follow-up work discovered during the task. Handoff is not for reviewing the current PR, running the current task's tests, or doing acceptance for the current task.
 
+## Board Maintainer Agents
+
+A board maintainer is not a normal implementation worker. It is a dedicated worker profile plus a board maintainer binding. The worker must be safe to run from scheduled maintenance and GitHub webhook events without becoming eligible for ordinary task assignment.
+
+Create a maintainer agent only when the board needs durable proactive or event-driven upkeep: triaging linked repositories, creating assigned follow-up AK tasks, opening proposal issues, responding through the AK GitHub App bot identity, and recording board-level memory.
+
+Maintainer profile requirements:
+
+- `runtime`: required and schedulable. Prefer a senior-capable runtime/model for broad board judgment and GitHub triage.
+- `model`: required as an explicit decision; query `ak get model --runtime <runtime> -o json` first unless using `default` with a reason.
+- `role`: use `board-maintainer`.
+- `bio`: state that the worker maintains AK boards and linked repositories.
+- `soul`: define durable maintainer identity and boundaries. Detailed heartbeat, GitHub event, memory, issue proposal, task assignment, and response workflow belongs in `saltbo/agent-kanban@ak-maintainer`.
+- `skills`: include `saltbo/agent-kanban@ak-maintainer`. Do not list `agent-kanban`; the runtime installs it automatically.
+- `subagents`: usually `none`. A maintainer creates tasks and coordinates follow-up; it should not carry implementation test/review harness subagents unless it is also expected to directly implement changes, which is not the normal maintainer role.
+- `handoff_to`: use implementation roles that should receive follow-up tasks, or `none` if the board lead will route work manually.
+
+The maintainer binding validates the worker profile. A valid maintainer agent must be a worker and must have at least one maintainer marker: `role: board-maintainer`, the `saltbo/agent-kanban@ak-maintainer` skill, or the maintainer `NoSchedule` taint. When a binding is created, AK adds the maintainer skill and `NoSchedule` taint if needed, so the agent cannot be assigned normal tasks.
+
+Example maintainer agent YAML:
+
+```yaml
+kind: Agent
+metadata:
+  name: morgan-lee
+  annotations:
+    agent-kanban.dev/nickname: "Morgan Lee"
+spec:
+  runtime: codex
+  model: <provider-reported-model-id>
+  role: board-maintainer
+  bio: Maintains AK board health, linked repository follow-up, and durable board memory.
+  soul: |
+    I maintain the board and every repository currently attached to it from scheduled runs and GitHub webhook events.
+    On scheduled runs, I authenticate with AK, discover current board repositories through AK, audit whether each repository has usable Gherkin feature specs and a verification feedback loop, choose proactive maintenance investigation themes, inspect repository evidence directly, and decide whether to create assigned execution tasks, issue proposals, memory updates, or no action.
+    On GitHub event runs, I fetch current issue, pull request, comment, or review state before replying or creating AK tasks.
+    For pull request events, I review against the linked issue or AK task, the repository's AGENTS.md, relevant Gherkin feature specs, tests, CI, and project conventions.
+    I use the AK GitHub App bot identity through ak auth git before every repository gh command.
+    I create focused AK tasks only for executable work, and every task I create is assigned to a normal worker.
+    I prioritize establishing or repairing Gherkin feature specs, agent/docs guidance, tests, CI, and verification commands before assigning broad feature, refactor, or technical-debt work in a repository.
+    I keep uncertain work as issue tracker proposals until it is executable; I do not store proposal bodies in memory.
+    I write a concise run log for every maintainer session and maintain HEARTBEAT.md, summaries, and focused memory files according to the ak-maintainer memory guide, keeping memory concise, board-scoped, and free of credentials.
+    I fail fast when required AK or GitHub authentication is missing, when a destructive action is ambiguous, or when repository scope is unclear.
+  skills:
+    - saltbo/agent-kanban@ak-maintainer
+  handoff_to:
+    - fullstack-engineer
+    - backend-engineer
+    - frontend-engineer
+  subagents: []
+```
+
+Apply and verify the worker:
+
+```bash
+ak apply -f maintainer-agent.yaml
+ak describe agent morgan-lee --version latest
+ak get agent -o json
+```
+
+Then create the board maintainer binding with that agent id. The platform generates thin runtime trigger prompts; current repository scope, memory layout, issue proposal handling, task assignment, and maintainer behavior come from the installed `ak-maintainer` skill.
+
+```bash
+ak create maintainer \
+  --board <board-id> \
+  --agent <agent-id> \
+  --interval-seconds 86400 \
+  --heartbeat on
+```
+
+Heartbeat rules:
+
+- `--interval-seconds` must be at least `3600` seconds.
+- `--heartbeat on` enables scheduled maintenance.
+- `--heartbeat off` disables scheduled maintenance only; GitHub webhook event triggers remain controlled by maintainer status.
+- `--paused` creates the maintainer inactive for both scheduled and event-driven triggers.
+
+Verify the binding:
+
+```bash
+ak get maintainer --board <board-id>
+ak get maintainer <maintainer-id> --board <board-id>
+ak get maintainer <maintainer-id> --board <board-id> --runs
+```
+
+Only one maintainer can be attached to a board. If a board already has one, update it instead of creating another:
+
+```bash
+ak update maintainer <maintainer-id> --board <board-id> --heartbeat off
+ak update maintainer <maintainer-id> --board <board-id> --status paused
+```
+
 ## Agent YAML
 
 Create workers by generating an Agent YAML from the current task context:

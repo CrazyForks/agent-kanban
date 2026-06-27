@@ -166,7 +166,6 @@ describe("registerCreateCommand agent", () => {
     await command.action!({
       board: "board-1",
       agent: "agent-1",
-      prompt: "Watch incoming GitHub work",
       intervalSeconds: "3600",
       heartbeat: "off",
       paused: true,
@@ -175,7 +174,6 @@ describe("registerCreateCommand agent", () => {
 
     expect(createBoardMaintainer).toHaveBeenCalledWith("board-1", {
       agent_id: "agent-1",
-      prompt: "Watch incoming GitHub work",
       interval_seconds: 3600,
       heartbeat_enabled: false,
       status: "paused",
