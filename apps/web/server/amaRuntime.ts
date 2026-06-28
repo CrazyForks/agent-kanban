@@ -187,14 +187,6 @@ export interface AmaMemoryStoreInput {
   metadata?: Record<string, unknown>;
 }
 
-export interface AmaMemoryInput {
-  projectId: string;
-  storeId: string;
-  path: string;
-  content: string;
-  metadata?: Record<string, unknown>;
-}
-
 export interface AmaMemoryStoreMemory {
   id: string;
   storeId: string;
@@ -248,19 +240,6 @@ export interface AmaRunner {
   runtimeUsage?: AmaRuntimeUsage[];
   runtimeInventory?: AmaRuntimeInventory[];
 }
-
-export interface AmaFederatedTenantInput {
-  projectId: string;
-  issuer: string;
-  externalTenantId: string;
-  environmentId?: string | null;
-  capabilities?: string[];
-  metadata?: Record<string, unknown>;
-}
-
-// A runner federated tenant must be allowed to poll for and claim work; these
-// are the capabilities AMA's self-hosted runner protocol checks.
-const RUNNER_FEDERATION_CAPABILITIES = ["session:poll", "session:claim"];
 
 export interface AmaProject {
   id: string;
@@ -485,12 +464,6 @@ export async function archiveAmaEnvironment(env: Env, ownerId: string, projectId
   await withAmaErrorDetails("archive runtime environment", () => client.environments.update(environmentId, { archived: true }));
 }
 
-export async function readAmaEnvironment(env: Env, ownerId: string, projectId: string, environmentId: string): Promise<AmaEnvironment> {
-  const client = await createAmaClient(env, ownerId, projectId);
-  const environment = await client.environments.get(environmentId);
-  return { id: environment.id };
-}
-
 // Self-heal probes: AMA resources we hold an id for can be deleted out of band
 // (e.g. an AMA data migration that resets the control plane). These let the
 // "ensure" paths detect a dangling id and re-provision instead of dispatching
@@ -533,27 +506,6 @@ export function resolveAmaProviderModelProfile(input: { runtime: string; preferr
     return { runtime, provider: vendorFromModelId(model), model };
   }
   return { runtime, provider: configured.providerSlug, model };
-}
-
-export async function createAmaFederatedTenant(env: Env, ownerId: string, input: AmaFederatedTenantInput): Promise<void> {
-  const client = await createAmaClient(env, ownerId, input.projectId);
-  try {
-    await client.federatedTenants.create({
-      issuer: input.issuer,
-      externalTenantId: input.externalTenantId,
-      capabilities: input.capabilities ?? RUNNER_FEDERATION_CAPABILITIES,
-      ...(input.environmentId ? { environmentId: input.environmentId } : {}),
-      ...(input.metadata ? { metadata: input.metadata } : {}),
-    });
-  } catch (error) {
-    // 409: (issuer, externalTenantId) is already bound to this project — the
-    // federation binding is idempotent, so a re-onboard is a no-op success.
-    if ((error as { status?: unknown }).status === 409) return;
-    const status = typeof (error as { status?: unknown }).status === "number" ? ` HTTP ${(error as { status: number }).status}` : "";
-    const responseText =
-      typeof (error as { responseText?: unknown }).responseText === "string" ? `: ${(error as { responseText: string }).responseText}` : "";
-    throw new Error(`AMA federated tenant binding failed${status}${responseText}`);
-  }
 }
 
 export async function createAmaSessionSecret(env: Env, ownerId: string, input: AmaSessionSecretInput): Promise<AmaSessionSecret> {
@@ -680,7 +632,7 @@ export async function listAmaCatalogModels(env: Env, ownerId: string): Promise<A
   // GET /api/v1/providers/models returns the entire catalog in one envelope
   // (the AMA route lists all rows; pagination is always {hasMore:false}), so no
   // cursor loop is needed.
-  const response = await client.models.list();
+  const response = await client.providers.listModels();
   return response.data as unknown as AmaCatalogModel[];
 }
 
@@ -785,16 +737,6 @@ function toAmaTriggerRun(run: AmaTriggerRunResponse): AmaTriggerRun {
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
   };
-}
-
-export async function listAmaScheduledTriggerRuns(
-  env: Env,
-  ownerId: string,
-  projectId: string,
-  triggerId: string,
-  options: { limit?: number } = {},
-): Promise<AmaListResponse<AmaTriggerRun>> {
-  return await listAmaTriggerRuns(env, ownerId, projectId, triggerId, options);
 }
 
 export async function listAmaTriggerRuns(
@@ -931,17 +873,6 @@ export async function createAmaMemoryStore(env: Env, ownerId: string, input: Ama
     }),
   );
   return { id: store.id, name: store.name };
-}
-
-export async function createAmaMemoryStoreMemory(env: Env, ownerId: string, input: AmaMemoryInput): Promise<void> {
-  const client = await createAmaClient(env, ownerId, input.projectId);
-  await withAmaErrorDetails("create memory", () =>
-    client.memoryStores.createMemory(input.storeId, {
-      path: input.path,
-      content: input.content,
-      metadata: input.metadata ?? {},
-    }),
-  );
 }
 
 export async function listAmaMemoryStoreMemories(
