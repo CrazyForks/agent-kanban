@@ -32,6 +32,7 @@ const DEFAULT_MAX_CONCURRENT = 5;
 // store is deterministic, kept under AK's own state, and isolated from a
 // standalone ama-runner install that may target a different origin.
 const AMA_RUNNER_CREDENTIALS_FILE = join(STATE_DIR, "ama-runner-credentials.json");
+const LEGACY_AMA_RUNNER_LOGIN_FILE = join(STATE_DIR, "ama-runner-login.json");
 
 interface DaemonState {
   providers: string[];
@@ -154,11 +155,64 @@ interface SavedRunnerCredentialStore {
   profiles?: SavedRunnerCredentialProfile[];
 }
 
+interface LegacyRunnerLogin {
+  apiServer?: string;
+  accessToken?: string;
+  refreshToken?: string;
+  tokenType?: string;
+  expiresAt?: string;
+  scope?: string;
+}
+
+function jwtSubject(token: string | undefined): string | null {
+  const payload = token?.split(".")[1];
+  if (!payload) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return typeof decoded.sub === "string" && decoded.sub.trim() ? decoded.sub.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+function migrateLegacyRunnerLogin(): void {
+  if (existsSync(AMA_RUNNER_CREDENTIALS_FILE) || !existsSync(LEGACY_AMA_RUNNER_LOGIN_FILE)) return;
+  let saved: LegacyRunnerLogin;
+  try {
+    saved = JSON.parse(readFileSync(LEGACY_AMA_RUNNER_LOGIN_FILE, "utf-8"));
+  } catch {
+    return;
+  }
+  const apiServer = saved.apiServer?.replace(/\/$/, "");
+  if (!apiServer || !saved.accessToken) return;
+  const accountId = jwtSubject(saved.accessToken) ?? "legacy";
+  const profile: SavedRunnerCredentialProfile = {
+    accountId,
+    apiServer,
+    accessToken: saved.accessToken,
+    ...(saved.refreshToken ? { refreshToken: saved.refreshToken } : {}),
+    ...(saved.expiresAt ? { expiresAt: saved.expiresAt } : {}),
+  };
+  const credentialStore = {
+    active: `${apiServer}#${accountId}`,
+    profiles: [
+      {
+        ...profile,
+        ...(saved.tokenType ? { tokenType: saved.tokenType } : {}),
+        ...(saved.scope ? { scope: saved.scope } : {}),
+      },
+    ],
+  };
+  mkdirSync(STATE_DIR, { recursive: true });
+  writeFileSync(AMA_RUNNER_CREDENTIALS_FILE, `${JSON.stringify(credentialStore, null, 2)}\n`, { mode: 0o600 });
+}
+
 // Mirror ama-runner's own token-validity rules: a saved login is usable when it
 // targets this origin and can still produce a token (refreshable, or an
 // unexpired access token). Anything else means the runner would exit demanding a
 // fresh login, so AK re-runs the device flow instead.
 function hasValidRunnerLogin(origin: string): boolean {
+  migrateLegacyRunnerLogin();
   if (!existsSync(AMA_RUNNER_CREDENTIALS_FILE)) return false;
   let saved: SavedRunnerCredentialStore;
   try {

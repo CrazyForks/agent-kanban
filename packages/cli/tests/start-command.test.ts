@@ -88,6 +88,7 @@ function _setTTY(stdin: boolean, stdout: boolean): void {
 }
 
 const credentialsFilePath = join(testSessionsDir, "ama-runner-credentials.json");
+const legacyLoginFilePath = join(testSessionsDir, "ama-runner-login.json");
 
 function writeCredentialStore(profile: { apiServer: string; accessToken?: string; refreshToken?: string; expiresAt?: string; accountId?: string }) {
   const accountId = profile.accountId ?? "account_1";
@@ -253,6 +254,33 @@ describe("start runtime command", () => {
       expect.arrayContaining(["--api-server", "https://runner-control.test"]),
       expect.objectContaining({ detached: true }),
     );
+  });
+
+  it("migrates a legacy saved login before starting the runner", async () => {
+    writeFileSync(
+      legacyLoginFilePath,
+      JSON.stringify({
+        apiServer: "https://runner-control.test",
+        accessToken: "legacy-access-token",
+        refreshToken: "legacy-refresh-token",
+        tokenType: "Bearer",
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        scope: "openid profile email offline_access",
+      }),
+    );
+    const program = new Command();
+    registerStartCommand(program);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    mockMachineRunnerFetch("https://runner-control.test");
+
+    await program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
+
+    expect(spawnSyncMock).not.toHaveBeenCalled();
+    const credentials = JSON.parse(readFileSync(credentialsFilePath, "utf-8"));
+    expect(credentials).toMatchObject({
+      active: "https://runner-control.test#legacy",
+      profiles: [expect.objectContaining({ apiServer: "https://runner-control.test", accountId: "legacy", refreshToken: "legacy-refresh-token" })],
+    });
   });
 
   it("re-runs device login when the saved login targets a different origin", async () => {
