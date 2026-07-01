@@ -16,35 +16,31 @@ function eventSequence(event: SessionEvent): number {
   return Number.isFinite(sequence) ? sequence : 0;
 }
 
+function objectValue(value: unknown): Record<string, any> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, any>) : null;
+}
+
+function runtimeEvent(event: SessionEvent): Record<string, any> | null {
+  return objectValue(event.event);
+}
+
+function runtimePayload(event: SessionEvent): Record<string, any> {
+  return objectValue(runtimeEvent(event)?.payload) ?? {};
+}
+
+function runtimeMessage(event: SessionEvent): Record<string, any> | null {
+  return objectValue(runtimePayload(event).message);
+}
+
 function isToolEvent(event: SessionEvent): boolean {
-  const type = String(event.type ?? "");
-  if (type.startsWith("tool_execution_")) return true;
-  const embeddedType = event.payload?.event?.type;
-  if (embeddedType === "block.start" || embeddedType === "block.done") {
-    const blockType = event.payload?.event?.block?.type;
-    return blockType === "tool_use" || blockType === "tool_result";
-  }
-  return false;
+  const type = String(runtimeEvent(event)?.type ?? "");
+  if (type !== "message.started" && type !== "message.updated" && type !== "message.completed") return false;
+  const content = runtimeMessage(event)?.content;
+  return Array.isArray(content) && content.some((part) => part?.type === "tool_call" || part?.type === "tool_result");
 }
 
 function eventText(event: SessionEvent): string {
-  const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
-  const embedded = payload.event && typeof payload.event === "object" ? payload.event : null;
-  if (embedded?.type === "message" && Array.isArray(embedded.blocks)) {
-    return embedded.blocks
-      .map((block: any) => (block?.type === "text" && typeof block.text === "string" ? block.text : ""))
-      .filter(Boolean)
-      .join("");
-  }
-
-  if (event.type === "message_end") {
-    return messageContentText(payload.message?.content);
-  }
-
-  if (event.type === "runtime.output" && typeof payload.content === "string") return payload.content;
-  if (typeof payload.text === "string") return payload.text;
-  if (typeof payload.message === "string") return payload.message;
-  return "";
+  return messageContentText(runtimeMessage(event)?.content);
 }
 
 function messageContentText(content: unknown): string {
@@ -57,7 +53,8 @@ function messageContentText(content: unknown): string {
 }
 
 export function isAssistantEvent(event: SessionEvent): boolean {
-  if (event.role && event.role !== "assistant" && event.role !== "agent") return false;
+  const role = runtimeMessage(event)?.role;
+  if (role !== "assistant" && role !== "agent") return false;
   return eventText(event).trim().length > 0;
 }
 
@@ -185,9 +182,9 @@ export async function readSessionEvents(url: string, options: ReadSessionEventsO
         return;
       }
 
-      if (frame?.type === "event" && frame.event) {
+      if (frame?.type === "event" && frame.record) {
         if (!initialBackfillComplete && !options.watch) return;
-        accept(frame.event);
+        accept(frame.record);
       }
     };
   });

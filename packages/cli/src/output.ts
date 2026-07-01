@@ -230,8 +230,9 @@ export function formatTaskRuntime(runtime: any): string {
   lines.push(`  Events:`);
   for (const event of events.slice(-10)) {
     const sequence = event.sequence != null ? `#${event.sequence}`.padEnd(6) : "".padEnd(6);
-    const type = String(event.type ?? "event").padEnd(18);
-    const role = event.role ? ` ${event.role}` : "";
+    const type = sessionEventType(event).padEnd(18);
+    const roleValue = sessionEventMessage(event).role;
+    const role = roleValue ? ` ${roleValue}` : "";
     lines.push(`    ${sequence}${type}${role}`);
   }
   const hasMore = runtime.pagination?.hasMore ? " (more available)" : "";
@@ -256,25 +257,22 @@ export function formatTaskSession(data: any): string {
 }
 
 function sessionEventPayload(event: any): Record<string, any> {
-  return event?.payload && typeof event.payload === "object" && !Array.isArray(event.payload) ? event.payload : {};
+  return event?.event?.payload && typeof event.event.payload === "object" && !Array.isArray(event.event.payload) ? event.event.payload : {};
+}
+
+function sessionEventType(event: any): string {
+  return typeof event?.event?.type === "string" ? event.event.type : "event";
+}
+
+function sessionEventMessage(event: any): Record<string, any> {
+  const message = sessionEventPayload(event).message;
+  return message && typeof message === "object" && !Array.isArray(message) ? message : {};
 }
 
 function sessionEventAssistantText(event: any): string {
-  const payload = sessionEventPayload(event);
-  const embedded = payload.event && typeof payload.event === "object" ? payload.event : null;
-  if (embedded?.type === "message" && Array.isArray(embedded.blocks)) {
-    return embedded.blocks
-      .map((block: any) => (block?.type === "text" && typeof block.text === "string" ? block.text : ""))
-      .filter(Boolean)
-      .join("");
-  }
-  if (event.type === "message_end") {
-    return sessionMessageContentText(payload.message?.content);
-  }
-  if (event.type === "runtime.output" && typeof payload.content === "string") return payload.content;
-  if (typeof payload.text === "string") return payload.text;
-  if (typeof payload.message === "string") return payload.message;
-  return "";
+  const message = sessionEventMessage(event);
+  if (message.role !== "assistant" && message.role !== "agent") return "";
+  return sessionMessageContentText(message.content);
 }
 
 function sessionMessageContentText(content: unknown): string {
@@ -311,31 +309,47 @@ function firstString(...values: unknown[]): string {
 }
 
 function sessionEventOutputText(event: any): string {
-  const payload = sessionEventPayload(event);
-  const embedded = payload.event && typeof payload.event === "object" ? payload.event : null;
-  const block = embedded?.block && typeof embedded.block === "object" ? embedded.block : null;
-  if (block?.type === "tool_result") return firstString(block.output, block.content, block.result);
-  if (event.type === "runtime.output") return firstString(payload.content, payload.output, payload.text);
-  return firstString(payload.output, payload.stdout, payload.stderr, payload.result, payload.content, payload.text, payload.error, payload.message);
+  const content = sessionEventMessage(event).content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block: any) => {
+      if (block?.type !== "tool_result") return "";
+      const result = block.result && typeof block.result === "object" ? block.result : {};
+      return toolResultText(result);
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function toolResultText(result: Record<string, any>): string {
+  const content = Array.isArray(result.content)
+    ? result.content
+        .map((part: any) => {
+          if (part?.type === "text") return firstString(part.text);
+          if (part?.type === "json") return JSON.stringify(part.value);
+          if (part?.type === "file") return firstString(part.path, part.name);
+          if (part?.type === "image") return firstString(part.url, "[image]");
+          return "";
+        })
+        .filter(Boolean)
+        .join("\n")
+    : "";
+  return firstString(result.stdout, result.stderr, result.output, content);
 }
 
 function sessionEventToolSummary(event: any, maxLength: number): string {
-  const payload = sessionEventPayload(event);
-  const embedded = payload.event && typeof payload.event === "object" ? payload.event : null;
-  const block = embedded?.block && typeof embedded.block === "object" ? embedded.block : null;
-  if (block?.type === "tool_use") return `${block.name ?? "tool"} ${jsonPreview(block.input ?? {}, maxLength)}`.trimEnd();
+  const content = sessionEventMessage(event).content;
+  if (!Array.isArray(content)) return "";
+  const block = content.find((part: any) => part?.type === "tool_call" || part?.type === "tool_result");
+  if (block?.type === "tool_call") {
+    const toolCall = block.toolCall && typeof block.toolCall === "object" ? block.toolCall : {};
+    return `${toolCall.name ?? "tool"} ${jsonPreview(toolCall.input ?? {}, maxLength)}`.trimEnd();
+  }
   if (block?.type === "tool_result") {
     const outputText = sessionEventOutputText(event);
     return `result${block.error ? " error" : ""}${outputText ? ` ${truncateSingleLine(outputText, maxLength)}` : ""}`;
   }
-  const name = payload.toolName ?? payload.name ?? payload.tool ?? payload.id ?? payload.toolCallId ?? "tool";
-  const input = payload.input ?? payload.arguments ?? payload.args ?? payload.command;
-  const outputText = sessionEventOutputText(event);
-  if (event.type === "tool_execution_end") {
-    const status = payload.isError || payload.error ? " error" : " done";
-    return `${name}${status}${outputText ? ` ${truncateSingleLine(outputText, maxLength)}` : ""}`;
-  }
-  return `${name}${input !== undefined ? ` ${jsonPreview(input, maxLength)}` : ""}`;
+  return "";
 }
 
 export function formatSessionEvent(
@@ -346,11 +360,13 @@ export function formatSessionEvent(
   const maxLength = options.maxLength ?? (options.verbose ? 800 : 220);
   if (mode === "assistant") return sessionEventAssistantText(event);
   const sequence = event.sequence != null ? `#${event.sequence}`.padEnd(8) : "";
-  const type = String(event.type ?? "event").padEnd(24);
-  const role = event.role ? ` ${event.role}` : "";
+  const eventType = sessionEventType(event);
+  const type = eventType.padEnd(24);
+  const roleValue = sessionEventMessage(event).role;
+  const role = roleValue ? ` ${roleValue}` : "";
   if (mode === "tool") return `${sequence}${type}${role}  ${sessionEventToolSummary(event, maxLength)}`.trimEnd();
   const text = sessionEventAssistantText(event);
-  const toolSummary = event.type?.startsWith?.("tool_execution_") ? sessionEventToolSummary(event, maxLength) : "";
+  const toolSummary = sessionEventToolSummary(event, maxLength);
   const outputText = text || sessionEventOutputText(event);
   const summary = outputText ? `  ${truncateSingleLine(outputText, maxLength)}` : toolSummary ? `  ${toolSummary}` : "";
   if (toolSummary) return `${sequence}${type}${role}  ${toolSummary}`.trimEnd();

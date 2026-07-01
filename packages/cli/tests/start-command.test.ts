@@ -87,7 +87,26 @@ function _setTTY(stdin: boolean, stdout: boolean): void {
   Object.defineProperty(process.stdout, "isTTY", { value: stdout, configurable: true });
 }
 
-const loginFilePath = join(testSessionsDir, "ama-runner-login.json");
+const credentialsFilePath = join(testSessionsDir, "ama-runner-credentials.json");
+
+function writeCredentialStore(profile: { apiServer: string; accessToken?: string; refreshToken?: string; expiresAt?: string; accountId?: string }) {
+  const accountId = profile.accountId ?? "account_1";
+  writeFileSync(
+    credentialsFilePath,
+    JSON.stringify({
+      active: `${profile.apiServer.replace(/\/$/, "")}#${accountId}`,
+      profiles: [
+        {
+          accountId,
+          apiServer: profile.apiServer,
+          accessToken: profile.accessToken ?? "x",
+          ...(profile.refreshToken ? { refreshToken: profile.refreshToken } : {}),
+          ...(profile.expiresAt ? { expiresAt: profile.expiresAt } : {}),
+        },
+      ],
+    }),
+  );
+}
 
 beforeEach(() => {
   mkdirSync(testSessionsDir, { recursive: true });
@@ -146,11 +165,11 @@ describe("start runtime command", () => {
     // Device login (spawnSync) must run BEFORE the detached run-mode spawn
     expect(spawnSyncMock).toHaveBeenCalledWith(
       testRunnerBin,
-      ["login", "--api-server", "https://runner-control.test"],
+      ["auth", "login", "--api-server", "https://runner-control.test"],
       expect.objectContaining({
         stdio: "inherit",
         env: expect.objectContaining({
-          AMA_RUNNER_CONFIG: loginFilePath,
+          AMA_RUNNER_CREDENTIALS: credentialsFilePath,
         }),
       }),
     );
@@ -178,7 +197,7 @@ describe("start runtime command", () => {
     expect(spawnMock).toHaveBeenCalledTimes(1);
 
     // AK itself does not synchronously write a login file — the runner writes it during the login flow
-    expect(existsSync(loginFilePath)).toBe(false);
+    expect(existsSync(credentialsFilePath)).toBe(false);
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Machine runner started"));
     const state = JSON.parse(readFileSync(join(testSessionsDir, "daemon-state.json"), "utf-8"));
     expect(state).toMatchObject({ runtime: "ama-runner", apiUrl: "https://ak.test", providers: ["codex"] });
@@ -195,7 +214,7 @@ describe("start runtime command", () => {
 
     expect(spawnSyncMock).toHaveBeenCalledWith(
       testRunnerBin,
-      ["login", "--api-server", "https://ama.test"],
+      ["auth", "login", "--api-server", "https://ama.test"],
       expect.objectContaining({ stdio: "inherit" }),
     );
     expect(spawnMock).toHaveBeenCalledWith(
@@ -216,15 +235,11 @@ describe("start runtime command", () => {
   });
 
   it("skips device login when a valid saved login exists for the origin", async () => {
-    writeFileSync(
-      loginFilePath,
-      JSON.stringify({
-        apiServer: "https://runner-control.test",
-        accessToken: "x",
-        refreshToken: "r",
-        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-      }),
-    );
+    writeCredentialStore({
+      apiServer: "https://runner-control.test",
+      refreshToken: "r",
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
     const program = new Command();
     registerStartCommand(program);
     vi.spyOn(console, "log").mockImplementation(() => {});
@@ -241,15 +256,11 @@ describe("start runtime command", () => {
   });
 
   it("re-runs device login when the saved login targets a different origin", async () => {
-    writeFileSync(
-      loginFilePath,
-      JSON.stringify({
-        apiServer: "https://other-origin.test",
-        accessToken: "x",
-        refreshToken: "r",
-        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-      }),
-    );
+    writeCredentialStore({
+      apiServer: "https://other-origin.test",
+      refreshToken: "r",
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
     const program = new Command();
     registerStartCommand(program);
     vi.spyOn(console, "log").mockImplementation(() => {});
@@ -259,21 +270,16 @@ describe("start runtime command", () => {
 
     expect(spawnSyncMock).toHaveBeenCalledWith(
       testRunnerBin,
-      ["login", "--api-server", "https://runner-control.test"],
+      ["auth", "login", "--api-server", "https://runner-control.test"],
       expect.objectContaining({ stdio: "inherit" }),
     );
   });
 
   it("re-runs device login when the saved access token is expired and has no refresh token", async () => {
-    writeFileSync(
-      loginFilePath,
-      JSON.stringify({
-        apiServer: "https://runner-control.test",
-        accessToken: "x",
-        expiresAt: new Date(Date.now() - 1000).toISOString(),
-        // no refreshToken
-      }),
-    );
+    writeCredentialStore({
+      apiServer: "https://runner-control.test",
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    });
     const program = new Command();
     registerStartCommand(program);
     vi.spyOn(console, "log").mockImplementation(() => {});
@@ -283,7 +289,7 @@ describe("start runtime command", () => {
 
     expect(spawnSyncMock).toHaveBeenCalledWith(
       testRunnerBin,
-      ["login", "--api-server", "https://runner-control.test"],
+      ["auth", "login", "--api-server", "https://runner-control.test"],
       expect.objectContaining({ stdio: "inherit" }),
     );
   });
@@ -485,11 +491,11 @@ describe("restart runtime command", () => {
 
     expect(spawnSyncMock).toHaveBeenCalledWith(
       testRunnerBin,
-      ["login", "--api-server", "https://runner-control.test"],
+      ["auth", "login", "--api-server", "https://runner-control.test"],
       expect.objectContaining({
         stdio: "inherit",
         env: expect.objectContaining({
-          AMA_RUNNER_CONFIG: loginFilePath,
+          AMA_RUNNER_CREDENTIALS: credentialsFilePath,
         }),
       }),
     );

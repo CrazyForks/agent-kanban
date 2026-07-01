@@ -41,8 +41,18 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function event(sequence: number, type = "message_end", payload: Record<string, unknown> = {}) {
-  return { id: `event-${sequence}`, sequence, type, payload };
+function event(sequence: number, type = "message.completed", payload: Record<string, unknown> = {}) {
+  return { id: `event-${sequence}`, sessionId: "session-1", sequence, createdAt: "2026-07-01T00:00:00.000Z", event: { type, payload } };
+}
+
+function assistantTextEvent(sequence: number, text: string) {
+  return event(sequence, "message.completed", { message: { role: "assistant", content: [{ type: "text", text }] } });
+}
+
+function toolCallEvent(sequence: number) {
+  return event(sequence, "message.completed", {
+    message: { role: "assistant", content: [{ type: "tool_call", toolCall: { id: "call-1", name: "bash" } }] },
+  });
 }
 
 it("requests recent events over WebSocket by default", async () => {
@@ -85,7 +95,7 @@ it("filters assistant text events", async () => {
   await vi.waitFor(() => expect(sockets[0]?.sent[0]).toBeDefined());
   sockets[0].emit({
     type: "backfill",
-    events: [event(1, "message_end", { message: { content: [{ text: "hello" }] } }), event(2, "tool_execution_start", { toolName: "bash" })],
+    events: [assistantTextEvent(1, "hello"), toolCallEvent(2)],
     hasMore: false,
   });
   await expect(promise).resolves.toEqual([expect.objectContaining({ sequence: 1 })]);
@@ -96,7 +106,7 @@ it("filters tool events", async () => {
   await vi.waitFor(() => expect(sockets[0]?.sent[0]).toBeDefined());
   sockets[0].emit({
     type: "backfill",
-    events: [event(1, "message_end", { message: { content: [{ text: "hello" }] } }), event(2, "tool_execution_start", { toolName: "bash" })],
+    events: [assistantTextEvent(1, "hello"), toolCallEvent(2)],
     hasMore: false,
   });
   await expect(promise).resolves.toEqual([expect.objectContaining({ sequence: 2 })]);

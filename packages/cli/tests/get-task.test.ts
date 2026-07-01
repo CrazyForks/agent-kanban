@@ -217,7 +217,7 @@ describe("get session", () => {
 
   it("passes --verbose to the session event formatter", async () => {
     mockReadSessionEvents.mockImplementationOnce(async (_url, options) => {
-      options.onEvent?.({ sequence: 1, type: "tool_execution_end" });
+      options.onEvent?.({ sequence: 1, event: { type: "message.completed", payload: { message: { role: "tool", content: [] } } } });
       return [];
     });
     const program = makeProgram();
@@ -226,11 +226,12 @@ describe("get session", () => {
   });
 
   it("supports json output with collected events", async () => {
-    mockReadSessionEvents.mockResolvedValueOnce([{ sequence: 1, type: "message_end" }]);
+    const event = { sequence: 1, event: { type: "message.completed", payload: { message: { role: "assistant", content: [] } } } };
+    mockReadSessionEvents.mockResolvedValueOnce([event]);
     const program = makeProgram();
     await program.parseAsync(["get", "session", "session-42", "-o", "json"], { from: "user" });
     expect(mockOutput).toHaveBeenCalledWith(
-      expect.objectContaining({ session_id: "session-1", events: [{ sequence: 1, type: "message_end" }] }),
+      expect.objectContaining({ session_id: "session-1", events: [event] }),
       "json",
       undefined,
       expect.objectContaining({ kind: "session" }),

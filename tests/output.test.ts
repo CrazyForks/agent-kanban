@@ -19,6 +19,10 @@ import {
   output,
 } from "../packages/cli/src/output";
 
+function sessionEvent(sequence: number, type: string, payload: Record<string, unknown>) {
+  return { id: `event-${sequence}`, sessionId: "session-1", sequence, createdAt: "2026-07-01T00:00:00.000Z", event: { type, payload } };
+}
+
 describe("formatTask", () => {
   it("includes task title on the first line", () => {
     const task = { id: "t1", title: "My Task", status: "todo" };
@@ -213,38 +217,54 @@ describe("formatTaskRuntime", () => {
       session_id: "session-1",
       session: { status: "idle", statusReason: null, startedAt: "2026-06-06T12:00:00.000Z" },
       events: [
-        { id: "event-1", sequence: 1, type: "message_start", role: "assistant" },
-        { id: "event-2", sequence: 2, type: "message_end", role: "assistant" },
+        sessionEvent(1, "message.started", { message: { role: "assistant", content: [] } }),
+        sessionEvent(2, "message.completed", { message: { role: "assistant", content: [{ type: "text", text: "done" }] } }),
       ],
       pagination: { hasMore: false },
     });
     expect(result).toContain("Task runtime");
     expect(result).toContain("session-1");
     expect(result).toContain("idle");
-    expect(result).toContain("message_end");
+    expect(result).toContain("message.completed");
   });
 });
 
 describe("formatSessionEvent", () => {
-  it("includes tool execution output in all mode", () => {
-    const result = formatSessionEvent({
-      sequence: 7,
-      type: "tool_execution_end",
-      payload: { toolName: "bash", output: "created comment as agent-kanban-local[bot]" },
-    });
+  it("includes tool result output in all mode", () => {
+    const result = formatSessionEvent(
+      sessionEvent(7, "message.completed", {
+        message: {
+          role: "tool",
+          content: [
+            {
+              type: "tool_result",
+              toolCallId: "call-1",
+              result: { content: [{ type: "text", text: "created comment as agent-kanban-local[bot]" }] },
+            },
+          ],
+        },
+      }),
+    );
 
-    expect(result).toContain("tool_execution_end");
-    expect(result).toContain("bash done");
+    expect(result).toContain("message.completed");
+    expect(result).toContain("result");
     expect(result).toContain("created comment");
   });
 
   it("includes tool result output in tool mode", () => {
     const result = formatSessionEvent(
-      {
-        sequence: 8,
-        type: "runtime.event",
-        payload: { event: { type: "block.done", block: { type: "tool_result", output: "Resource not accessible by integration" } } },
-      },
+      sessionEvent(8, "message.completed", {
+        message: {
+          role: "tool",
+          content: [
+            {
+              type: "tool_result",
+              toolCallId: "call-1",
+              result: { content: [{ type: "text", text: "Resource not accessible by integration" }] },
+            },
+          ],
+        },
+      }),
       "tool",
     );
 
@@ -254,11 +274,7 @@ describe("formatSessionEvent", () => {
 
   it("prints assistant text without event framing in assistant mode", () => {
     const result = formatSessionEvent(
-      {
-        sequence: 9,
-        type: "message_end",
-        payload: { message: { content: [{ type: "text", text: "ACK PR bot identity fixed" }] } },
-      },
+      sessionEvent(9, "message.completed", { message: { role: "assistant", content: [{ type: "text", text: "ACK PR bot identity fixed" }] } }),
       "assistant",
     );
 

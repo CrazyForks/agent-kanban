@@ -28,11 +28,10 @@ import { getVersion } from "../version.js";
 
 const MAX_LOG_ARCHIVES = 5;
 const DEFAULT_MAX_CONCURRENT = 5;
-// Where ama-runner persists the token from its device login. AK pins this so the
-// login store is deterministic, kept under AK's own state, and isolated from a
-// standalone ama-runner install that may target a different origin. A distinct
-// filename keeps it clear of the pre-federation-drop ama-runner-config.json.
-const AMA_RUNNER_CONFIG_FILE = join(STATE_DIR, "ama-runner-login.json");
+// Where ama-runner persists device-login credentials. AK pins this so the login
+// store is deterministic, kept under AK's own state, and isolated from a
+// standalone ama-runner install that may target a different origin.
+const AMA_RUNNER_CREDENTIALS_FILE = join(STATE_DIR, "ama-runner-credentials.json");
 
 interface DaemonState {
   providers: string[];
@@ -142,11 +141,17 @@ function amaRunnerArgs(opts: Record<string, unknown>): string[] {
   return args;
 }
 
-interface SavedRunnerLogin {
+interface SavedRunnerCredentialProfile {
+  accountId?: string;
   apiServer?: string;
   accessToken?: string;
   refreshToken?: string;
   expiresAt?: string;
+}
+
+interface SavedRunnerCredentialStore {
+  active?: string;
+  profiles?: SavedRunnerCredentialProfile[];
 }
 
 // Mirror ama-runner's own token-validity rules: a saved login is usable when it
@@ -154,19 +159,24 @@ interface SavedRunnerLogin {
 // unexpired access token). Anything else means the runner would exit demanding a
 // fresh login, so AK re-runs the device flow instead.
 function hasValidRunnerLogin(origin: string): boolean {
-  if (!existsSync(AMA_RUNNER_CONFIG_FILE)) return false;
-  let saved: SavedRunnerLogin;
+  if (!existsSync(AMA_RUNNER_CREDENTIALS_FILE)) return false;
+  let saved: SavedRunnerCredentialStore;
   try {
-    saved = JSON.parse(readFileSync(AMA_RUNNER_CONFIG_FILE, "utf-8"));
+    saved = JSON.parse(readFileSync(AMA_RUNNER_CREDENTIALS_FILE, "utf-8"));
   } catch {
     return false;
   }
   const stripTrailingSlash = (value: string) => value.replace(/\/$/, "");
-  if (stripTrailingSlash(saved.apiServer ?? "") !== stripTrailingSlash(origin)) return false;
-  if (saved.refreshToken) return true;
-  if (!saved.accessToken) return false;
-  if (saved.expiresAt) {
-    const expiresAt = Date.parse(saved.expiresAt);
+  const profiles = Array.isArray(saved.profiles) ? saved.profiles : [];
+  const active = profiles.find((profile) => `${stripTrailingSlash(profile.apiServer ?? "")}#${profile.accountId ?? ""}` === saved.active);
+  const matches = profiles.filter((profile) => stripTrailingSlash(profile.apiServer ?? "") === stripTrailingSlash(origin));
+  const profile =
+    active && stripTrailingSlash(active.apiServer ?? "") === stripTrailingSlash(origin) ? active : matches.length === 1 ? matches[0] : null;
+  if (!profile) return false;
+  if (profile.refreshToken) return true;
+  if (!profile.accessToken) return false;
+  if (profile.expiresAt) {
+    const expiresAt = Date.parse(profile.expiresAt);
     if (Number.isNaN(expiresAt) || expiresAt <= Date.now()) return false;
   }
   return true;
@@ -179,9 +189,10 @@ function ensureRunnerLogin(runnerBin: string, origin: string, env: NodeJS.Proces
   if (hasValidRunnerLogin(origin)) return;
   mkdirSync(STATE_DIR, { recursive: true });
   console.log(`Authenticating ama-runner with AMA (${maskApiUrl(origin)})…`);
-  const result = spawnSync(runnerBin, ["login", "--api-server", origin], { stdio: "inherit", env });
+  const result = spawnSync(runnerBin, ["auth", "login", "--api-server", origin], { stdio: "inherit", env });
   if (result.error) throw new Error(`Failed to launch ama-runner login: ${result.error.message}`);
-  if (result.status !== 0) throw new Error(`ama-runner device login did not complete (exit status ${result.status}); cannot start the machine runner`);
+  if (result.status !== 0)
+    throw new Error(`ama-runner device login did not complete (exit status ${result.status}); cannot start the machine runner`);
 }
 
 function machineRuntimes(): MachineRuntime[] {
@@ -233,7 +244,8 @@ async function startAmaRunner(opts: Record<string, unknown>) {
   const runner = await resolveAmaRunnerBinary(typeof opts.amaRunnerVersion === "string" ? opts.amaRunnerVersion : null);
   const env = { ...process.env };
   delete env.AMA_TOKEN;
-  env.AMA_RUNNER_CONFIG = AMA_RUNNER_CONFIG_FILE;
+  delete env.AMA_RUNNER_CONFIG;
+  env.AMA_RUNNER_CREDENTIALS = AMA_RUNNER_CREDENTIALS_FILE;
   // Authenticate before opening the daemon log: login is interactive and writes
   // to the terminal, while the detached runner's output belongs in the log file.
   ensureRunnerLogin(runner.path, opts.amaOrigin as string, env);
