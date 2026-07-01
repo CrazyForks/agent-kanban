@@ -1,4 +1,17 @@
-import { createAmaClient as createSdkClient, type MemoryStoreMemory, type Runtime, type UpdateTriggerRequest } from "@any-managed-agents/sdk";
+import {
+  createAmaClient as createSdkClient,
+  type EnvFromEntry,
+  type RuntimeName,
+  type Agent as SdkAgent,
+  type MemoryStore as SdkMemoryStore,
+  type MemoryStoreMemory as SdkMemoryStoreMemory,
+  type Session as SdkSession,
+  type Trigger as SdkTrigger,
+  type TriggerRun as SdkTriggerRun,
+  type UpdateTriggerRequest,
+  type Volume,
+  type VolumeMount,
+} from "@any-managed-agents/sdk";
 import { createAuth } from "./betterAuth";
 import type { Env } from "./types";
 
@@ -7,6 +20,7 @@ const amaAccessTokenRequests = new Map<string, Promise<string>>();
 export type AmaResourceRef = Record<string, unknown>;
 export interface AmaRuntimeSecretEnvRef {
   name: string;
+  vaultId: string;
   credentialId: string;
   versionId?: string | null;
 }
@@ -311,63 +325,231 @@ export function isAmaTaskDispatchConfigured(env: Env): boolean {
 
 export async function createAmaTaskSession(env: Env, ownerId: string, input: AmaTaskSessionInput): Promise<AmaSessionDispatch> {
   const client = await createAmaClient(env, ownerId, input.projectId);
+  const envFrom = toAmaEnvFrom(input.runtimeSecretEnv ?? []);
+  const resources = toAmaRuntimeResources(input.resourceRefs ?? [], input.runtimeSecretEnv ?? []);
   const session = await withAmaErrorDetails("create session", () =>
     client.sessions.create({
-      agentId: input.agentId,
-      environmentId: input.environmentId,
-      runtime: input.runtime as Runtime,
-      title: input.title,
-      resourceRefs: input.resourceRefs ?? [],
-      ...(input.runtimeEnv ? { env: input.runtimeEnv } : {}),
-      ...(input.runtimeSecretEnv ? { secretEnv: toAmaSecretEnv(input.runtimeSecretEnv) } : {}),
-      ...(input.initialPrompt ? { initialPrompt: input.initialPrompt } : {}),
+      metadata: { name: input.title },
+      spec: {
+        agentId: input.agentId,
+        environmentId: input.environmentId,
+        runtime: toRuntimeName(input.runtime),
+        env: input.runtimeEnv ?? {},
+        envFrom,
+        volumes: resources.volumes,
+        volumeMounts: resources.volumeMounts,
+      },
+      prompt: input.initialPrompt ?? "",
     }),
   );
 
   return {
     projectId: input.projectId,
-    agentId: session.agentId,
-    environmentId: session.environmentId ?? input.environmentId,
-    sessionId: session.id,
-    status: session.state,
-    statusReason: session.stateReason,
+    agentId: session.spec.agentId,
+    environmentId: session.spec.environmentId ?? input.environmentId,
+    sessionId: session.metadata.uid,
+    status: session.status.phase,
+    statusReason: session.status.reason,
   };
 }
 
-// The /api/v1 secret-env contract takes a CredentialRef ({ credentialId,
-// versionId? }) per entry rather than a bare version id.
-function toAmaSecretEnv(entries: AmaRuntimeSecretEnvRef[]): { name: string; credentialRef: { credentialId: string; versionId?: string } }[] {
+function toRuntimeName(runtime: string): RuntimeName {
+  return runtime as RuntimeName;
+}
+
+function credentialVersionSecretRef(entry: Pick<AmaRuntimeSecretEnvRef, "vaultId" | "credentialId" | "versionId">): string {
+  if (!entry.vaultId) throw new Error(`AMA secret env reference for credential ${entry.credentialId} is missing vaultId`);
+  const vaultId = encodeURIComponent(entry.vaultId);
+  const credentialId = encodeURIComponent(entry.credentialId);
+  if (entry.versionId) {
+    return `ama://vaults/${vaultId}/credentials/${credentialId}/versions/${encodeURIComponent(entry.versionId)}`;
+  }
+  return `ama://vaults/${vaultId}/credentials/${credentialId}`;
+}
+
+function toAmaEnvFrom(entries: AmaRuntimeSecretEnvRef[]): EnvFromEntry[] {
   return entries.map((entry) => ({
+    type: "secret",
     name: entry.name,
-    credentialRef: { credentialId: entry.credentialId, ...(entry.versionId ? { versionId: entry.versionId } : {}) },
+    secretRef: credentialVersionSecretRef(entry),
+    key: "value",
   }));
+}
+
+function toAmaRuntimeResources(
+  resourceRefs: AmaResourceRef[],
+  secretEnv: AmaRuntimeSecretEnvRef[],
+): { volumes: Volume[]; volumeMounts: VolumeMount[] } {
+  const githubCredential = secretEnv.find((entry) => entry.name === "GH_TOKEN");
+  const volumes: Volume[] = [];
+  const volumeMounts: VolumeMount[] = [];
+  for (const [index, resource] of resourceRefs.entries()) {
+    if (resource.type === "github_repository" && typeof resource.owner === "string" && typeof resource.repo === "string") {
+      const name = index === 0 ? "repo" : `repo-${index + 1}`;
+      volumes.push({
+        name,
+        type: "git_repository",
+        url: `https://github.com/${resource.owner}/${resource.repo}.git`,
+        ...(githubCredential ? { secretRef: credentialVersionSecretRef(githubCredential) } : {}),
+      });
+      volumeMounts.push({ name, mountPath: `/workspace/repos/github.com/${resource.owner}/${resource.repo}` });
+    }
+    if (resource.type === "memory_store" && typeof resource.storeId === "string") {
+      const name = index === 0 ? "memory" : `memory-${index + 1}`;
+      const readOnly = resource.access === "read_only";
+      volumes.push({
+        name,
+        type: "memory",
+        memoryRef: `ama://memories/${encodeURIComponent(resource.storeId)}`,
+        access: readOnly ? "read_only" : "read_write",
+      });
+      volumeMounts.push({ name, mountPath: `/workspace/.ama/memory-stores/${encodeURIComponent(resource.storeId)}`, readOnly });
+    }
+  }
+  return { volumes, volumeMounts };
+}
+
+function triggerTemplateMetadata(metadata: Record<string, unknown> | undefined) {
+  return {
+    labels: stringRecord((metadata?.labels as Record<string, unknown> | undefined) ?? {}),
+    annotations: stringRecord((metadata?.annotations as Record<string, unknown> | undefined) ?? {}),
+  };
+}
+
+function triggerExecutionSpec(input: AmaScheduledTriggerInput | AmaHttpTriggerInput) {
+  const resources = toAmaRuntimeResources(input.resourceRefs ?? [], input.runtimeSecretEnv ?? []);
+  return {
+    agentId: input.agentId,
+    ...(input.environmentId !== undefined ? { environmentId: input.environmentId } : {}),
+    runtime: toRuntimeName(input.runtime),
+    env: input.runtimeEnv ?? {},
+    envFrom: toAmaEnvFrom(input.runtimeSecretEnv ?? []),
+    volumes: resources.volumes,
+    volumeMounts: resources.volumeMounts,
+    promptTemplate: input.promptTemplate,
+  };
+}
+
+type AmaTriggerTemplateSpecUpdate = NonNullable<NonNullable<UpdateTriggerRequest["spec"]>["template"]>["spec"];
+
+function triggerExecutionSpecUpdate(input: AmaScheduledTriggerUpdate | AmaHttpTriggerUpdate): AmaTriggerTemplateSpecUpdate | undefined {
+  const spec: Record<string, unknown> = {};
+  if (input.agentId !== undefined) spec.agentId = input.agentId;
+  if (input.environmentId !== undefined) spec.environmentId = input.environmentId;
+  if (input.runtime !== undefined) spec.runtime = toRuntimeName(input.runtime);
+  if (input.runtimeEnv !== undefined) spec.env = input.runtimeEnv;
+  if (input.runtimeSecretEnv !== undefined) spec.envFrom = toAmaEnvFrom(input.runtimeSecretEnv);
+  if (input.resourceRefs !== undefined) {
+    const resources = toAmaRuntimeResources(input.resourceRefs, input.runtimeSecretEnv ?? []);
+    spec.volumes = resources.volumes;
+    spec.volumeMounts = resources.volumeMounts;
+  }
+  if (input.promptTemplate !== undefined) spec.promptTemplate = input.promptTemplate;
+  return Object.keys(spec).length > 0 ? (spec as AmaTriggerTemplateSpecUpdate) : undefined;
+}
+
+function stringRecord(input: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(Object.entries(input).flatMap(([key, value]) => (typeof value === "string" ? [[key, value]] : [])));
+}
+
+function toAmaAgentSubagents(subagents: Record<string, unknown>[]) {
+  return subagents.map((subagent) => ({
+    name: String(subagent.name ?? subagent.username ?? "subagent"),
+    description: String(subagent.description ?? subagent.bio ?? ""),
+    systemPrompt: String(subagent.systemPrompt ?? subagent.instructions ?? ""),
+    model: typeof subagent.model === "string" ? subagent.model : null,
+    allowedTools: Array.isArray(subagent.allowedTools) ? subagent.allowedTools.filter((tool): tool is string => typeof tool === "string") : [],
+    skills: Array.isArray(subagent.skills) ? subagent.skills.filter((skill): skill is string => typeof skill === "string") : [],
+    mcpConnectors: Array.isArray(subagent.mcpConnectors)
+      ? subagent.mcpConnectors.filter((connector): connector is string => typeof connector === "string")
+      : [],
+  }));
+}
+
+function toAmaAgent(agent: SdkAgent, fallbackProvider: string): AmaAgent {
+  return {
+    id: agent.metadata.uid,
+    projectId: agent.metadata.projectId ?? "",
+    name: agent.metadata.name,
+    provider: agent.spec.provider ?? fallbackProvider,
+    model: agent.spec.model,
+  };
+}
+
+function normalizeAgent(agent: SdkAgent): Record<string, unknown> {
+  return {
+    ...agent,
+    id: agent.metadata.uid,
+    projectId: agent.metadata.projectId,
+    name: agent.metadata.name,
+    description: agent.metadata.description,
+    provider: agent.spec.provider,
+    providerId: agent.spec.provider,
+    model: agent.spec.model,
+    archivedAt: agent.metadata.archivedAt,
+  };
+}
+
+function normalizeEnvironment(environment: {
+  metadata: { uid: string; projectId: string | null; name: string; description: string | null; archivedAt: string | null };
+  spec: Record<string, unknown>;
+  status: Record<string, unknown>;
+}): Record<string, unknown> {
+  return {
+    ...environment,
+    id: environment.metadata.uid,
+    projectId: environment.metadata.projectId,
+    name: environment.metadata.name,
+    description: environment.metadata.description,
+    archivedAt: environment.metadata.archivedAt,
+  };
+}
+
+function normalizeSession(session: SdkSession): Record<string, unknown> {
+  return {
+    ...session,
+    id: session.metadata.uid,
+    projectId: session.metadata.projectId,
+    name: session.metadata.name,
+    title: session.metadata.name,
+    agentId: session.spec.agentId,
+    environmentId: session.spec.environmentId,
+    runtime: session.spec.runtime,
+    state: session.status.phase,
+    stateReason: session.status.reason,
+    status: session.status.phase,
+    metadata: {
+      ...session.metadata,
+      ...session.metadata.labels,
+      ...session.metadata.annotations,
+    },
+  };
+}
+
+function toAmaMemoryStore(store: SdkMemoryStore): AmaMemoryStore {
+  return { id: store.metadata.uid, name: store.metadata.name };
 }
 
 export async function createAmaAgent(env: Env, ownerId: string, input: AmaAgentInput): Promise<AmaAgent> {
   const client = await createAmaClient(env, ownerId, input.projectId);
   const agent = await withAmaErrorDetails("create runtime agent", () =>
     client.agents.create({
-      name: input.name,
-      description: input.description ?? null,
-      instructions: input.instructions ?? null,
-      ...(input.provider ? { providerId: input.provider } : {}),
-      ...(input.model ? { model: input.model } : {}),
-      ...(input.role ? { role: input.role } : {}),
-      skills: input.skills ?? [],
-      subagents: input.subagents ?? [],
-      capabilityTags: input.capabilityTags ?? [],
-      handoffPolicy: input.handoffPolicy ?? {},
-      metadata: input.metadata ?? {},
-      memoryPolicy: input.memoryPolicy ?? { enabled: false },
+      metadata: {
+        name: input.name,
+        description: input.description ?? null,
+      },
+      spec: {
+        systemPrompt: input.instructions ?? "",
+        ...(input.provider ? { provider: input.provider } : {}),
+        ...(input.model ? { model: input.model } : {}),
+        skills: input.skills ?? [],
+        subagents: toAmaAgentSubagents(input.subagents ?? []),
+        allowedTools: [],
+        mcpConnectors: [],
+      },
     }),
   );
-  return {
-    id: agent.id,
-    projectId: agent.projectId,
-    name: agent.name,
-    provider: agent.providerId ?? input.provider,
-    model: agent.model,
-  };
+  return toAmaAgent(agent, input.provider);
 }
 
 export async function createAmaProject(env: Env, ownerId: string, input: { name: string }): Promise<AmaProject> {
@@ -380,26 +562,28 @@ export async function createAmaVault(env: Env, ownerId: string, input: AmaVaultI
   const client = await createAmaClient(env, ownerId, input.projectId);
   const vault = await withAmaErrorDetails("create vault", () =>
     client.vaults.create({
-      name: input.name,
-      description: input.description,
-      scope: input.scope,
-      metadata: input.metadata ?? {},
+      metadata: {
+        name: input.name,
+        description: input.description ?? null,
+      },
+      spec: { scope: input.scope },
     }),
   );
-  return { id: vault.id };
+  return { id: vault.metadata.uid };
 }
 
 export async function createAmaEnvironment(env: Env, ownerId: string, input: AmaEnvironmentInput): Promise<AmaEnvironment> {
   const client = await createAmaClient(env, ownerId, input.projectId);
   const environment = await withAmaErrorDetails("create environment", () =>
     client.environments.create({
-      name: input.name,
-      description: input.description,
-      hostingMode: input.hostingMode,
-      metadata: input.metadata ?? {},
+      metadata: {
+        name: input.name,
+        description: input.description ?? null,
+      },
+      spec: { type: input.hostingMode },
     }),
   );
-  return { id: environment.id };
+  return { id: environment.metadata.uid };
 }
 
 async function withAmaErrorDetails<T>(operation: string, fn: () => Promise<T>): Promise<T> {
@@ -417,13 +601,7 @@ export async function readAmaAgent(env: Env, ownerId: string, projectId: string,
   const client = await createAmaClient(env, ownerId, projectId);
   try {
     const agent = await client.agents.get(agentId);
-    return {
-      id: agent.id,
-      projectId: agent.projectId,
-      name: agent.name,
-      provider: agent.providerId ?? "",
-      model: agent.model,
-    };
+    return toAmaAgent(agent, "");
   } catch (error) {
     if ((error as { status?: unknown }).status === 404) return null;
     throw error;
@@ -434,18 +612,19 @@ export async function updateAmaAgentConfig(env: Env, ownerId: string, projectId:
   const client = await createAmaClient(env, ownerId, projectId);
   await withAmaErrorDetails("update runtime agent config", () =>
     client.agents.update(agentId, {
-      name: input.name,
-      description: input.description ?? null,
-      instructions: input.instructions ?? null,
-      ...(input.provider ? { providerId: input.provider } : {}),
-      model: input.model ?? null,
-      role: input.role ?? null,
-      skills: input.skills ?? [],
-      subagents: input.subagents ?? [],
-      capabilityTags: input.capabilityTags ?? [],
-      handoffPolicy: input.handoffPolicy ?? {},
-      metadata: input.metadata ?? {},
-      memoryPolicy: input.memoryPolicy ?? { enabled: false },
+      metadata: {
+        name: input.name,
+        description: input.description ?? null,
+      },
+      spec: {
+        systemPrompt: input.instructions ?? "",
+        ...(input.provider ? { provider: input.provider } : {}),
+        model: input.model ?? null,
+        skills: input.skills ?? [],
+        subagents: toAmaAgentSubagents(input.subagents ?? []),
+        allowedTools: [],
+        mcpConnectors: [],
+      },
     }),
   );
 }
@@ -512,18 +691,18 @@ export async function createAmaSessionSecret(env: Env, ownerId: string, input: A
   const client = await createAmaClient(env, ownerId, input.projectId);
   const credential = await client.vaults.createCredential(input.vaultId, {
     name: input.name,
-    type: "session_env_secret",
+    type: "opaque",
     metadata: input.metadata ?? {},
     secret: {
-      provider: "ama-managed",
-      secretValue: input.secretValue,
+      stringData: { value: input.secretValue },
       referenceName: input.name,
+      metadata: input.metadata ?? {},
     },
   });
-  if (!credential.activeVersionId) {
+  if (!credential.status.activeVersionId) {
     throw new Error("AMA vault credential response did not include activeVersionId");
   }
-  return { credentialId: credential.id, activeVersionId: credential.activeVersionId };
+  return { credentialId: credential.metadata.uid, activeVersionId: credential.status.activeVersionId };
 }
 
 export interface AmaSessionUsageTotals {
@@ -579,7 +758,7 @@ export async function sendAmaSessionMessage(
 export async function readAmaSession(env: Env, ownerId: string, sessionId: string, projectId?: string): Promise<Record<string, unknown> | null> {
   const client = await createAmaClient(env, ownerId, projectId);
   try {
-    return (await client.sessions.get(sessionId)) as unknown as Record<string, unknown>;
+    return normalizeSession(await client.sessions.get(sessionId));
   } catch (error) {
     if ((error as { status?: unknown }).status === 404) return null;
     throw error;
@@ -602,17 +781,20 @@ export async function listAmaSessions(
     ...(options.archived !== undefined ? { archived: (options.archived ? "true" : "false") as AmaArchivedFilter } : {}),
     ...(options.labelSelector ? { labelSelector: options.labelSelector } : {}),
   };
-  return (await client.sessions.list(query)) as unknown as AmaListResponse<Record<string, unknown>>;
+  const page = await client.sessions.list(query);
+  return { data: page.data.map(normalizeSession), pagination: page.pagination };
 }
 
 export async function listAmaAgents(env: Env, ownerId: string): Promise<AmaListResponse<Record<string, unknown>>> {
   const client = await createAmaClient(env, ownerId);
-  return (await client.agents.list({ limit: 100 })) as unknown as AmaListResponse<Record<string, unknown>>;
+  const page = await client.agents.list({ limit: 100 });
+  return { data: page.data.map(normalizeAgent), pagination: page.pagination };
 }
 
 export async function listAmaEnvironments(env: Env, ownerId: string): Promise<AmaListResponse<Record<string, unknown>>> {
   const client = await createAmaClient(env, ownerId);
-  return (await client.environments.list({ limit: 100 })) as unknown as AmaListResponse<Record<string, unknown>>;
+  const page = await client.environments.list({ limit: 100 });
+  return { data: page.data.map(normalizeEnvironment), pagination: page.pagination };
 }
 
 export interface AmaCatalogModel {
@@ -658,84 +840,100 @@ export async function listAmaRunners(env: Env, ownerId: string, projectId: strin
 }
 
 interface AmaTriggerResponse {
-  id: string;
-  agentId: string;
-  environmentId: string | null;
-  name: string;
-  promptTemplate: string;
-  schedule: { intervalSeconds: number; windowSeconds?: number } | null;
-  enabled: boolean;
-  archivedAt: string | null;
-  lastDispatchedAt: string | null;
-  lastRunId: string | null;
+  metadata: {
+    uid: string;
+    name: string;
+    archivedAt: string | null;
+  };
+  spec: {
+    source: { type: "schedule"; schedule: { intervalSeconds: number; windowSeconds?: number } } | { type: "http" };
+    suspend: boolean;
+    template: {
+      spec: {
+        agentId: string;
+        environmentId: string | null;
+        promptTemplate: string;
+      };
+    };
+  };
+  status: {
+    lastDispatchedAt: string | null;
+    lastRunId: string | null;
+  };
 }
 
 interface AmaTriggerRunResponse {
-  id: string;
-  projectId: string;
-  triggerId: string;
-  scheduledFor: string | null;
-  heartbeatAt: string | null;
-  triggeredAt: string;
-  state: string;
-  sessionId: string | null;
-  errorMessage: string | null;
-  metadata: Record<string, unknown>;
-  createdAt: string;
-  updatedAt: string;
+  metadata: {
+    uid: string;
+    projectId: string | null;
+    createdAt: string;
+    updatedAt: string;
+  };
+  spec: {
+    triggerId: string;
+    scheduledFor: string | null;
+    metadata: Record<string, unknown>;
+  };
+  status: {
+    phase: string;
+    heartbeatAt: string | null;
+    triggeredAt: string;
+    sessionId: string | null;
+    errorMessage: string | null;
+  };
 }
 
 // /api/v1 triggers expose enablement as a boolean + an archive timestamp; AK's
 // maintainer status is the tri-state derived from them.
 function amaTriggerStatus(trigger: AmaTriggerResponse): AmaScheduledTrigger["status"] {
-  if (trigger.archivedAt) return "archived";
-  return trigger.enabled ? "active" : "paused";
+  if (trigger.metadata.archivedAt) return "archived";
+  return trigger.spec.suspend ? "paused" : "active";
 }
 
 function toAmaScheduledTrigger(trigger: AmaTriggerResponse): AmaScheduledTrigger {
-  if (!trigger.schedule) {
-    throw new Error(`AMA trigger ${trigger.id} is not scheduled`);
+  if (trigger.spec.source.type !== "schedule") {
+    throw new Error(`AMA trigger ${trigger.metadata.uid} is not scheduled`);
   }
   return {
-    id: trigger.id,
-    agentId: trigger.agentId,
-    environmentId: trigger.environmentId,
-    name: trigger.name,
-    promptTemplate: trigger.promptTemplate,
-    schedule: { intervalSeconds: trigger.schedule.intervalSeconds, windowSeconds: trigger.schedule.windowSeconds },
+    id: trigger.metadata.uid,
+    agentId: trigger.spec.template.spec.agentId,
+    environmentId: trigger.spec.template.spec.environmentId,
+    name: trigger.metadata.name,
+    promptTemplate: trigger.spec.template.spec.promptTemplate,
+    schedule: { intervalSeconds: trigger.spec.source.schedule.intervalSeconds, windowSeconds: trigger.spec.source.schedule.windowSeconds },
     status: amaTriggerStatus(trigger),
-    lastDispatchedAt: trigger.lastDispatchedAt,
-    lastRunId: trigger.lastRunId,
+    lastDispatchedAt: trigger.status.lastDispatchedAt,
+    lastRunId: trigger.status.lastRunId,
   };
 }
 
 function toAmaHttpTrigger(trigger: AmaTriggerResponse): AmaHttpTrigger {
   return {
-    id: trigger.id,
-    agentId: trigger.agentId,
-    environmentId: trigger.environmentId,
-    name: trigger.name,
-    promptTemplate: trigger.promptTemplate,
+    id: trigger.metadata.uid,
+    agentId: trigger.spec.template.spec.agentId,
+    environmentId: trigger.spec.template.spec.environmentId,
+    name: trigger.metadata.name,
+    promptTemplate: trigger.spec.template.spec.promptTemplate,
     status: amaTriggerStatus(trigger),
-    lastDispatchedAt: trigger.lastDispatchedAt,
-    lastRunId: trigger.lastRunId,
+    lastDispatchedAt: trigger.status.lastDispatchedAt,
+    lastRunId: trigger.status.lastRunId,
   };
 }
 
 function toAmaTriggerRun(run: AmaTriggerRunResponse): AmaTriggerRun {
   return {
-    id: run.id,
-    projectId: run.projectId,
-    triggerId: run.triggerId,
-    scheduledFor: run.scheduledFor,
-    heartbeatAt: run.heartbeatAt,
-    triggeredAt: run.triggeredAt,
-    status: run.state,
-    sessionId: run.sessionId,
-    errorMessage: run.errorMessage,
-    metadata: run.metadata,
-    createdAt: run.createdAt,
-    updatedAt: run.updatedAt,
+    id: run.metadata.uid,
+    projectId: run.metadata.projectId ?? "",
+    triggerId: run.spec.triggerId,
+    scheduledFor: run.spec.scheduledFor,
+    heartbeatAt: run.status.heartbeatAt,
+    triggeredAt: run.status.triggeredAt,
+    status: run.status.phase,
+    sessionId: run.status.sessionId,
+    errorMessage: run.status.errorMessage,
+    metadata: run.spec.metadata,
+    createdAt: run.metadata.createdAt,
+    updatedAt: run.metadata.updatedAt,
   };
 }
 
@@ -748,7 +946,7 @@ export async function listAmaTriggerRuns(
 ): Promise<AmaListResponse<AmaTriggerRun>> {
   const client = await createAmaClient(env, ownerId, projectId);
   const page = await client.triggers.listRuns(triggerId, { limit: options.limit ?? 20 });
-  return { data: page.data.map(toAmaTriggerRun), pagination: page.pagination };
+  return { data: page.data.map((run) => toAmaTriggerRun(run as SdkTriggerRun)), pagination: page.pagination };
 }
 
 export async function stopAmaSession(
@@ -760,49 +958,43 @@ export async function stopAmaSession(
 ) {
   const client = await createAmaClient(env, ownerId, projectId);
   // /api/v1 has no dedicated stop verb: transition the session to `stopped`.
-  await client.sessions.update(sessionId, { state: "stopped", metadata: { stopReason: reason } });
+  await client.sessions.update(sessionId, { state: "stopped", metadata: { annotations: { stopReason: reason } } });
 }
 
 export async function createAmaScheduledAgentTrigger(env: Env, ownerId: string, input: AmaScheduledTriggerInput): Promise<AmaScheduledTrigger> {
   const client = await createAmaClient(env, ownerId, input.projectId);
   const trigger = await withAmaErrorDetails("create scheduled trigger", () =>
     client.triggers.create({
-      type: "scheduled",
-      agentId: input.agentId,
-      ...(input.environmentId ? { environmentId: input.environmentId } : {}),
-      runtime: input.runtime as Runtime,
-      name: input.name,
-      promptTemplate: input.promptTemplate,
-      resourceRefs: input.resourceRefs ?? [],
-      env: input.runtimeEnv ?? {},
-      secretEnv: toAmaSecretEnv(input.runtimeSecretEnv ?? []),
-      schedule: { type: "interval", intervalSeconds: input.intervalSeconds },
-      enabled: (input.status ?? "active") !== "paused",
-      metadata: input.metadata ?? {},
-    } as Parameters<typeof client.triggers.create>[0]),
+      metadata: { name: input.name },
+      spec: {
+        source: { type: "schedule", schedule: { type: "interval", intervalSeconds: input.intervalSeconds } },
+        suspend: (input.status ?? "active") === "paused",
+        template: {
+          metadata: triggerTemplateMetadata(input.metadata),
+          spec: triggerExecutionSpec(input),
+        },
+      },
+    }),
   );
-  return toAmaScheduledTrigger(trigger);
+  return toAmaScheduledTrigger(trigger as SdkTrigger);
 }
 
 export async function createAmaHttpAgentTrigger(env: Env, ownerId: string, input: AmaHttpTriggerInput): Promise<AmaHttpTrigger> {
   const client = await createAmaClient(env, ownerId, input.projectId);
   const trigger = await withAmaErrorDetails("create HTTP trigger", () =>
     client.triggers.create({
-      type: "http",
-      agentId: input.agentId,
-      ...(input.environmentId ? { environmentId: input.environmentId } : {}),
-      runtime: input.runtime as Runtime,
-      name: input.name,
-      promptTemplate: input.promptTemplate,
-      resourceRefs: input.resourceRefs ?? [],
-      env: input.runtimeEnv ?? {},
-      secretEnv: toAmaSecretEnv(input.runtimeSecretEnv ?? []),
-      schedule: null,
-      enabled: (input.status ?? "active") !== "paused",
-      metadata: input.metadata ?? {},
-    } as Parameters<typeof client.triggers.create>[0]),
+      metadata: { name: input.name },
+      spec: {
+        source: { type: "http" },
+        suspend: (input.status ?? "active") === "paused",
+        template: {
+          metadata: triggerTemplateMetadata(input.metadata),
+          spec: triggerExecutionSpec(input),
+        },
+      },
+    }),
   );
-  return toAmaHttpTrigger(trigger);
+  return toAmaHttpTrigger(trigger as SdkTrigger);
 }
 
 export async function updateAmaScheduledAgentTrigger(
@@ -813,22 +1005,19 @@ export async function updateAmaScheduledAgentTrigger(
   input: AmaScheduledTriggerUpdate,
 ): Promise<AmaScheduledTrigger> {
   const body: UpdateTriggerRequest = {};
-  if (input.agentId !== undefined) body.agentId = input.agentId;
-  // null unpins the environment (AMA resolves one per dispatch); the contract
-  // types this as optional-string, so widen for the null case.
-  if (input.environmentId !== undefined) body.environmentId = input.environmentId as string | undefined;
-  if (input.runtime !== undefined) body.runtime = input.runtime as Runtime;
-  if (input.name !== undefined) body.name = input.name;
-  if (input.promptTemplate !== undefined) body.promptTemplate = input.promptTemplate;
-  if (input.resourceRefs !== undefined) body.resourceRefs = input.resourceRefs;
-  if (input.runtimeEnv !== undefined) body.env = input.runtimeEnv;
-  if (input.runtimeSecretEnv !== undefined) body.secretEnv = toAmaSecretEnv(input.runtimeSecretEnv);
-  if (input.metadata !== undefined) body.metadata = input.metadata;
-  if (input.intervalSeconds !== undefined) body.schedule = { type: "interval", intervalSeconds: input.intervalSeconds };
-  if (input.status !== undefined) body.enabled = input.status !== "paused";
+  if (input.name !== undefined) body.metadata = { name: input.name };
+  body.spec = {};
+  if (input.intervalSeconds !== undefined) {
+    body.spec.source = { type: "schedule", schedule: { type: "interval", intervalSeconds: input.intervalSeconds } };
+  }
+  if (input.status !== undefined) body.spec.suspend = input.status === "paused";
+  const template = triggerExecutionSpecUpdate(input);
+  const metadata = input.metadata !== undefined ? triggerTemplateMetadata(input.metadata) : undefined;
+  if (template || metadata) body.spec.template = { ...(metadata ? { metadata } : {}), ...(template ? { spec: template } : {}) };
+  if (Object.keys(body.spec).length === 0) delete body.spec;
   const client = await createAmaClient(env, ownerId, projectId);
   const trigger = await withAmaErrorDetails("update scheduled trigger", () => client.triggers.update(scheduleId, body));
-  return toAmaScheduledTrigger(trigger);
+  return toAmaScheduledTrigger(trigger as SdkTrigger);
 }
 
 export async function updateAmaHttpAgentTrigger(
@@ -839,19 +1028,16 @@ export async function updateAmaHttpAgentTrigger(
   input: AmaHttpTriggerUpdate,
 ): Promise<AmaHttpTrigger> {
   const body: UpdateTriggerRequest = {};
-  if (input.agentId !== undefined) body.agentId = input.agentId;
-  if (input.environmentId !== undefined) body.environmentId = input.environmentId as string | undefined;
-  if (input.runtime !== undefined) body.runtime = input.runtime as Runtime;
-  if (input.name !== undefined) body.name = input.name;
-  if (input.promptTemplate !== undefined) body.promptTemplate = input.promptTemplate;
-  if (input.resourceRefs !== undefined) body.resourceRefs = input.resourceRefs;
-  if (input.runtimeEnv !== undefined) body.env = input.runtimeEnv;
-  if (input.runtimeSecretEnv !== undefined) body.secretEnv = toAmaSecretEnv(input.runtimeSecretEnv);
-  if (input.metadata !== undefined) body.metadata = input.metadata;
-  if (input.status !== undefined) body.enabled = input.status !== "paused";
+  if (input.name !== undefined) body.metadata = { name: input.name };
+  body.spec = {};
+  if (input.status !== undefined) body.spec.suspend = input.status === "paused";
+  const template = triggerExecutionSpecUpdate(input);
+  const metadata = input.metadata !== undefined ? triggerTemplateMetadata(input.metadata) : undefined;
+  if (template || metadata) body.spec.template = { ...(metadata ? { metadata } : {}), ...(template ? { spec: template } : {}) };
+  if (Object.keys(body.spec).length === 0) delete body.spec;
   const client = await createAmaClient(env, ownerId, projectId);
   const trigger = await withAmaErrorDetails("update HTTP trigger", () => client.triggers.update(triggerId, body));
-  return toAmaHttpTrigger(trigger);
+  return toAmaHttpTrigger(trigger as SdkTrigger);
 }
 
 export async function deleteAmaScheduledAgentTrigger(env: Env, ownerId: string, projectId: string, scheduleId: string): Promise<void> {
@@ -867,12 +1053,14 @@ export async function createAmaMemoryStore(env: Env, ownerId: string, input: Ama
   const client = await createAmaClient(env, ownerId, input.projectId);
   const store = await withAmaErrorDetails("create memory store", () =>
     client.memoryStores.create({
-      name: input.name,
-      description: input.description,
-      metadata: input.metadata ?? {},
+      metadata: {
+        name: input.name,
+        description: input.description ?? null,
+      },
+      spec: {},
     }),
   );
-  return { id: store.id, name: store.name };
+  return toAmaMemoryStore(store);
 }
 
 export async function listAmaMemoryStoreMemories(
@@ -904,7 +1092,7 @@ export async function dispatchAmaHttpTriggerRun(env: Env, ownerId: string, input
       ...(input.idempotencyKey ? { headers: { "idempotency-key": input.idempotencyKey } } : {}),
     }),
   );
-  return toAmaTriggerRun(run);
+  return toAmaTriggerRun(run as SdkTriggerRun);
 }
 
 // Resolves the AMA access token for the linked AMA account of the AK user
@@ -977,15 +1165,15 @@ function requireEnv(value: string | undefined, name: string): string {
   return value;
 }
 
-function toAmaMemoryStoreMemory(memory: MemoryStoreMemory): AmaMemoryStoreMemory {
+function toAmaMemoryStoreMemory(memory: SdkMemoryStoreMemory): AmaMemoryStoreMemory {
   return {
-    id: memory.id,
-    storeId: memory.storeId,
-    projectId: memory.projectId,
-    path: memory.path,
-    content: memory.content,
-    metadata: memory.metadata,
-    createdAt: memory.createdAt,
-    updatedAt: memory.updatedAt,
+    id: memory.metadata.uid,
+    storeId: memory.spec.storeId,
+    projectId: memory.metadata.projectId ?? "",
+    path: memory.spec.path,
+    content: memory.spec.content,
+    metadata: memory.spec.metadata,
+    createdAt: memory.metadata.createdAt,
+    updatedAt: memory.metadata.updatedAt,
   };
 }

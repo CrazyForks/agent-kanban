@@ -32,6 +32,18 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
+function amaCredential(id: string, activeVersionId?: string) {
+  return { metadata: { uid: id }, spec: {}, status: { activeVersionId } };
+}
+
+function amaSession(body: any, id = "session_123") {
+  return {
+    metadata: { uid: id, projectId: "project_123", name: body.metadata.name, labels: {}, annotations: {} },
+    spec: body.spec,
+    status: { phase: "pending", reason: null },
+  };
+}
+
 // The per-user AMA token now comes from the linked AMA account via BetterAuth's
 // getAccessToken (auto-refreshed), not a client-credentials exchange. Stub
 // createAuth so amaRuntime resolves a deterministic token for the test owner.
@@ -94,18 +106,28 @@ describe("AMA runtime adapter", () => {
         expect(req.header("x-ama-project-id")).toBe("project_123");
         const body = JSON.parse(await req.body()) as Record<string, unknown>;
         expect(body).toEqual({
-          agentId: "agent_123",
-          environmentId: "env_123",
-          runtime: "codex",
-          title: "Implement metadata",
-          resourceRefs: [{ type: "github_repository", owner: "saltbo", repo: "agent-kanban" }],
-          env: { AK_API_URL: "https://ak.example.com", AK_AGENT_ID: "agent_123" },
-          secretEnv: [{ name: "AK_AGENT_KEY", credentialRef: { credentialId: "vaultver_123" } }],
-          initialPrompt: "Use AK CLI to claim and review the task.",
+          metadata: { name: "Implement metadata" },
+          spec: {
+            agentId: "agent_123",
+            environmentId: "env_123",
+            runtime: "codex",
+            env: { AK_API_URL: "https://ak.example.com", AK_AGENT_ID: "agent_123" },
+            envFrom: [
+              {
+                type: "secret",
+                name: "AK_AGENT_KEY",
+                secretRef: "ama://vaults/vault_123/credentials/vaultcred_123/versions/vaultver_123",
+                key: "value",
+              },
+            ],
+            volumes: [{ name: "repo", type: "git_repository", url: "https://github.com/saltbo/agent-kanban.git" }],
+            volumeMounts: [{ name: "repo", mountPath: "/workspace/repos/github.com/saltbo/agent-kanban" }],
+          },
+          prompt: "Use AK CLI to claim and review the task.",
         });
         expect(JSON.stringify(body)).not.toContain("task_123");
         expect(JSON.stringify(body)).not.toContain("board_123");
-        return jsonResponse({ id: "session_123", agentId: "agent_123", environmentId: "env_123", state: "pending", stateReason: null }, 201);
+        return jsonResponse(amaSession(body), 201);
       }
       throw new Error(`Unexpected fetch: ${req.url}`);
     });
@@ -120,7 +142,7 @@ describe("AMA runtime adapter", () => {
       initialPrompt: "Use AK CLI to claim and review the task.",
       resourceRefs: [{ type: "github_repository", owner: "saltbo", repo: "agent-kanban" }],
       runtimeEnv: { AK_API_URL: "https://ak.example.com", AK_AGENT_ID: "agent_123" },
-      runtimeSecretEnv: [{ name: "AK_AGENT_KEY", credentialId: "vaultver_123" }],
+      runtimeSecretEnv: [{ name: "AK_AGENT_KEY", vaultId: "vault_123", credentialId: "vaultcred_123", versionId: "vaultver_123" }],
     });
 
     expect(dispatch).toEqual({
@@ -146,14 +168,15 @@ describe("AMA runtime adapter", () => {
         const body = JSON.parse(await req.body()) as Record<string, any>;
         expect(body).toMatchObject({
           name: "AK_AGENT_KEY_session_123",
-          type: "session_env_secret",
+          type: "opaque",
+          metadata: { purpose: "agent-session" },
           secret: {
-            provider: "ama-managed",
-            secretValue: '{"kty":"OKP"}',
+            stringData: { value: '{"kty":"OKP"}' },
             referenceName: "AK_AGENT_KEY_session_123",
+            metadata: { purpose: "agent-session" },
           },
         });
-        return jsonResponse({ id: "vaultcred_123", activeVersionId: "vaultver_123" }, 201);
+        return jsonResponse(amaCredential("vaultcred_123", "vaultver_123"), 201);
       }
       throw new Error(`Unexpected fetch: ${req.url}`);
     });

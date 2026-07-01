@@ -66,6 +66,78 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
+function amaCredential(id: string, activeVersionId?: string) {
+  return { metadata: { uid: id }, spec: {}, status: { activeVersionId } };
+}
+
+function amaAgent(id: string, input: { projectId?: string; name?: string; provider?: string; model?: string | null } = {}) {
+  return {
+    metadata: {
+      uid: id,
+      projectId: input.projectId ?? "project_123",
+      name: input.name ?? "agent",
+      description: null,
+      archivedAt: null,
+    },
+    spec: {
+      provider: input.provider ?? "provider_claude",
+      model: input.model ?? null,
+      systemPrompt: "",
+      skills: [],
+      subagents: [],
+      allowedTools: [],
+      mcpConnectors: [],
+    },
+    status: {},
+  };
+}
+
+function amaEnvironment(id: string, input: { projectId?: string; name?: string; type?: string } = {}) {
+  return {
+    metadata: {
+      uid: id,
+      projectId: input.projectId ?? "project_123",
+      name: input.name ?? id,
+      description: null,
+      archivedAt: null,
+    },
+    spec: { type: input.type ?? "self_hosted" },
+    status: {},
+  };
+}
+
+function amaVault(id: string, projectId = "project_123") {
+  return {
+    metadata: { uid: id, projectId, name: id, description: null, archivedAt: null },
+    spec: { scope: "project" },
+    status: {},
+  };
+}
+
+function amaSession(
+  id: string,
+  input: { agentId?: string; environmentId?: string | null; runtime?: string; phase?: string; reason?: string | null; name?: string } = {},
+) {
+  return {
+    metadata: {
+      uid: id,
+      projectId: "project_123",
+      name: input.name ?? id,
+      labels: {},
+      annotations: {},
+      archivedAt: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    spec: {
+      agentId: input.agentId ?? "a",
+      environmentId: input.environmentId ?? "e",
+      runtime: input.runtime ?? "claude-code",
+    },
+    status: { phase: input.phase ?? "pending", reason: input.reason ?? null },
+  };
+}
+
 // Stub fetch as OIDC discovery + AMA API calls
 function oidcDiscoveryResponse() {
   return jsonResponse({
@@ -422,25 +494,11 @@ describe("dispatchTaskToAma model-precise candidate selection", () => {
         return jsonResponse({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }, 200);
       if (url === "https://ama.test/api/v1/providers/provider_claude/models/claude-opus-4-6") return jsonResponse({ id: "claude-opus-4-6" }, 200);
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials")
-        return jsonResponse({ id: "vaultcred_prefer", activeVersionId: "vaultver_prefer" }, 201);
-      if (url === "https://ama.test/api/v1/agents")
-        return jsonResponse(
-          {
-            id: "ama_agent_prefer",
-            projectId: "project_123",
-            name: "prefer",
-            providerId: "provider_claude",
-            model: "claude-opus-4-6",
-          },
-          201,
-        );
+        return jsonResponse(amaCredential("vaultcred_prefer", "vaultver_prefer"), 201);
       if (url === "https://ama.test/api/v1/sessions") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        sessionEnvironmentId = body.environmentId;
-        return jsonResponse(
-          { id: "session_prefer_1", agentId: body.agentId, environmentId: body.environmentId, state: "pending", stateReason: null },
-          201,
-        );
+        sessionEnvironmentId = body.spec.environmentId;
+        return jsonResponse(amaSession("session_prefer_1", body.spec), 201);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -530,13 +588,11 @@ describe("dispatchPendingAmaTasks", () => {
       if (url === "https://ama.test/api/v1/providers?limit=100")
         return jsonResponse({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }, 200);
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials")
-        return jsonResponse({ id: "vaultcred_sweep", activeVersionId: "vaultver_sweep" }, 201);
-      if (url === "https://ama.test/api/v1/agents")
-        return jsonResponse({ id: "ama_agent_sweep", projectId: "project_123", name: "sweep", providerId: "provider_claude", model: null }, 201);
+        return jsonResponse(amaCredential("vaultcred_sweep", "vaultver_sweep"), 201);
       if (url === "https://ama.test/api/v1/sessions") {
         sessionCreated = true;
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        return jsonResponse({ id: "session_sweep_1", agentId: body.agentId, environmentId: "env_sweep", state: "pending", stateReason: null }, 201);
+        return jsonResponse(amaSession("session_sweep_1", body.spec), 201);
       }
       throw new Error(`Unexpected sweep fetch: ${url}`);
     });
@@ -628,23 +684,11 @@ describe("dispatchPendingAmaTasks", () => {
         return activeRunnerResponse("env_dep_sweep", "claude-code");
       if (url === "https://ama.test/api/v1/providers?limit=100")
         return jsonResponse({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }, 200);
-      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials")
-        return jsonResponse({ id: "vaultcred_dep", activeVersionId: "vaultver_dep" }, 201);
-      if (url === "https://ama.test/api/v1/agents")
-        return jsonResponse({ id: "ama_agent_dep", projectId: "project_123", name: "dep", providerId: "provider_claude", model: null }, 201);
+      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") return jsonResponse(amaCredential("vaultcred_dep", "vaultver_dep"), 201);
       if (url === "https://ama.test/api/v1/sessions") {
         sessionCount += 1;
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        return jsonResponse(
-          {
-            id: `session_dep_${sessionCount}`,
-            agentId: body.agentId,
-            environmentId: "env_dep_sweep",
-            state: "pending",
-            stateReason: null,
-          },
-          201,
-        );
+        return jsonResponse(amaSession(`session_dep_${sessionCount}`, body.spec), 201);
       }
       throw new Error(`Unexpected dep fetch: ${url}`);
     });
@@ -723,10 +767,10 @@ describe("reconcileAmaBoundTasks", () => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH")
-        return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "error", stateReason: "crashed" }, 200);
+        return jsonResponse(amaSession(sessionId, { phase: "error", reason: "crashed" }), 200);
       // Stop call after release (PATCH /api/v1/sessions/{id})
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH")
-        return jsonResponse({ id: sessionId, state: "stopped" }, 200);
+        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
       throw new Error(`Unexpected reconcile fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -754,8 +798,7 @@ describe("reconcileAmaBoundTasks", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
-      if (url === `https://ama.test/api/v1/sessions/${sessionId}`)
-        return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "running", stateReason: null }, 200);
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}`) return jsonResponse(amaSession(sessionId, { phase: "running" }), 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -783,7 +826,7 @@ describe("reconcileAmaBoundTasks", () => {
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH") {
         stops.push(url);
-        return jsonResponse({ id: sessionId, state: "stopped" }, 200);
+        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -845,7 +888,7 @@ describe("reconcileAmaBoundTasks", () => {
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH") return new Response(null, { status: 404 });
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH") {
         stops.push(url);
-        return jsonResponse({ id: sessionId, state: "stopped" }, 200);
+        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -876,9 +919,9 @@ describe("reconcileAmaBoundTasks", () => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH")
-        return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "pending", stateReason: null }, 200);
+        return jsonResponse(amaSession(sessionId, { phase: "pending" }), 200);
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH")
-        return jsonResponse({ id: sessionId, state: "stopped" }, 200);
+        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -909,8 +952,7 @@ describe("reconcileAmaBoundTasks", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
-      if (url === `https://ama.test/api/v1/sessions/${sessionId}`)
-        return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "pending", stateReason: null }, 200);
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}`) return jsonResponse(amaSession(sessionId, { phase: "pending" }), 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -939,10 +981,10 @@ describe("reconcileAmaBoundTasks", () => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH")
-        return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "idle", stateReason: null }, 200);
+        return jsonResponse(amaSession(sessionId, { phase: "idle" }), 200);
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH") {
         stops.push(url);
-        return jsonResponse({ id: sessionId, state: "stopped" }, 200);
+        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -975,7 +1017,7 @@ describe("reconcileAmaBoundTasks", () => {
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH") return new Response(null, { status: 404 });
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH")
-        return jsonResponse({ id: sessionId, state: "stopped" }, 200);
+        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1010,9 +1052,9 @@ describe("reconcileAmaBoundTasks", () => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH")
-        return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "idle", stateReason: null }, 200);
+        return jsonResponse(amaSession(sessionId, { phase: "idle" }), 200);
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH")
-        return jsonResponse({ id: sessionId, state: "stopped" }, 200);
+        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1050,9 +1092,9 @@ describe("reconcileAmaBoundTasks", () => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH")
-        return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "pending", stateReason: null }, 200);
+        return jsonResponse(amaSession(sessionId, { phase: "pending" }), 200);
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH")
-        return jsonResponse({ id: sessionId, state: "stopped" }, 200);
+        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1088,9 +1130,9 @@ describe("reconcileAmaBoundTasks", () => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH")
-        return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "error", stateReason: "crashed" }, 200);
+        return jsonResponse(amaSession(sessionId, { phase: "error", reason: "crashed" }), 200);
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH")
-        return jsonResponse({ id: sessionId, state: "stopped" }, 200);
+        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1158,7 +1200,7 @@ describe("detectAndReleaseStaleAll with AMA binding", () => {
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH") {
         stops.push(url);
-        return jsonResponse({ id: sessionId, state: "stopped" }, 200);
+        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -1366,7 +1408,7 @@ describe("amaRuntime vault credential helpers", () => {
       const url = reqUrl(input);
       if (url === "https://ama.test/api/v1/vaults/vault_noversion/credentials")
         // Credential response missing activeVersionId
-        return jsonResponse({ id: "cred_noversion" }, 201);
+        return jsonResponse(amaCredential("cred_noversion"), 201);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1394,7 +1436,8 @@ describe("amaRuntime list helpers", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
-      if (url === "https://ama.test/api/v1/agents?limit=100") return jsonResponse({ data: [{ id: "ama_agent_1" }], pagination: {} }, 200);
+      if (url === "https://ama.test/api/v1/agents?limit=100")
+        return jsonResponse({ data: [amaAgent("ama_agent_1", { name: "Agent 1" })], pagination: {} }, 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1410,7 +1453,7 @@ describe("amaRuntime list helpers", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
       if (url === "https://ama.test/api/v1/environments?limit=100")
-        return jsonResponse({ data: [{ id: "env_1", name: "Production" }], pagination: {} }, 200);
+        return jsonResponse({ data: [amaEnvironment("env_1", { name: "Production" })], pagination: {} }, 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1610,7 +1653,10 @@ describe("createAmaCloudSandboxEnvironment", () => {
       // createAmaEnvironment: returns a new cloud env
       if (url === "https://ama.test/api/v1/environments" && reqMethod(input, init) === "POST") {
         createBody = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        return jsonResponse({ id: newEnvId }, 201);
+        return jsonResponse(
+          amaEnvironment(newEnvId, { projectId: "project_cloud_new", name: createBody.metadata.name, type: createBody.spec.type }),
+          201,
+        );
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -1620,7 +1666,7 @@ describe("createAmaCloudSandboxEnvironment", () => {
     const result = await createAmaCloudSandboxEnvironment(db, env, cloudOwner, "Cloud sandbox");
 
     expect(result).toEqual({ projectId: "project_cloud_new", environmentId: newEnvId });
-    expect(createBody?.hostingMode).toBe("cloud");
+    expect(createBody?.spec.type).toBe("cloud");
   });
 
   it("always provisions a new environment (no per-owner singleton reuse)", async () => {
@@ -1643,7 +1689,7 @@ describe("createAmaCloudSandboxEnvironment", () => {
       if (url === "https://ama.test/api/v1/projects/project_cloud_twice") return jsonResponse({ id: "project_cloud_twice", name: "Workspace" }, 200);
       if (url === "https://ama.test/api/v1/environments" && reqMethod(input, init) === "POST") {
         counter += 1;
-        return jsonResponse({ id: `cloud_env_${counter}` }, 201);
+        return jsonResponse(amaEnvironment(`cloud_env_${counter}`, { projectId: "project_cloud_twice", type: "cloud" }), 201);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -1679,7 +1725,7 @@ describe("resolveAmaSessionSecretVaultId", () => {
       // readAmaProject: alive (so ensureAmaOwnerIntegration doesn't re-provision)
       if (url === "https://ama.test/api/v1/projects/project_no_vault") return jsonResponse({ id: "project_no_vault", name: "Workspace" }, 200);
       // createVault: provision one when vault is missing but project is alive
-      if (url === "https://ama.test/api/v1/vaults" && reqMethod(input, init) === "POST") return jsonResponse({ id: "vault_new_for_no_vault" }, 201);
+      if (url === "https://ama.test/api/v1/vaults" && reqMethod(input, init) === "POST") return jsonResponse(amaVault("vault_new_for_no_vault"), 201);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1814,22 +1860,11 @@ describe("dispatchTaskToAma — githubTokenSecretRef (GitHub App installation to
       if (url === `https://ama.test/api/v1/vaults/${vaultId}/credentials`) {
         vaultCredCalls.push(url);
         const n = vaultCredCalls.length;
-        return jsonResponse({ id: `vaultcred_ghapp_${n}`, activeVersionId: `vaultver_ghapp_${n}` }, 201);
+        return jsonResponse(amaCredential(`vaultcred_ghapp_${n}`, `vaultver_ghapp_${n}`), 201);
       }
-      if (url === "https://ama.test/api/v1/agents")
-        return jsonResponse({ id: `ama_agent_ghapp_${randomUUID()}`, projectId, name: "ghapp", providerId: "provider_claude", model: null }, 201);
       if (url === "https://ama.test/api/v1/sessions") {
         capturedSessionBody = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        return jsonResponse(
-          {
-            id: `session_ghapp_${randomUUID()}`,
-            agentId: capturedSessionBody.agentId,
-            environmentId: envId,
-            state: "pending",
-            stateReason: null,
-          },
-          201,
-        );
+        return jsonResponse(amaSession(`session_ghapp_${randomUUID()}`, capturedSessionBody.spec), 201);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -1870,13 +1905,19 @@ describe("dispatchTaskToAma — githubTokenSecretRef (GitHub App installation to
     // Two vault credential calls: GH_TOKEN installation token + session key
     expect(vaultCredCalls.length).toBeGreaterThanOrEqual(2);
 
-    // The session body sent to AMA must have a secretEnv entry named GH_TOKEN
-    // (AMA's secretEnv uses { name, credentialRef } format, not raw values).
+    // The session body sent to AMA must have an envFrom entry named GH_TOKEN.
     const sessionBody = getSessionBody();
     expect(sessionBody).not.toBeNull();
-    const ghTokenEntry = (sessionBody?.secretEnv ?? []).find((s: any) => s.name === "GH_TOKEN");
+    const ghTokenEntry = (sessionBody?.spec.envFrom ?? []).find((s: any) => s.name === "GH_TOKEN");
     expect(ghTokenEntry).toBeDefined();
-    expect(ghTokenEntry?.credentialRef?.credentialId).toMatch(/^vaultcred_ghapp_/);
+    expect(ghTokenEntry?.secretRef).toMatch(/^ama:\/\/vaults\/vault_ghapp\/credentials\/vaultcred_ghapp_\d+\/versions\/vaultver_ghapp_\d+$/);
+    expect((sessionBody?.spec.volumes ?? [])[0]).toMatchObject({
+      name: "repo",
+      type: "git_repository",
+      url: "https://github.com/saltbo/agent-kanban.git",
+      secretRef: ghTokenEntry?.secretRef,
+    });
+    expect(sessionBody?.spec.volumeMounts).toEqual([{ name: "repo", mountPath: "/workspace/repos/github.com/saltbo/agent-kanban" }]);
   });
 
   it("propagates the error loudly when GitHub App is configured but repo is not installed (404)", async () => {
@@ -1938,11 +1979,12 @@ describe("dispatchTaskToAma — githubTokenSecretRef (GitHub App installation to
     // Only one vault credential call — the session key; no GH_TOKEN was minted
     expect(vaultCredCalls).toHaveLength(1);
 
-    // The session's secretEnv must only contain AK_AGENT_KEY, not GH_TOKEN
+    // The session's envFrom must only contain AK_AGENT_KEY, not GH_TOKEN.
     const sessionBody = getSessionBody();
     expect(sessionBody).not.toBeNull();
-    const ghTokenEntry = (sessionBody?.secretEnv ?? []).find((s: any) => s.name === "GH_TOKEN");
+    const ghTokenEntry = (sessionBody?.spec.envFrom ?? []).find((s: any) => s.name === "GH_TOKEN");
     expect(ghTokenEntry).toBeUndefined();
+    expect(sessionBody?.spec.volumeMounts).toEqual([{ name: "repo", mountPath: "/workspace/repos/github.com/saltbo/agent-kanban" }]);
   });
 });
 
@@ -1991,28 +2033,14 @@ describe("dispatchTaskToAma with cloud runtime (ama)", () => {
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_cloud_rt") return jsonResponse({ id: "project_cloud_rt", name: "Workspace" }, 200);
       // amaEnvironmentExists for the cached cloud env
-      if (url === `https://ama.test/api/v1/environments/${cloudEnvId}`) return jsonResponse({ id: cloudEnvId, name: "Cloud sandbox" }, 200);
+      if (url === `https://ama.test/api/v1/environments/${cloudEnvId}`)
+        return jsonResponse(amaEnvironment(cloudEnvId, { projectId: "project_cloud_rt", name: "Cloud sandbox", type: "cloud" }), 200);
       if (url === "https://ama.test/api/v1/vaults/vault_cloud_rt/credentials")
-        return jsonResponse({ id: "vaultcred_cloud_rt", activeVersionId: "vaultver_cloud_rt" }, 201);
-      if (url === "https://ama.test/api/v1/agents")
-        // Provider is now vendorFromModelId(@cf/moonshotai/kimi-k2.7-code) = "moonshotai"
-        return jsonResponse(
-          {
-            id: "ama_agent_cloud_rt",
-            projectId: "project_cloud_rt",
-            name: "cloud_rt",
-            providerId: "moonshotai",
-            model: "@cf/moonshotai/kimi-k2.7-code",
-          },
-          201,
-        );
+        return jsonResponse(amaCredential("vaultcred_cloud_rt", "vaultver_cloud_rt"), 201);
       if (url === "https://ama.test/api/v1/sessions") {
         sessionCreated = true;
         sessionBody = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        return jsonResponse(
-          { id: "session_cloud_rt_1", agentId: sessionBody.agentId, environmentId: cloudEnvId, state: "pending", stateReason: null },
-          201,
-        );
+        return jsonResponse(amaSession("session_cloud_rt_1", sessionBody.spec), 201);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2023,14 +2051,14 @@ describe("dispatchTaskToAma with cloud runtime (ama)", () => {
 
     expect(sessionCreated).toBe(true);
     // Cloud dispatch uses the cloud env, not a machine env
-    expect(sessionBody?.environmentId).toBe(cloudEnvId);
+    expect(sessionBody?.spec.environmentId).toBe(cloudEnvId);
     // Cloud dispatch uses cloudTaskInitialPrompt — initial prompt differs from machine dispatch
-    expect(sessionBody?.initialPrompt).toContain("cloud sandbox");
-    expect(sessionBody?.initialPrompt).toContain(`ak describe task ${task.id}`);
-    expect(sessionBody?.initialPrompt).toContain("do not use the ak-task leader workflow");
-    expect(sessionBody?.initialPrompt).toContain("Do not end the session without submitting review");
-    expect(sessionBody?.initialPrompt).not.toContain("Sensitive cloud task detail");
-    expect(sessionBody?.initialPrompt).not.toContain("Task detail:");
+    expect(sessionBody?.prompt).toContain("cloud sandbox");
+    expect(sessionBody?.prompt).toContain(`ak describe task ${task.id}`);
+    expect(sessionBody?.prompt).toContain("do not use the ak-task leader workflow");
+    expect(sessionBody?.prompt).toContain("Do not end the session without submitting review");
+    expect(sessionBody?.prompt).not.toContain("Sensitive cloud task detail");
+    expect(sessionBody?.prompt).not.toContain("Task detail:");
   });
 });
 
@@ -2075,16 +2103,10 @@ describe("taskResourceRefs with repository_id", () => {
         return activeRunnerResponse("env_repo_task", "claude-code");
       if (url === "https://ama.test/api/v1/providers?limit=100")
         return jsonResponse({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }, 200);
-      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials")
-        return jsonResponse({ id: "vaultcred_repo", activeVersionId: "vaultver_repo" }, 201);
-      if (url === "https://ama.test/api/v1/agents")
-        return jsonResponse({ id: "ama_agent_repo", projectId: "project_123", name: "repo", providerId: "provider_claude", model: null }, 201);
+      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") return jsonResponse(amaCredential("vaultcred_repo", "vaultver_repo"), 201);
       if (url === "https://ama.test/api/v1/sessions") {
         sessionBody = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        return jsonResponse(
-          { id: "session_repo_1", agentId: sessionBody.agentId, environmentId: "env_repo_task", state: "pending", stateReason: null },
-          201,
-        );
+        return jsonResponse(amaSession("session_repo_1", sessionBody.spec), 201);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2095,8 +2117,8 @@ describe("taskResourceRefs with repository_id", () => {
 
     // The session should have been created — verifies taskResourceRefs found the repo
     expect(sessionBody).not.toBeNull();
-    // resourceRefs should have included the github repo (passed to session creation)
-    expect(sessionBody?.resourceRefs).toMatchObject([{ type: "github_repository", owner: "saltbo", repo: "agent-kanban" }]);
+    expect(sessionBody?.spec.volumes).toMatchObject([{ name: "repo", type: "git_repository", url: "https://github.com/saltbo/agent-kanban.git" }]);
+    expect(sessionBody?.spec.volumeMounts).toEqual([{ name: "repo", mountPath: "/workspace/repos/github.com/saltbo/agent-kanban" }]);
   });
 });
 
@@ -2128,7 +2150,7 @@ describe("ensureAmaOwnerIntegration self-heal (Feature A)", () => {
       if (url === "https://ama.test/api/v1/projects" && reqMethod(input, init) === "POST")
         return jsonResponse({ id: newProjectId, name: `Workspace ${healOwner}` }, 201);
       // createVault: provision the session secret vault for the new project
-      if (url === "https://ama.test/api/v1/vaults" && reqMethod(input, init) === "POST") return jsonResponse({ id: newVaultId }, 201);
+      if (url === "https://ama.test/api/v1/vaults" && reqMethod(input, init) === "POST") return jsonResponse(amaVault(newVaultId, newProjectId), 201);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -2213,7 +2235,7 @@ describe("ensureMachineAmaEnvironment self-heal (Feature A)", () => {
       // createEnvironment for the replacement
       if (url === "https://ama.test/api/v1/environments" && reqMethod(input, init) === "POST") {
         createEnvCalled = true;
-        return jsonResponse({ id: newEnvId }, 201);
+        return jsonResponse(amaEnvironment(newEnvId, { projectId: "project_envheal" }), 201);
       }
       throw new Error(`Unexpected fetch in env-heal test: ${url}`);
     });
@@ -2285,21 +2307,16 @@ describe("dispatch task_actions (dispatch_failed / dispatched)", () => {
       if (url === "https://ama.test/api/v1/providers?limit=100")
         return jsonResponse({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }, 200);
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials")
-        return jsonResponse({ id: `vaultcred_${randomUUID()}`, activeVersionId: `vaultver_${randomUUID()}` }, 201);
+        return jsonResponse(amaCredential(`vaultcred_${randomUUID()}`, `vaultver_${randomUUID()}`), 201);
       // Revoke credential during cleanup (PATCH on a specific credential id)
       if (url.includes("/vaults/vault_123/credentials/") && reqMethod(input, init) === "PATCH") return jsonResponse({ state: "revoked" }, 200);
-      // Create AMA agent (POST) or read existing agent (GET /agents/{id})
-      if (url === "https://ama.test/api/v1/agents")
-        return jsonResponse(
-          { id: `ama_agent_${randomUUID()}`, projectId: "project_123", name: "agent", providerId: "provider_claude", model: null },
-          201,
-        );
+      // Read or update existing AMA agent.
+      if (url === "https://ama.test/api/v1/agents") throw new Error("Dispatch should use the agent's existing ama_agent_id");
       if (url.startsWith("https://ama.test/api/v1/agents/")) {
         // readAmaAgent: return a live agent so ensureAmaAgentForAkAgent proceeds
         const agentId = url.split("/").pop();
-        if (reqMethod(input, init) === "PATCH")
-          return jsonResponse({ id: agentId, projectId: "project_123", name: "agent", providerId: "provider_claude", model: null }, 200);
-        return jsonResponse({ id: agentId, projectId: "project_123", name: "agent", providerId: "provider_claude", model: null }, 200);
+        if (reqMethod(input, init) === "PATCH") return jsonResponse(amaAgent(agentId!, { projectId: "project_123" }), 200);
+        return jsonResponse(amaAgent(agentId!, { projectId: "project_123" }), 200);
       }
       if (url === "https://ama.test/api/v1/sessions") return sessionErrorFactory();
       // Stop call during cleanup
@@ -2318,15 +2335,10 @@ describe("dispatch task_actions (dispatch_failed / dispatched)", () => {
       if (url === "https://ama.test/api/v1/providers?limit=100")
         return jsonResponse({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }, 200);
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials")
-        return jsonResponse({ id: `vaultcred_${randomUUID()}`, activeVersionId: `vaultver_${randomUUID()}` }, 201);
-      if (url === "https://ama.test/api/v1/agents")
-        return jsonResponse(
-          { id: `ama_agent_${randomUUID()}`, projectId: "project_123", name: "agent", providerId: "provider_claude", model: null },
-          201,
-        );
+        return jsonResponse(amaCredential(`vaultcred_${randomUUID()}`, `vaultver_${randomUUID()}`), 201);
       if (url === "https://ama.test/api/v1/sessions") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        return jsonResponse({ id: sessionId, agentId: body.agentId, environmentId, state: "pending", stateReason: null }, 201);
+        return jsonResponse(amaSession(sessionId, body.spec), 201);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2604,9 +2616,7 @@ describe("re-dispatch backoff (Feature B)", () => {
       if (url === "https://ama.test/api/v1/providers?limit=100")
         return jsonResponse({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }, 200);
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials")
-        return jsonResponse({ id: "vaultcred_backoff", activeVersionId: "vaultver_backoff" }, 201);
-      if (url === "https://ama.test/api/v1/agents")
-        return jsonResponse({ id: "ama_agent_backoff", projectId: "project_123", name: "backoff", providerId: "provider_claude", model: null }, 201);
+        return jsonResponse(amaCredential("vaultcred_backoff", "vaultver_backoff"), 201);
       // Session creation fails
       if (url === "https://ama.test/api/v1/sessions") return jsonResponse({ error: "provider_unavailable" }, 503);
       // Stop call during cleanup (if any)
@@ -2719,19 +2729,11 @@ describe("re-dispatch backoff (Feature B)", () => {
       if (url === "https://ama.test/api/v1/providers?limit=100")
         return jsonResponse({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }, 200);
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials")
-        return jsonResponse({ id: "vaultcred_takeover", activeVersionId: "vaultver_takeover" }, 201);
-      if (url === "https://ama.test/api/v1/agents")
-        return jsonResponse(
-          { id: "ama_agent_takeover", projectId: "project_123", name: "takeover", providerId: "provider_claude", model: null },
-          201,
-        );
+        return jsonResponse(amaCredential("vaultcred_takeover", "vaultver_takeover"), 201);
       if (url === "https://ama.test/api/v1/sessions") {
         sessionCreated = true;
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        return jsonResponse(
-          { id: "session_takeover_1", agentId: body.agentId, environmentId: "env_takeover", state: "pending", stateReason: null },
-          201,
-        );
+        return jsonResponse(amaSession("session_takeover_1", body.spec), 201);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2834,8 +2836,7 @@ describe("re-dispatch backoff (Feature B)", () => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       // Session is live and healthy (running)
-      if (url === `https://ama.test/api/v1/sessions/${sessionId}`)
-        return jsonResponse({ id: sessionId, agentId: "a", environmentId: "e", state: "running", stateReason: null }, 200);
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}`) return jsonResponse(amaSession(sessionId, { phase: "running" }), 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);

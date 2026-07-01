@@ -37,6 +37,137 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
+function amaCredential(id: string, activeVersionId?: string) {
+  return { metadata: { uid: id }, spec: {}, status: { activeVersionId } };
+}
+
+function amaAgent(id: string, input: { projectId?: string; name?: string; provider?: string; model?: string | null } = {}) {
+  return {
+    metadata: {
+      uid: id,
+      projectId: input.projectId ?? "project_123",
+      name: input.name ?? "agent",
+      description: null,
+      archivedAt: null,
+    },
+    spec: {
+      provider: input.provider ?? "openai",
+      model: input.model ?? "gpt-5.3-codex",
+      systemPrompt: "",
+      skills: [],
+      subagents: [],
+      allowedTools: [],
+      mcpConnectors: [],
+    },
+    status: {},
+  };
+}
+
+function amaCredentialSecretRef(vaultId: string, credentialId: string, versionId: string) {
+  return `ama://vaults/${vaultId}/credentials/${credentialId}/versions/${versionId}`;
+}
+
+function amaMemoryStore(id: string, name: string, projectId = "project_123") {
+  return {
+    metadata: { uid: id, projectId, name, description: null, archivedAt: null },
+    spec: {},
+    status: {},
+  };
+}
+
+function amaTrigger(id: string, body: any, input: { type?: "schedule" | "http"; intervalSeconds?: number; active?: boolean } = {}) {
+  const source =
+    input.type === "http"
+      ? { type: "http" as const }
+      : { type: "schedule" as const, schedule: { intervalSeconds: input.intervalSeconds ?? 3600, windowSeconds: 0 } };
+  return {
+    metadata: { uid: id, name: body.metadata?.name ?? "trigger", archivedAt: null },
+    spec: {
+      source,
+      suspend: input.active === false,
+      template: { metadata: body.spec?.template?.metadata ?? { labels: {}, annotations: {} }, spec: body.spec?.template?.spec ?? {} },
+    },
+    status: { lastDispatchedAt: null, lastRunId: null },
+  };
+}
+
+function amaTriggerRun(input: {
+  id: string;
+  triggerId: string;
+  scheduledFor: string | null;
+  heartbeatAt: string | null;
+  triggeredAt: string;
+  phase: string;
+  sessionId: string | null;
+  errorMessage: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}) {
+  return {
+    metadata: { uid: input.id, projectId: "project_123", createdAt: input.createdAt, updatedAt: input.updatedAt },
+    spec: { triggerId: input.triggerId, scheduledFor: input.scheduledFor, metadata: input.metadata },
+    status: {
+      phase: input.phase,
+      heartbeatAt: input.heartbeatAt,
+      triggeredAt: input.triggeredAt,
+      sessionId: input.sessionId,
+      errorMessage: input.errorMessage,
+    },
+  };
+}
+
+function amaMemory(input: {
+  id: string;
+  storeId: string;
+  projectId: string;
+  path: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}) {
+  return {
+    metadata: { uid: input.id, projectId: input.projectId, createdAt: input.createdAt, updatedAt: input.updatedAt },
+    spec: { storeId: input.storeId, path: input.path, content: input.content, metadata: input.metadata },
+    status: {},
+  };
+}
+
+function amaSession(
+  id: string,
+  input: {
+    projectId?: string;
+    name?: string;
+    agentId?: string;
+    environmentId?: string | null;
+    runtime?: string;
+    phase?: string;
+    reason?: string | null;
+    labels?: Record<string, string>;
+    annotations?: Record<string, string>;
+  } = {},
+) {
+  return {
+    metadata: {
+      uid: id,
+      projectId: input.projectId ?? "project_123",
+      name: input.name ?? id,
+      labels: input.labels ?? {},
+      annotations: input.annotations ?? {},
+      archivedAt: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    spec: {
+      agentId: input.agentId ?? "ama_agent_123",
+      environmentId: input.environmentId ?? "env_123",
+      runtime: input.runtime ?? "codex",
+    },
+    status: { phase: input.phase ?? "pending", reason: input.reason ?? null },
+  };
+}
+
 async function apiRequest(method: string, path: string, body?: unknown, token?: string) {
   const { api } = await import("../apps/web/server/routes");
   const headers: Record<string, string> = { "Content-Type": "application/json", Host: "localhost:8788", "x-forwarded-proto": "http" };
@@ -322,26 +453,18 @@ describe("routes", () => {
       // ensureAmaAgentForAkAgent reads the stored ama_agent_id then updates its
       // config (the AMA agent was created eagerly at agent creation).
       if (url === "https://ama.test/api/v1/agents/ama_agent_maintainer" && (reqMethod(input, init) ?? "GET") === "GET") {
-        return jsonResponse({
-          id: "ama_agent_maintainer",
-          projectId: "project_123",
-          name: "agent",
-          providerId: "provider_codex",
-          model: "gpt-5.3-codex",
-        });
+        return jsonResponse(amaAgent("ama_agent_maintainer", { projectId: "project_123", provider: "openai", model: "gpt-5.3-codex" }));
       }
       if (url === "https://ama.test/api/v1/agents/ama_agent_maintainer" && reqMethod(input, init) === "PATCH") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        expect(body.skills).toEqual(["saltbo/agent-kanban@agent-kanban", "saltbo/agent-kanban@ak-maintainer"]);
-        expect(body.handoffPolicy).toEqual({ enabled: true, targets: [{ role: "worker" }] });
-        expect(body.memoryPolicy).toEqual({ enabled: true, mode: "notebook", scope: "project_agent" });
-        return jsonResponse({ id: "ama_agent_maintainer", projectId: "project_123", name: "agent" });
+        expect(body.spec.skills).toEqual(["saltbo/agent-kanban@agent-kanban", "saltbo/agent-kanban@ak-maintainer"]);
+        return jsonResponse(amaAgent("ama_agent_maintainer", { projectId: "project_123", provider: "openai", model: "gpt-5.3-codex" }));
       }
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials" && method === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         sessionSecretRequests.push(body);
         expect(body.name).toMatch(/^AK_API_KEY_/);
-        expect(body.type).toBe("session_env_secret");
+        expect(body.type).toBe("opaque");
         expect(body.metadata).toEqual({
           purpose: "board-maintainer-api-key",
           boardId: maintainerBoard.id,
@@ -349,16 +472,15 @@ describe("routes", () => {
           agentId: maintainerAgent.id,
         });
         expect(body.secret.referenceName).toBe(body.name);
-        expect(body.secret.secretValue).toMatch(/^ak_maint_/);
-        maintainerApiKey = body.secret.secretValue;
-        return jsonResponse({ id: "vaultcred_maintainer", activeVersionId: "vaultver_maintainer" }, 201);
+        expect(body.secret.stringData.value).toMatch(/^ak_maint_/);
+        maintainerApiKey = body.secret.stringData.value;
+        return jsonResponse(amaCredential("vaultcred_maintainer", "vaultver_maintainer"), 201);
       }
       if (url === "https://ama.test/api/v1/memory-stores" && method === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         memoryStoreRequests.push(body);
-        expect(body.name).toMatch(new RegExp(`^${maintainerBoard.name} maintainer .+ memory$`));
-        expect(body.metadata).toEqual({ purpose: "ak-board-maintainer", boardId: maintainerBoard.id, agentId: maintainerAgent.id });
-        return jsonResponse({ id: "mem_maintainer", name: body.name }, 201);
+        expect(body.metadata.name).toMatch(new RegExp(`^${maintainerBoard.name} maintainer .+ memory$`));
+        return jsonResponse(amaMemoryStore("mem_maintainer", body.metadata.name), 201);
       }
       if (url === "https://ama.test/api/v1/memory-stores/mem_maintainer/memories" && method === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
@@ -368,88 +490,68 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/triggers" && method === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         triggerRequests.push(body);
-        expect(body.metadata).toEqual({ labels: { maintainerId: expect.any(String) } });
-        expect(body.agentId).toBe("ama_agent_maintainer");
-        expect(body.skills).toBeUndefined();
-        expect(body.environmentId).toBeUndefined();
-        expect(body.resourceRefs).toEqual([{ type: "memory_store", storeId: "mem_maintainer", access: "read_write" }]);
-        expect(body.env).toMatchObject({
+        const template = body.spec.template;
+        const spec = template.spec;
+        const labels = template.metadata.labels;
+        expect(body.metadata.name).toMatch(new RegExp(`^${maintainerBoard.name} maintainer .+`));
+        expect(labels).toEqual({ maintainerId: expect.any(String) });
+        expect(spec.agentId).toBe("ama_agent_maintainer");
+        expect(spec.skills).toBeUndefined();
+        expect(spec.environmentId).toBeUndefined();
+        expect(spec.volumes).toEqual([{ name: "memory", type: "memory", memoryRef: "ama://memories/mem_maintainer", access: "read_write" }]);
+        expect(spec.volumeMounts).toEqual([{ name: "memory", mountPath: "/workspace/.ama/memory-stores/mem_maintainer", readOnly: false }]);
+        expect(spec.env).toMatchObject({
           AK_WORKER: "1",
           AK_BOARD_ID: maintainerBoard.id,
-          AK_MAINTAINER_ID: body.metadata.labels.maintainerId,
+          AK_MAINTAINER_ID: labels.maintainerId,
           AK_API_URL: "https://ak.test",
         });
-        expect(body.env).not.toHaveProperty("AK_BOARD_REPOSITORIES");
-        expect(body.env.AK_AGENT_ID).toBe(maintainerAgent.id);
-        expect(body.env).not.toHaveProperty("AK_REPOSITORY_ID");
-        expect(body.env).not.toHaveProperty("AK_REPOSITORY_FULL_NAME");
-        expect(body.env).not.toHaveProperty("AK_SESSION_ID");
-        expect(body.env).not.toHaveProperty("AK_AGENT_KEY");
-        expect(body.env).not.toHaveProperty("GH_CONFIG_DIR");
-        expect(body.secretEnv).toEqual([
-          { name: "AK_API_KEY", credentialRef: { credentialId: "vaultcred_maintainer", versionId: "vaultver_maintainer" } },
-        ]);
-        expect(body.promptTemplate).toContain(`AK board ${maintainerBoard.id}`);
-        expect(body.promptTemplate).toContain(`Discover the current repository scope with AK`);
-        expect(body.promptTemplate).toContain(`Every repository currently attached to board ${maintainerBoard.id} is in your maintenance scope.`);
-        expect(body.promptTemplate).not.toContain("maintainer-org/maintainer-repo");
-        expect(body.promptTemplate).toContain("saltbo/agent-kanban@ak-maintainer");
-        expect(body.promptTemplate).not.toContain("Maintainer instructions:");
-        expect(body.promptTemplate).not.toContain("Do not use pre-existing gh login state or human GitHub tokens");
-        if (body.type === "http") {
-          expect(body.schedule).toBeNull();
-          expect(body.name).toMatch(new RegExp(`^${maintainerBoard.name} maintainer .+ GitHub events$`));
-          expect(body.promptTemplate).toContain("{{ body.event }}.{{ body.action }}");
-          expect(body.promptTemplate).toContain("{{ body.repository.full_name }}");
-          expect(body.promptTemplate).toContain('{{#if eq body.subject.type "issue"}}');
-          expect(body.promptTemplate).toContain('{{#if eq body.subject.type "pull"}}');
-          expect(body.promptTemplate).toContain("{{#if body.comment.id}}");
-          expect(body.promptTemplate).toContain("{{#if body.review.id}}");
-          expect(body.promptTemplate).not.toContain("{{ body.subject.id }}");
-          expect(body.promptTemplate).not.toContain("{{ body.subject.node_id }}");
-          expect(body.promptTemplate).toContain("{{ body.subject.number }}");
-          expect(body.promptTemplate).toContain("{{ body.comment.id }}");
-          expect(body.promptTemplate).toContain("{{ body.comment.node_id }}");
-          expect(body.promptTemplate).toContain("{{ body.review.id }}");
-          expect(body.promptTemplate).toContain("{{ body.review.node_id }}");
-          expect(body.promptTemplate).not.toContain("{{ body.subject.title }}");
-          expect(body.promptTemplate).not.toContain("{{ body.subject.body }}");
-          expect(body.promptTemplate).not.toContain("{{ body.comment.body }}");
-          expect(body.promptTemplate).not.toContain("{{ body.review.body }}");
-          expect(body.promptTemplate).not.toContain("event_context_json");
-          return jsonResponse(
-            {
-              id: "http_maintainer",
-              agentId: "ama_agent_maintainer",
-              environmentId: "env_123",
-              name: body.name,
-              promptTemplate: body.promptTemplate,
-              schedule: null,
-              enabled: true,
-              archivedAt: null,
-              lastDispatchedAt: null,
-              lastRunId: null,
-            },
-            201,
-          );
-        }
-        expect(body.type).toBe("scheduled");
-        expect(body.schedule).toEqual({ type: "interval", intervalSeconds: 3600 });
-        return jsonResponse(
+        expect(spec.env).not.toHaveProperty("AK_BOARD_REPOSITORIES");
+        expect(spec.env.AK_AGENT_ID).toBe(maintainerAgent.id);
+        expect(spec.env).not.toHaveProperty("AK_REPOSITORY_ID");
+        expect(spec.env).not.toHaveProperty("AK_REPOSITORY_FULL_NAME");
+        expect(spec.env).not.toHaveProperty("AK_SESSION_ID");
+        expect(spec.env).not.toHaveProperty("AK_AGENT_KEY");
+        expect(spec.env).not.toHaveProperty("GH_CONFIG_DIR");
+        expect(spec.envFrom).toEqual([
           {
-            id: "sched_maintainer",
-            agentId: "ama_agent_maintainer",
-            environmentId: "env_123",
-            name: body.name,
-            promptTemplate: body.promptTemplate,
-            schedule: { intervalSeconds: 3600, windowSeconds: 0 },
-            enabled: true,
-            archivedAt: null,
-            lastDispatchedAt: null,
-            lastRunId: null,
+            type: "secret",
+            name: "AK_API_KEY",
+            secretRef: amaCredentialSecretRef("vault_123", "vaultcred_maintainer", "vaultver_maintainer"),
+            key: "value",
           },
-          201,
-        );
+        ]);
+        expect(spec.promptTemplate).toContain(`AK board ${maintainerBoard.id}`);
+        expect(spec.promptTemplate).toContain(`Discover the current repository scope with AK`);
+        expect(spec.promptTemplate).toContain(`Every repository currently attached to board ${maintainerBoard.id} is in your maintenance scope.`);
+        expect(spec.promptTemplate).not.toContain("maintainer-org/maintainer-repo");
+        expect(spec.promptTemplate).toContain("saltbo/agent-kanban@ak-maintainer");
+        expect(spec.promptTemplate).not.toContain("Maintainer instructions:");
+        expect(spec.promptTemplate).not.toContain("Do not use pre-existing gh login state or human GitHub tokens");
+        if (body.spec.source.type === "http") {
+          expect(body.metadata.name).toMatch(new RegExp(`^${maintainerBoard.name} maintainer .+ GitHub events$`));
+          expect(spec.promptTemplate).toContain("{{ body.event }}.{{ body.action }}");
+          expect(spec.promptTemplate).toContain("{{ body.repository.full_name }}");
+          expect(spec.promptTemplate).toContain('{{#if eq body.subject.type "issue"}}');
+          expect(spec.promptTemplate).toContain('{{#if eq body.subject.type "pull"}}');
+          expect(spec.promptTemplate).toContain("{{#if body.comment.id}}");
+          expect(spec.promptTemplate).toContain("{{#if body.review.id}}");
+          expect(spec.promptTemplate).not.toContain("{{ body.subject.id }}");
+          expect(spec.promptTemplate).not.toContain("{{ body.subject.node_id }}");
+          expect(spec.promptTemplate).toContain("{{ body.subject.number }}");
+          expect(spec.promptTemplate).toContain("{{ body.comment.id }}");
+          expect(spec.promptTemplate).toContain("{{ body.comment.node_id }}");
+          expect(spec.promptTemplate).toContain("{{ body.review.id }}");
+          expect(spec.promptTemplate).toContain("{{ body.review.node_id }}");
+          expect(spec.promptTemplate).not.toContain("{{ body.subject.title }}");
+          expect(spec.promptTemplate).not.toContain("{{ body.subject.body }}");
+          expect(spec.promptTemplate).not.toContain("{{ body.comment.body }}");
+          expect(spec.promptTemplate).not.toContain("{{ body.review.body }}");
+          expect(spec.promptTemplate).not.toContain("event_context_json");
+          return jsonResponse(amaTrigger("http_maintainer", body, { type: "http" }), 201);
+        }
+        expect(body.spec.source).toEqual({ type: "schedule", schedule: { type: "interval", intervalSeconds: 3600 } });
+        return jsonResponse(amaTrigger("sched_maintainer", body, { type: "schedule", intervalSeconds: 3600 }), 201);
       }
       if (
         (url === "https://ama.test/api/v1/triggers/sched_maintainer" || url === "https://ama.test/api/v1/triggers/http_maintainer") &&
@@ -462,7 +564,7 @@ describe("routes", () => {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         archiveRequests.push(url);
         expect(body).toEqual({ archived: true });
-        return jsonResponse({ id: "mem_maintainer", name: "memory", archived: true });
+        return jsonResponse(amaMemoryStore("mem_maintainer", "memory"), 200);
       }
       if (
         (url === "https://ama.test/api/v1/triggers/sched_maintainer" || url === "https://ama.test/api/v1/triggers/http_maintainer") &&
@@ -471,38 +573,32 @@ describe("routes", () => {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         const triggerId = url.endsWith("/http_maintainer") ? "http_maintainer" : "sched_maintainer";
         updateRequests.push({ triggerId, body });
-        expect(body.metadata).toEqual({ labels: { maintainerId: expect.any(String) } });
-        return jsonResponse({
-          id: triggerId,
-          agentId: "ama_agent_maintainer",
-          environmentId: "env_123",
-          name: body.name ?? "unchanged",
-          promptTemplate: body.promptTemplate ?? "unchanged",
-          schedule: triggerId === "sched_maintainer" ? { intervalSeconds: body.schedule?.intervalSeconds ?? 3600, windowSeconds: 0 } : null,
-          enabled: body.enabled ?? true,
-          archivedAt: null,
-          lastDispatchedAt: null,
-          lastRunId: null,
-        });
+        if (body.spec?.template?.metadata) expect(body.spec.template.metadata.labels).toEqual({ maintainerId: expect.any(String) });
+        return jsonResponse(
+          amaTrigger(triggerId, body, {
+            type: triggerId === "sched_maintainer" ? "schedule" : "http",
+            intervalSeconds: body.spec?.source?.schedule?.intervalSeconds ?? 3600,
+            active: body.spec?.suspend !== true,
+          }),
+        );
       }
       if (url.startsWith("https://ama.test/api/v1/triggers/sched_maintainer/runs?")) {
         const limit = Number(new URL(url).searchParams.get("limit") ?? 20);
         return jsonResponse({
           data: [
-            {
+            amaTriggerRun({
               id: "run_maintainer_1",
-              projectId: "project_123",
               triggerId: "sched_maintainer",
               scheduledFor: "2026-06-08T12:00:00.000Z",
               heartbeatAt: "2026-06-08T12:00:03.000Z",
               triggeredAt: "2026-06-08T12:00:00.000Z",
-              state: "completed",
+              phase: "completed",
               sessionId: "session_maintainer_1",
               errorMessage: null,
               metadata: { attempt: 1 },
               createdAt: "2026-06-08T12:00:00.000Z",
               updatedAt: "2026-06-08T12:00:04.000Z",
-            },
+            }),
           ],
           pagination: { limit, hasMore: false },
         });
@@ -511,20 +607,19 @@ describe("routes", () => {
         const limit = Number(new URL(url).searchParams.get("limit") ?? 20);
         return jsonResponse({
           data: [
-            {
+            amaTriggerRun({
               id: "run_maintainer_http_1",
-              projectId: "project_123",
               triggerId: "http_maintainer",
               scheduledFor: null,
               heartbeatAt: null,
               triggeredAt: "2026-06-08T12:10:00.000Z",
-              state: "dispatched",
+              phase: "dispatched",
               sessionId: "session_maintainer_http_1",
               errorMessage: null,
               metadata: { event: "issues" },
               createdAt: "2026-06-08T12:09:59.000Z",
               updatedAt: "2026-06-08T12:10:00.000Z",
-            },
+            }),
           ],
           pagination: { limit, hasMore: false },
         });
@@ -534,7 +629,7 @@ describe("routes", () => {
         const limit = Number(requestUrl.searchParams.get("limit") ?? 100);
         return jsonResponse({
           data: [
-            {
+            amaMemory({
               id: "memory_heartbeat",
               storeId: "mem_maintainer",
               projectId: "project_123",
@@ -543,8 +638,8 @@ describe("routes", () => {
               metadata: { purpose: "ak-board-maintainer-heartbeat", boardId: maintainerBoard.id },
               createdAt: "2026-06-08T11:00:00.000Z",
               updatedAt: "2026-06-08T11:30:00.000Z",
-            },
-            {
+            }),
+            amaMemory({
               id: "memory_notes",
               storeId: "mem_maintainer",
               projectId: "project_123",
@@ -553,7 +648,7 @@ describe("routes", () => {
               metadata: { purpose: "ak-board-maintainer-note" },
               createdAt: "2026-06-08T11:10:00.000Z",
               updatedAt: "2026-06-08T11:40:00.000Z",
-            },
+            }),
           ],
           pagination: { limit, hasMore: false },
         });
@@ -649,17 +744,17 @@ describe("routes", () => {
       expect(memoryRequests).toHaveLength(0);
       expect(sessionSecretRequests).toHaveLength(1);
       expect(triggerRequests).toHaveLength(2);
-      expect(triggerRequests.map((request) => request.type).sort()).toEqual(["http", "scheduled"]);
-      expect(triggerRequests[0].metadata).toEqual({ labels: { maintainerId: maintainer.id } });
-      expect(triggerRequests[1].metadata).toEqual(triggerRequests[0].metadata);
-      expect(triggerRequests[0].env).toMatchObject({
+      expect(triggerRequests.map((request) => request.spec.source.type).sort()).toEqual(["http", "schedule"]);
+      expect(triggerRequests[0].spec.template.metadata.labels).toEqual({ maintainerId: maintainer.id });
+      expect(triggerRequests[1].spec.template.metadata.labels).toEqual(triggerRequests[0].spec.template.metadata.labels);
+      expect(triggerRequests[0].spec.template.spec.env).toMatchObject({
         AK_AGENT_ID: maintainerAgent.id,
         AK_BOARD_ID: maintainerBoard.id,
         AK_MAINTAINER_ID: maintainer.id,
       });
-      expect(triggerRequests[0].env).not.toHaveProperty("AK_SESSION_ID");
-      expect(triggerRequests[1].env).not.toHaveProperty("AK_SESSION_ID");
-      expect(triggerRequests[0].secretEnv).toEqual(triggerRequests[1].secretEnv);
+      expect(triggerRequests[0].spec.template.spec.env).not.toHaveProperty("AK_SESSION_ID");
+      expect(triggerRequests[1].spec.template.spec.env).not.toHaveProperty("AK_SESSION_ID");
+      expect(triggerRequests[0].spec.template.spec.envFrom).toEqual(triggerRequests[1].spec.template.spec.envFrom);
 
       const duplicateRes = await apiRequest(
         "POST",
@@ -766,24 +861,45 @@ describe("routes", () => {
       await expect(pauseRes.json()).resolves.toEqual(expect.objectContaining({ id: maintainer.id, status: "paused" }));
       for (const request of updateRequests.slice(-2)) {
         expect(request.body).toMatchObject({
-          agentId: "ama_agent_maintainer",
-          runtime: "codex",
-          enabled: false,
-          metadata: { labels: { maintainerId: maintainer.id } },
-          resourceRefs: [{ type: "memory_store", storeId: "mem_maintainer", access: "read_write" }],
-          env: {
-            AK_WORKER: "1",
-            AK_AGENT_ID: maintainerAgent.id,
-            AK_BOARD_ID: maintainerBoard.id,
-            AK_MAINTAINER_ID: maintainer.id,
-            AK_API_URL: "https://ak.test",
+          spec: {
+            suspend: true,
+            template: {
+              metadata: { labels: { maintainerId: maintainer.id } },
+              spec: {
+                agentId: "ama_agent_maintainer",
+                runtime: "codex",
+                volumes: [{ name: "memory", type: "memory", memoryRef: "ama://memories/mem_maintainer", access: "read_write" }],
+                volumeMounts: [{ name: "memory", mountPath: "/workspace/.ama/memory-stores/mem_maintainer", readOnly: false }],
+                env: {
+                  AK_WORKER: "1",
+                  AK_AGENT_ID: maintainerAgent.id,
+                  AK_BOARD_ID: maintainerBoard.id,
+                  AK_MAINTAINER_ID: maintainer.id,
+                  AK_API_URL: "https://ak.test",
+                },
+                envFrom: [
+                  {
+                    type: "secret",
+                    name: "AK_API_KEY",
+                    secretRef: amaCredentialSecretRef("vault_123", "vaultcred_maintainer", "vaultver_maintainer"),
+                    key: "value",
+                  },
+                ],
+              },
+            },
           },
-          secretEnv: [{ name: "AK_API_KEY", credentialRef: { credentialId: "vaultcred_maintainer", versionId: "vaultver_maintainer" } }],
         });
-        expect(request.body.env).not.toHaveProperty("GH_CONFIG_DIR");
-        expect(request.body.env).not.toHaveProperty("AK_SESSION_ID");
-        expect(request.body.env).not.toHaveProperty("AK_AGENT_KEY");
-        expect(request.body.env).not.toHaveProperty("AK_BOARD_REPOSITORIES");
+        expect(request.body.spec.template.spec.env).toMatchObject({
+          AK_WORKER: "1",
+          AK_AGENT_ID: maintainerAgent.id,
+          AK_BOARD_ID: maintainerBoard.id,
+          AK_MAINTAINER_ID: maintainer.id,
+          AK_API_URL: "https://ak.test",
+        });
+        expect(request.body.spec.template.spec.env).not.toHaveProperty("GH_CONFIG_DIR");
+        expect(request.body.spec.template.spec.env).not.toHaveProperty("AK_SESSION_ID");
+        expect(request.body.spec.template.spec.env).not.toHaveProperty("AK_AGENT_KEY");
+        expect(request.body.spec.template.spec.env).not.toHaveProperty("AK_BOARD_REPOSITORIES");
       }
 
       const heartbeatOffRes = await apiRequest(
@@ -797,8 +913,8 @@ describe("routes", () => {
         expect.objectContaining({ id: maintainer.id, status: "active", heartbeat_enabled: false }),
       );
       const heartbeatOffRequests = updateRequests.slice(-2);
-      expect(heartbeatOffRequests.find((request) => request.triggerId === "sched_maintainer")?.body.enabled).toBe(false);
-      expect(heartbeatOffRequests.find((request) => request.triggerId === "http_maintainer")?.body.enabled).toBe(true);
+      expect(heartbeatOffRequests.find((request) => request.triggerId === "sched_maintainer")?.body.spec.suspend).toBe(true);
+      expect(heartbeatOffRequests.find((request) => request.triggerId === "http_maintainer")?.body.spec.suspend).toBe(false);
 
       const heartbeatOnRes = await apiRequest(
         "PATCH",
@@ -810,7 +926,7 @@ describe("routes", () => {
       await expect(heartbeatOnRes.json()).resolves.toEqual(expect.objectContaining({ id: maintainer.id, status: "active", heartbeat_enabled: true }));
       const heartbeatOnRequests = updateRequests.slice(-1);
       expect(heartbeatOnRequests).toHaveLength(1);
-      expect(heartbeatOnRequests[0]).toMatchObject({ triggerId: "sched_maintainer", body: { enabled: true } });
+      expect(heartbeatOnRequests[0]).toMatchObject({ triggerId: "sched_maintainer", body: { spec: { suspend: false } } });
 
       const updateRes = await apiRequest(
         "PATCH",
@@ -821,28 +937,36 @@ describe("routes", () => {
       expect(updateRes.status).toBe(200);
       await expect(updateRes.json()).resolves.toEqual(expect.objectContaining({ interval_seconds: 7200 }));
       expect(
-        updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.schedule?.intervalSeconds === 7200)?.body,
+        updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.spec?.source?.schedule?.intervalSeconds === 7200)
+          ?.body,
       ).toMatchObject({
-        schedule: { type: "interval", intervalSeconds: 7200 },
+        spec: { source: { type: "schedule", schedule: { type: "interval", intervalSeconds: 7200 } } },
       });
       expect(
-        updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.schedule?.intervalSeconds === 7200)?.body.skills,
+        updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.spec?.source?.schedule?.intervalSeconds === 7200)
+          ?.body.spec?.template?.spec?.skills,
       ).toBeUndefined();
       expect(
-        updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.schedule?.intervalSeconds === 7200)?.body
-          .promptTemplate,
+        updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.spec?.source?.schedule?.intervalSeconds === 7200)
+          ?.body.spec?.template?.spec?.promptTemplate,
       ).toBeUndefined();
       expect(
-        updateRequests.find((request) => request.triggerId === "http_maintainer" && request.body.promptTemplate?.includes("{{ body.comment.id }}"))
-          ?.body.name,
+        updateRequests.find(
+          (request) =>
+            request.triggerId === "http_maintainer" && request.body.spec?.template?.spec?.promptTemplate?.includes("{{ body.comment.id }}"),
+        )?.body.name,
       ).toBeUndefined();
       expect(
-        updateRequests.find((request) => request.triggerId === "http_maintainer" && request.body.promptTemplate?.includes("{{ body.comment.id }}"))
-          ?.body.skills,
+        updateRequests.find(
+          (request) =>
+            request.triggerId === "http_maintainer" && request.body.spec?.template?.spec?.promptTemplate?.includes("{{ body.comment.id }}"),
+        )?.body.skills,
       ).toBeUndefined();
       expect(
-        updateRequests.find((request) => request.triggerId === "http_maintainer" && request.body.promptTemplate?.includes("{{ body.comment.id }}"))
-          ?.body.promptTemplate,
+        updateRequests.find(
+          (request) =>
+            request.triggerId === "http_maintainer" && request.body.spec?.template?.spec?.promptTemplate?.includes("{{ body.comment.id }}"),
+        )?.body.spec?.template?.spec?.promptTemplate,
       ).toBeUndefined();
 
       const runsRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/runs?limit=2`, undefined, userToken);
@@ -989,44 +1113,25 @@ describe("routes", () => {
       }
       // Maintainer route reconciles the eagerly-created AMA agent (read + patch).
       if (url === "https://ama.test/api/v1/agents/ama_agent_patch" && (reqMethod(input, init) ?? "GET") === "GET") {
-        return jsonResponse({
-          id: "ama_agent_patch",
-          projectId: amaProjectId,
-          name: "agent",
-          providerId: "provider_codex_patch",
-          model: "gpt-5.3-codex",
-        });
+        return jsonResponse(amaAgent("ama_agent_patch", { projectId: amaProjectId, provider: "openai", model: "gpt-5.3-codex" }));
       }
       if (url === "https://ama.test/api/v1/agents/ama_agent_patch" && reqMethod(input, init) === "PATCH") {
-        return jsonResponse({ id: "ama_agent_patch", projectId: amaProjectId, name: "agent" });
+        return jsonResponse(amaAgent("ama_agent_patch", { projectId: amaProjectId, provider: "openai", model: "gpt-5.3-codex" }));
       }
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials" && reqMethod(input, init) === "POST") {
-        return jsonResponse({ id: "vaultcred_patch", activeVersionId: "vaultver_patch" }, 201);
+        return jsonResponse(amaCredential("vaultcred_patch", "vaultver_patch"), 201);
       }
       if (url === "https://ama.test/api/v1/memory-stores" && reqMethod(input, init) === "POST") {
-        return jsonResponse({ id: "mem_patch", name: "Patch header agent memory" }, 201);
+        const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
+        return jsonResponse(amaMemoryStore("mem_patch", body.metadata?.name ?? "Patch header agent memory", amaProjectId), 201);
       }
       if (url === "https://ama.test/api/v1/memory-stores/mem_patch/memories" && reqMethod(input, init) === "POST") {
         return jsonResponse({ id: "memory_patch" }, 201);
       }
       if (url === "https://ama.test/api/v1/triggers" && reqMethod(input, init) === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        const id = body.type === "http" ? "http_patch" : "sched_patch";
-        return jsonResponse(
-          {
-            id,
-            agentId: "ama_agent_patch",
-            environmentId: "env_patch_test",
-            name: "Patch header agent",
-            promptTemplate: "template",
-            schedule: body.type === "http" ? null : { intervalSeconds: 3600, windowSeconds: 0 },
-            enabled: true,
-            archivedAt: null,
-            lastDispatchedAt: null,
-            lastRunId: null,
-          },
-          201,
-        );
+        const id = body.spec.source.type === "http" ? "http_patch" : "sched_patch";
+        return jsonResponse(amaTrigger(id, body, { type: body.spec.source.type === "http" ? "http" : "schedule", intervalSeconds: 3600 }), 201);
       }
       if (
         (url === "https://ama.test/api/v1/triggers/sched_patch" || url === "https://ama.test/api/v1/triggers/http_patch") &&
@@ -1034,18 +1139,10 @@ describe("routes", () => {
       ) {
         const headersObj = input instanceof Request ? Object.fromEntries(input.headers.entries()) : { ...(init?.headers as Record<string, string>) };
         capturedPatchHeaders.push(headersObj);
-        return jsonResponse({
-          id: url.endsWith("/http_patch") ? "http_patch" : "sched_patch",
-          agentId: "ama_agent_patch",
-          environmentId: "env_patch_test",
-          name: "Patch header agent",
-          promptTemplate: "template",
-          schedule: url.endsWith("/http_patch") ? null : { intervalSeconds: 3600, windowSeconds: 0 },
-          enabled: false,
-          archivedAt: null,
-          lastDispatchedAt: null,
-          lastRunId: null,
-        });
+        const triggerId = url.endsWith("/http_patch") ? "http_patch" : "sched_patch";
+        return jsonResponse(
+          amaTrigger(triggerId, JSON.parse(await reqBody(input, init)), { type: url.endsWith("/http_patch") ? "http" : "schedule", active: false }),
+        );
       }
       if (
         url.startsWith("https://ama.test/api/v1/triggers/sched_patch/runs?") ||
@@ -1143,44 +1240,25 @@ describe("routes", () => {
       }
       // Maintainer route reconciles the eagerly-created AMA agent (read + patch).
       if (url === "https://ama.test/api/v1/agents/ama_agent_delete" && (reqMethod(input, init) ?? "GET") === "GET") {
-        return jsonResponse({
-          id: "ama_agent_delete",
-          projectId: amaProjectId,
-          name: "agent",
-          providerId: "provider_codex_delete",
-          model: "gpt-5.3-codex",
-        });
+        return jsonResponse(amaAgent("ama_agent_delete", { projectId: amaProjectId, provider: "openai", model: "gpt-5.3-codex" }));
       }
       if (url === "https://ama.test/api/v1/agents/ama_agent_delete" && reqMethod(input, init) === "PATCH") {
-        return jsonResponse({ id: "ama_agent_delete", projectId: amaProjectId, name: "agent" });
+        return jsonResponse(amaAgent("ama_agent_delete", { projectId: amaProjectId, provider: "openai", model: "gpt-5.3-codex" }));
       }
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials" && reqMethod(input, init) === "POST") {
-        return jsonResponse({ id: "vaultcred_delete", activeVersionId: "vaultver_delete" }, 201);
+        return jsonResponse(amaCredential("vaultcred_delete", "vaultver_delete"), 201);
       }
       if (url === "https://ama.test/api/v1/memory-stores" && reqMethod(input, init) === "POST") {
-        return jsonResponse({ id: "mem_delete", name: "Delete header agent memory" }, 201);
+        const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
+        return jsonResponse(amaMemoryStore("mem_delete", body.metadata?.name ?? "Delete header agent memory", amaProjectId), 201);
       }
       if (url === "https://ama.test/api/v1/memory-stores/mem_delete/memories" && reqMethod(input, init) === "POST") {
         return jsonResponse({ id: "memory_delete" }, 201);
       }
       if (url === "https://ama.test/api/v1/triggers" && reqMethod(input, init) === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        const id = body.type === "http" ? "http_delete" : "sched_delete";
-        return jsonResponse(
-          {
-            id,
-            agentId: "ama_agent_delete",
-            environmentId: "env_delete_test",
-            name: "Delete header agent",
-            promptTemplate: "template",
-            schedule: body.type === "http" ? null : { intervalSeconds: 3600, windowSeconds: 0 },
-            enabled: true,
-            archivedAt: null,
-            lastDispatchedAt: null,
-            lastRunId: null,
-          },
-          201,
-        );
+        const id = body.spec.source.type === "http" ? "http_delete" : "sched_delete";
+        return jsonResponse(amaTrigger(id, body, { type: body.spec.source.type === "http" ? "http" : "schedule", intervalSeconds: 3600 }), 201);
       }
       if (
         (url === "https://ama.test/api/v1/triggers/sched_delete" || url === "https://ama.test/api/v1/triggers/http_delete") &&
@@ -1191,7 +1269,7 @@ describe("routes", () => {
         return new Response(null, { status: 204 });
       }
       if (url === "https://ama.test/api/v1/memory-stores/mem_delete" && reqMethod(input, init) === "PATCH") {
-        return jsonResponse({ id: "mem_delete", name: "Delete header agent memory", archived: true });
+        return jsonResponse(amaMemoryStore("mem_delete", "Delete header agent memory", amaProjectId));
       }
       if (
         url.startsWith("https://ama.test/api/v1/triggers/sched_delete/runs?") ||
@@ -2366,38 +2444,32 @@ describe("routes", () => {
       }
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        expect(body.secret.secretValue).toContain('"kty":"OKP"');
-        runtimePrivateKeyJwk = JSON.parse(body.secret.secretValue) as JsonWebKey;
-        return jsonResponse({ id: "vaultcred_123", activeVersionId: "vaultver_123" }, 201);
+        expect(body.secret.stringData.value).toContain('"kty":"OKP"');
+        runtimePrivateKeyJwk = JSON.parse(body.secret.stringData.value) as JsonWebKey;
+        return jsonResponse(amaCredential("vaultcred_123", "vaultver_123"), 201);
       }
       if (url === "https://ama.test/api/v1/sessions") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        expect(body.agentId).toBe("ama_agent_123");
-        expect(body.environmentId).toBe("env_123");
-        expect(body.runtime).toBe("claude-code");
-        expect(body.env).toMatchObject({
+        expect(body.metadata.name).toContain("AMA dispatched task");
+        expect(body.spec.agentId).toBe("ama_agent_123");
+        expect(body.spec.environmentId).toBe("env_123");
+        expect(body.spec.runtime).toBe("claude-code");
+        expect(body.spec.env).toMatchObject({
           AK_WORKER: "1",
           AK_AGENT_ID: agentId,
           AK_API_URL: "https://ak.test",
         });
-        expect(body.env.AK_SESSION_ID).toEqual(expect.any(String));
-        expect(body.secretEnv).toEqual([{ name: "AK_AGENT_KEY", credentialRef: { credentialId: "vaultcred_123", versionId: "vaultver_123" } }]);
-        expect(body.initialPrompt).toContain(`ak describe task`);
-        expect(body.initialPrompt).toContain("do not use the ak-task leader workflow");
-        expect(body.initialPrompt.toLowerCase()).toContain("do not end the session without submitting review");
-        expect(body.initialPrompt).not.toContain(taskDetail);
-        expect(body.initialPrompt).not.toContain("Task detail:");
+        expect(body.spec.env.AK_SESSION_ID).toEqual(expect.any(String));
+        expect(body.spec.envFrom).toEqual([
+          { type: "secret", name: "AK_AGENT_KEY", secretRef: amaCredentialSecretRef("vault_123", "vaultcred_123", "vaultver_123"), key: "value" },
+        ]);
+        expect(body.prompt).toContain(`ak describe task`);
+        expect(body.prompt).toContain("do not use the ak-task leader workflow");
+        expect(body.prompt.toLowerCase()).toContain("do not end the session without submitting review");
+        expect(body.prompt).not.toContain(taskDetail);
+        expect(body.prompt).not.toContain("Task detail:");
         expect(JSON.stringify(body)).not.toContain("board_");
-        return jsonResponse(
-          {
-            id: "session_ama_123",
-            agentId: body.agentId,
-            environmentId: "env_123",
-            state: "pending",
-            stateReason: null,
-          },
-          201,
-        );
+        return jsonResponse(amaSession("session_ama_123", { agentId: body.spec.agentId, environmentId: "env_123", runtime: body.spec.runtime }), 201);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2492,7 +2564,11 @@ describe("routes", () => {
         return jsonResponse({ access_token: "oauth-token" });
       }
       if (url === "https://ama.test/api/v1/environments/env_123") {
-        return jsonResponse({ id: "env_123", runtime: "codex" });
+        return jsonResponse({
+          metadata: { uid: "env_123", projectId: "project_123", name: "env_123", description: null, archivedAt: null },
+          spec: {},
+          status: {},
+        });
       }
       if (url === "https://ama.test/api/v1/providers?limit=100") {
         return jsonResponse({ data: [{ id: "provider_codex", status: "active" }] });
@@ -2501,13 +2577,10 @@ describe("routes", () => {
         return jsonResponse({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] });
       }
       if (url === "https://ama.test/api/v1/agents") {
-        return jsonResponse(
-          { id: "ama_agent_123", projectId: "project_123", name: "agent", providerId: "provider_codex", model: "gpt-5.3-codex" },
-          201,
-        );
+        return jsonResponse(amaAgent("ama_agent_123", { projectId: "project_123", provider: "openai", model: "gpt-5.3-codex" }), 201);
       }
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
-        return jsonResponse({ id: "vaultcred_123", activeVersionId: "vaultver_123" }, 201);
+        return jsonResponse(amaCredential("vaultcred_123", "vaultver_123"), 201);
       }
       if (url === "https://ama.test/api/v1/sessions") {
         return jsonResponse({ error: "runtime unavailable" }, 503);
@@ -2567,7 +2640,11 @@ describe("routes", () => {
         return jsonResponse({ access_token: "oauth-token" });
       }
       if (url === "https://ama.test/api/v1/environments/env_123") {
-        return jsonResponse({ id: "env_123", runtime: "codex" });
+        return jsonResponse({
+          metadata: { uid: "env_123", projectId: "project_123", name: "env_123", description: null, archivedAt: null },
+          spec: {},
+          status: {},
+        });
       }
       if (url === "https://ama.test/api/v1/providers?limit=100") {
         return jsonResponse({ data: [{ id: "provider_codex", status: "active" }] });
@@ -2576,13 +2653,10 @@ describe("routes", () => {
         return jsonResponse({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] });
       }
       if (url === "https://ama.test/api/v1/agents") {
-        return jsonResponse(
-          { id: "ama_agent_123", projectId: "project_123", name: "agent", providerId: "provider_codex", model: "gpt-5.3-codex" },
-          201,
-        );
+        return jsonResponse(amaAgent("ama_agent_123", { projectId: "project_123", provider: "openai", model: "gpt-5.3-codex" }), 201);
       }
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
-        return jsonResponse({ id: "vaultcred_123", activeVersionId: "vaultver_123" }, 201);
+        return jsonResponse(amaCredential("vaultcred_123", "vaultver_123"), 201);
       }
       if (url === "https://ama.test/api/v1/sessions") {
         return jsonResponse({ error: "runtime unavailable" }, 503);
@@ -2667,22 +2741,13 @@ describe("routes", () => {
         });
       }
       if (url === "https://ama.test/api/v1/agents/ama_agent_release") {
-        return jsonResponse({
-          id: "ama_agent_release",
-          projectId: "project_123",
-          name: "agent",
-          providerId: "provider_codex",
-          model: "gpt-5.3-codex",
-        });
+        return jsonResponse(amaAgent("ama_agent_release", { projectId: "project_123", provider: "openai", model: "gpt-5.3-codex" }));
       }
       if (url === "https://ama.test/api/v1/agents") {
-        return jsonResponse(
-          { id: "ama_agent_release", projectId: "project_123", name: "agent", providerId: "provider_codex", model: "gpt-5.3-codex" },
-          201,
-        );
+        return jsonResponse(amaAgent("ama_agent_release", { projectId: "project_123", provider: "openai", model: "gpt-5.3-codex" }), 201);
       }
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
-        return jsonResponse({ id: "vaultcred_release", activeVersionId: "vaultver_release" }, 201);
+        return jsonResponse(amaCredential("vaultcred_release", "vaultver_release"), 201);
       }
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials/vaultcred_release" && reqMethod(input, init) === "PATCH") {
         return jsonResponse({ id: "vaultcred_release", state: "revoked" });
@@ -2698,21 +2763,19 @@ describe("routes", () => {
       }
       if (url === "https://ama.test/api/v1/sessions") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        expect(body.agentId).toBe("ama_agent_release");
-        expect(body.environmentId).toBe("env_release");
-        expect(body.runtime).toBe("codex");
-        expect(body.initialPrompt).toContain("AK task");
-        expect(body.initialPrompt).toContain("ak describe task");
-        expect(body.initialPrompt).toContain("do not use the ak-task leader workflow");
+        expect(body.spec.agentId).toBe("ama_agent_release");
+        expect(body.spec.environmentId).toBe("env_release");
+        expect(body.spec.runtime).toBe("codex");
+        expect(body.prompt).toContain("AK task");
+        expect(body.prompt).toContain("ak describe task");
+        expect(body.prompt).toContain("do not use the ak-task leader workflow");
         sessionCreateCount += 1;
         return jsonResponse(
-          {
-            id: `session_release_${sessionCreateCount}`,
-            agentId: body.agentId,
+          amaSession(`session_release_${sessionCreateCount}`, {
+            agentId: body.spec.agentId,
             environmentId: "env_release",
-            state: "pending",
-            stateReason: null,
-          },
+            runtime: body.spec.runtime,
+          }),
           201,
         );
       }
@@ -3242,7 +3305,7 @@ describe("routes", () => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return jsonResponse({ access_token: "user-token" });
       if (url === "https://ama.test/api/v1/sessions/session_runtime_123") {
-        return jsonResponse({ id: "session_runtime_123", state: "stopped", title: "Finished task" });
+        return jsonResponse(amaSession("session_runtime_123", { projectId: "project_runtime_123", name: "Finished task", phase: "stopped" }));
       }
       return jsonResponse({ error: "unexpected", url }, 500);
     });
@@ -3288,7 +3351,7 @@ describe("routes", () => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return jsonResponse({ access_token: "user-token" });
       if (url === `https://ama.test/api/v1/sessions/${amaSessionId}`) {
-        return jsonResponse({ id: amaSessionId, state: "stopped", title: "Finished task" });
+        return jsonResponse(amaSession(amaSessionId, { projectId: "project_runtime_123", name: "Finished task", phase: "stopped" }));
       }
       return jsonResponse({ error: "unexpected", url }, 500);
     });
@@ -3387,7 +3450,7 @@ describe("routes", () => {
         const url = reqUrl(input);
         if (url === "https://auth.test/.well-known/openid-configuration") return jsonResponse({ access_token: "user-token" });
         if (url === `https://ama.test/api/v1/sessions/${sessionId}`) {
-          return jsonResponse({ id: sessionId, state: "running", title: "Maintainer run" });
+          return jsonResponse(amaSession(sessionId, { projectId: "project_direct_session", name: "Maintainer run", phase: "running" }));
         }
         return jsonResponse({ error: "unexpected", url }, 500);
       }),
@@ -3431,12 +3494,12 @@ describe("routes", () => {
           expect(requestUrl.searchParams.get("labelSelector")).toBe("maintainerId=maintainer_123");
           return jsonResponse({
             data: [
-              {
-                id: "session_maintainer_123",
-                state: "idle",
+              amaSession("session_maintainer_123", {
+                projectId: "project_session_list",
+                phase: "idle",
                 agentId: "ama_agent_123",
-                metadata: { labels: { maintainerId: "maintainer_123" } },
-              },
+                labels: { maintainerId: "maintainer_123" },
+              }),
             ],
             pagination: { limit: 25, hasMore: false },
           });

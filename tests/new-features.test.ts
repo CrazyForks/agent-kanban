@@ -61,6 +61,74 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
+function amaProject(id: string, name = "Workspace") {
+  return { id, name, metadata: { uid: id, name, projectId: id, description: null }, spec: {}, status: {} };
+}
+
+function amaCredential(id: string, activeVersionId?: string) {
+  return { metadata: { uid: id }, spec: {}, status: { activeVersionId } };
+}
+
+function amaAgent(id: string, input: { projectId?: string; name?: string; provider?: string; model?: string | null } = {}) {
+  return {
+    metadata: {
+      uid: id,
+      projectId: input.projectId ?? "project_123",
+      name: input.name ?? "agent",
+      description: null,
+      archivedAt: null,
+    },
+    spec: {
+      provider: input.provider ?? "provider_claude",
+      model: input.model ?? null,
+      systemPrompt: "",
+      skills: [],
+      subagents: [],
+      allowedTools: [],
+      mcpConnectors: [],
+    },
+    status: {},
+  };
+}
+
+function amaEnvironment(id: string, input: { projectId?: string; name?: string; type?: string } = {}) {
+  return {
+    metadata: {
+      uid: id,
+      projectId: input.projectId ?? "project_123",
+      name: input.name ?? id,
+      description: null,
+      archivedAt: null,
+    },
+    spec: { type: input.type ?? "self_hosted" },
+    status: {},
+  };
+}
+
+function amaSession(
+  id: string,
+  input: { agentId?: string; environmentId?: string | null; runtime?: string; phase?: string; reason?: string | null; name?: string } = {},
+) {
+  return {
+    metadata: {
+      uid: id,
+      projectId: "project_git",
+      name: input.name ?? id,
+      labels: {},
+      annotations: {},
+      archivedAt: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    spec: {
+      agentId: input.agentId ?? "ama_agent_git",
+      environmentId: input.environmentId ?? "env_git",
+      runtime: input.runtime ?? "claude-code",
+    },
+    status: { phase: input.phase ?? "pending", reason: input.reason ?? null },
+  };
+}
+
 function oidcDiscoveryResponse() {
   return jsonResponse({
     issuer: "https://auth.test",
@@ -356,7 +424,7 @@ describe("amaRunnerCanRunRuntime", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
-      if (url === "https://ama.test/api/v1/projects/project_123") return jsonResponse({ id: "project_123", name: "Workspace" });
+      if (url === "https://ama.test/api/v1/projects/project_123") return jsonResponse(amaProject("project_123"));
       if (url === "https://ama.test/api/v1/runners?environmentId=env_quota&limit=100") {
         return jsonResponse({
           data: [
@@ -688,9 +756,10 @@ describe("POST /api/machines runner.version from env", () => {
           return jsonResponse({ access_token: "test-token", refresh_token: "test-refresh", token_type: "Bearer", expires_in: 3600 });
         }
         // readAmaProject health probe (ensureAmaOwnerIntegration self-heal)
-        if (url === "https://ama.test/api/v1/projects/project_verpinned") return jsonResponse({ id: "project_verpinned", name: "Workspace" });
+        if (url === "https://ama.test/api/v1/projects/project_verpinned") return jsonResponse(amaProject("project_verpinned"));
         // createEnvironment
-        if (url === "https://ama.test/api/v1/environments") return jsonResponse({ id: "env_verpinned" }, 201);
+        if (url === "https://ama.test/api/v1/environments")
+          return jsonResponse(amaEnvironment("env_verpinned", { projectId: "project_verpinned" }), 201);
         throw new Error(`Unexpected fetch in version test: ${url}`);
       }),
     );
@@ -830,7 +899,7 @@ describe("dispatchTaskToAma includes git identity env in runtimeEnv", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
-      if (url === "https://ama.test/api/v1/projects/project_git") return jsonResponse({ id: "project_git", name: "Workspace" });
+      if (url === "https://ama.test/api/v1/projects/project_git") return jsonResponse(amaProject("project_git"));
       if (url === "https://ama.test/api/v1/runners?environmentId=env_git&limit=100") {
         return jsonResponse({
           data: [
@@ -849,17 +918,16 @@ describe("dispatchTaskToAma includes git identity env in runtimeEnv", () => {
       if (url === "https://ama.test/api/v1/providers?limit=100")
         return jsonResponse({ data: [{ id: "provider_claude", type: "anthropic", status: "active" }] });
       if (url.includes("/api/v1/providers/provider_claude/models")) return jsonResponse({ data: [] });
-      if (url === "https://ama.test/api/v1/vaults/vault_git/credentials")
-        return jsonResponse({ id: "vaultcred_git", activeVersionId: "vaultver_git" }, 201);
+      if (url === "https://ama.test/api/v1/vaults/vault_git/credentials") return jsonResponse(amaCredential("vaultcred_git", "vaultver_git"), 201);
       if (url === "https://ama.test/api/v1/agents")
         return jsonResponse(
-          { id: "ama_agent_git", projectId: "project_git", name: "Git Identity Agent", providerId: "provider_claude", model: null },
+          amaAgent("ama_agent_git", { projectId: "project_git", name: "Git Identity Agent", provider: "provider_claude", model: null }),
           201,
         );
       if (url === "https://ama.test/api/v1/sessions") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        capturedRuntimeEnv = body.env as Record<string, string>;
-        return jsonResponse({ id: "session_git_1", agentId: "ama_agent_git", environmentId: "env_git", state: "pending", stateReason: null }, 201);
+        capturedRuntimeEnv = body.spec.env as Record<string, string>;
+        return jsonResponse(amaSession("session_git_1", body.spec), 201);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });

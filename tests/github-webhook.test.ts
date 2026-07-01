@@ -36,6 +36,41 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
+function amaTriggerRun(
+  id: string,
+  input: {
+    projectId: string;
+    triggerId: string;
+    phase?: string;
+    sessionId?: string | null;
+    triggeredAt?: string | null;
+    metadata?: Record<string, unknown>;
+  },
+) {
+  const now = input.triggeredAt ?? "2026-06-09T01:02:03.000Z";
+  return {
+    metadata: {
+      uid: id,
+      projectId: input.projectId,
+      name: id,
+      createdAt: now,
+      updatedAt: now,
+    },
+    spec: {
+      triggerId: input.triggerId,
+      scheduledFor: null,
+      metadata: input.metadata ?? {},
+    },
+    status: {
+      heartbeatAt: null,
+      triggeredAt: input.triggeredAt ?? now,
+      phase: input.phase ?? "dispatched",
+      sessionId: input.sessionId ?? "session_webhook",
+      errorMessage: null,
+    },
+  };
+}
+
 // Minimal Env for direct function calls
 function makeEnv(overrides: Record<string, unknown> = {}): any {
   return {
@@ -371,20 +406,11 @@ describe("POST /api/webhooks/github-app route", () => {
           const body = JSON.parse(await reqBody(input, init));
           dispatched.push({ url, headers, body });
           return jsonResponse(
-            {
-              id: "run_webhook",
+            amaTriggerRun("run_webhook", {
               projectId: "project_webhook",
               triggerId: httpTriggerId,
-              scheduledFor: null,
-              heartbeatAt: null,
               triggeredAt: "2026-06-09T01:02:03.000Z",
-              state: "dispatched",
-              sessionId: "session_webhook",
-              errorMessage: null,
-              metadata: {},
-              createdAt: "2026-06-09T01:02:03.000Z",
-              updatedAt: "2026-06-09T01:02:03.000Z",
-            },
+            }),
             201,
           );
         }

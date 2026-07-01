@@ -158,9 +158,16 @@ export async function dispatchTaskToAma(
         ...agentGitIdentityEnv(akAgent),
       },
       runtimeSecretEnv: [
-        { name: "AK_AGENT_KEY", credentialId: secret.credentialId, versionId: secret.activeVersionId },
+        { name: "AK_AGENT_KEY", vaultId, credentialId: secret.credentialId, versionId: secret.activeVersionId },
         ...(githubTokenSecret
-          ? [{ name: githubTokenSecret.name, credentialId: githubTokenSecret.credentialId, versionId: githubTokenSecret.versionId }]
+          ? [
+              {
+                name: githubTokenSecret.name,
+                vaultId: githubTokenSecret.vaultId,
+                credentialId: githubTokenSecret.credentialId,
+                versionId: githubTokenSecret.versionId,
+              },
+            ]
           : []),
       ],
     });
@@ -320,14 +327,13 @@ function amaAgentMemoryPolicy(enabled: boolean) {
 
 function amaSubagentProfile(subagent: NonNullable<Awaited<ReturnType<typeof getSubagent>>>) {
   return {
-    id: subagent.id,
-    username: subagent.username,
     name: subagent.name,
-    bio: subagent.bio,
-    instructions: subagent.soul,
-    role: subagent.role,
-    modelPreferences: subagent.models ?? [],
+    description: subagent.bio ?? subagent.role ?? "",
+    systemPrompt: subagent.soul ?? "",
+    model: Object.values(subagent.models ?? {}).find((model): model is string => typeof model === "string") ?? null,
     skills: subagent.skills ?? [],
+    allowedTools: [],
+    mcpConnectors: [],
   };
 }
 
@@ -816,8 +822,8 @@ function taskInitialPrompt(task: Task) {
 // carry the whole workflow, step by step, for the sandbox-hosted agent.
 function cloudTaskInitialPrompt(task: Task, resourceRefs: { owner: string; repo: string }[]) {
   const repo = resourceRefs[0] ?? null;
-  // AMA normalizes github_repository mounts to /workspace/repos/{owner}/{repo}.
-  const repoDir = repo ? `/workspace/repos/${repo.owner}/${repo.repo}` : null;
+  // AMA normalizes github_repository mounts to /workspace/repos/{host}/{owner}/{repo}.
+  const repoDir = repo ? `/workspace/repos/github.com/${repo.owner}/${repo.repo}` : null;
   const branch = `ak/${task.id}`;
   const prompt = [
     `You are assigned AK task ${task.id}: ${task.title}`,
@@ -867,7 +873,7 @@ async function githubTokenSecretRef(
   vaultId: string,
   akSessionId: string,
   resourceRefs: { owner: string; repo: string }[],
-): Promise<{ name: string; credentialId: string; versionId?: string | null } | null> {
+): Promise<{ name: string; vaultId: string; credentialId: string; versionId?: string | null } | null> {
   const repo = resourceRefs[0];
   if (!repo || !isGithubAppConfigured(env)) return null;
   const minted = await mintGithubInstallationToken(env, repo.owner, repo.repo);
@@ -878,7 +884,7 @@ async function githubTokenSecretRef(
     secretValue: minted.token,
     metadata: { purpose: "github-installation-token", repository: `${repo.owner}/${repo.repo}`, expiresAt: minted.expiresAt },
   });
-  return { name: "GH_TOKEN", credentialId: secret.credentialId, versionId: secret.activeVersionId };
+  return { name: "GH_TOKEN", vaultId, credentialId: secret.credentialId, versionId: secret.activeVersionId };
 }
 
 async function taskResourceRefs(db: D1, task: Task) {

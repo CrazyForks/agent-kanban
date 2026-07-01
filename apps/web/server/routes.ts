@@ -1992,7 +1992,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     maintainerId,
     apiUrl: apiUrl(c.env, new URL(c.req.url).origin),
   });
-  const runtimeSecretEnv = [{ name: "AK_API_KEY", credentialId: maintainerKey.credentialId, versionId: maintainerKey.versionId }];
+  const runtimeSecretEnv = [{ name: "AK_API_KEY", vaultId, credentialId: maintainerKey.credentialId, versionId: maintainerKey.versionId }];
   const memoryStore = await createAmaMemoryStore(c.env, ownerId, {
     projectId: amaProjectId,
     name: `${triggerName} memory`,
@@ -2147,7 +2147,14 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
     maintainerId: maintainer.id,
     apiUrl: apiUrl(c.env, new URL(c.req.url).origin),
   });
-  const runtimeSecretEnv = [{ name: "AK_API_KEY", credentialId: apiKeyCredentialId, versionId: apiKeyCredentialVersionId }];
+  const runtimeSecretEnv = [
+    {
+      name: "AK_API_KEY",
+      vaultId: await resolveAmaSessionSecretVaultId(c.env.DB, c.env, ownerId),
+      credentialId: apiKeyCredentialId,
+      versionId: apiKeyCredentialVersionId,
+    },
+  ];
   const resourceRefs = maintainer.ama_memory_store_id
     ? [{ type: "memory_store", storeId: maintainer.ama_memory_store_id, access: "read_write" }]
     : [];

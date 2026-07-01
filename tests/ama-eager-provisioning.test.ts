@@ -64,6 +64,60 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
+function amaProject(id: string, name = "Workspace") {
+  return { id, name, metadata: { uid: id, name, projectId: id, description: null }, spec: {}, status: {} };
+}
+
+function amaVault(id: string, projectId = "project_123") {
+  return {
+    id,
+    metadata: { uid: id, projectId, name: id, description: null, archivedAt: null },
+    spec: { scope: "project" },
+    status: {},
+  };
+}
+
+function amaAgent(id: string, input: { projectId?: string; name?: string; provider?: string; model?: string | null } = {}) {
+  return {
+    id,
+    projectId: input.projectId ?? "project_123",
+    name: input.name ?? "agent",
+    providerId: input.provider ?? "anthropic",
+    metadata: {
+      uid: id,
+      projectId: input.projectId ?? "project_123",
+      name: input.name ?? "agent",
+      description: null,
+      archivedAt: null,
+    },
+    spec: {
+      provider: input.provider ?? "anthropic",
+      model: input.model ?? null,
+      systemPrompt: "",
+      skills: [],
+      subagents: [],
+      allowedTools: [],
+      mcpConnectors: [],
+    },
+    status: {},
+  };
+}
+
+function amaEnvironment(id: string, input: { projectId?: string; name?: string; type?: string } = {}) {
+  return {
+    id,
+    metadata: {
+      uid: id,
+      projectId: input.projectId ?? "project_123",
+      name: input.name ?? id,
+      description: null,
+      archivedAt: null,
+    },
+    spec: { type: input.type ?? "self_hosted" },
+    status: {},
+  };
+}
+
 function oidcDiscoveryResponse() {
   return jsonResponse({
     issuer: "https://auth.test",
@@ -115,14 +169,14 @@ describe("connect-provisions-project", () => {
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects" && reqMethod(input, init) === "POST") {
         projectCreates += 1;
-        return jsonResponse({ id: "project_eager", name: "Workspace" }, 201);
+        return jsonResponse(amaProject("project_eager"), 201);
       }
       if (url === "https://ama.test/api/v1/projects/project_eager") {
-        return jsonResponse({ id: "project_eager", name: "Workspace" });
+        return jsonResponse(amaProject("project_eager"));
       }
       if (url === "https://ama.test/api/v1/vaults" && reqMethod(input, init) === "POST") {
         vaultCreates += 1;
-        return jsonResponse({ id: "vault_eager" }, 201);
+        return jsonResponse(amaVault("vault_eager", "project_eager"), 201);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -181,10 +235,10 @@ describe("create-agent-creates-ama-agent-first", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
-      if (url === "https://ama.test/api/v1/projects/project_ca") return jsonResponse({ id: "project_ca", name: "Workspace" });
+      if (url === "https://ama.test/api/v1/projects/project_ca") return jsonResponse(amaProject("project_ca"));
       if (url === "https://ama.test/api/v1/agents" && reqMethod(input, init) === "POST") {
         agentCreateBody = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        return jsonResponse({ id: "ama_agent_ca", projectId: "project_ca", name: agentCreateBody.name, providerId: "anthropic" }, 201);
+        return jsonResponse(amaAgent("ama_agent_ca", { projectId: "project_ca", name: agentCreateBody.metadata?.name }), 201);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -208,7 +262,7 @@ describe("create-agent-creates-ama-agent-first", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
-      if (url === "https://ama.test/api/v1/projects/project_ca") return jsonResponse({ id: "project_ca", name: "Workspace" });
+      if (url === "https://ama.test/api/v1/projects/project_ca") return jsonResponse(amaProject("project_ca"));
       if (url === "https://ama.test/api/v1/agents" && reqMethod(input, init) === "POST") {
         return jsonResponse({ error: "agent quota exceeded" }, 503);
       }
@@ -298,10 +352,10 @@ describe("add-cloud-sandbox-creates-cloud-env", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
-      if (url === "https://ama.test/api/v1/projects/project_cloud_m") return jsonResponse({ id: "project_cloud_m", name: "Workspace" });
+      if (url === "https://ama.test/api/v1/projects/project_cloud_m") return jsonResponse(amaProject("project_cloud_m"));
       if (url === "https://ama.test/api/v1/environments" && reqMethod(input, init) === "POST") {
         envCreateBody = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        return jsonResponse({ id: "cloud_env_m" }, 201);
+        return jsonResponse(amaEnvironment("cloud_env_m", { projectId: "project_cloud_m", name: envCreateBody.metadata?.name, type: "cloud" }), 201);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -311,7 +365,7 @@ describe("add-cloud-sandbox-creates-cloud-env", () => {
     expect(res.status).toBe(201);
     const machine = (await res.json()) as any;
     expect(machine.hosting).toBe("cloud");
-    expect(envCreateBody?.hostingMode).toBe("cloud");
+    expect(envCreateBody?.spec?.type).toBe("cloud");
     // The public machine never exposes the AMA environment id.
     expect(machine).not.toHaveProperty("ama_environment_id");
 
@@ -472,7 +526,7 @@ describe("connect-backfills-pre-ama-agents", () => {
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       // ensureAmaOwnerIntegration verifies the project is live via GET.
       if (url === `https://ama.test/api/v1/projects/${PROJECT_ID}`) {
-        return jsonResponse({ id: PROJECT_ID, name: "Workspace" });
+        return jsonResponse(amaProject(PROJECT_ID));
       }
       if (url === "https://ama.test/api/v1/agents" && reqMethod(input, init) === "POST") {
         const resp = agentResponses[agentCallIndex++];
@@ -496,7 +550,7 @@ describe("connect-backfills-pre-ama-agents", () => {
     const agent = await createTestAgent(db, userId, { name: "Pre-AMA", username: "pre-ama-bf", runtime: "claude" }, false);
     await db.prepare("UPDATE agents SET ama_agent_id = NULL WHERE id = ?").bind(agent.id).run();
 
-    const fetchMock = makeFetchMock([jsonResponse({ id: "ama_agent_x", projectId: PROJECT_ID, name: "Pre-AMA", providerId: "anthropic" }, 201)]);
+    const fetchMock = makeFetchMock([jsonResponse(amaAgent("ama_agent_x", { projectId: PROJECT_ID, name: "Pre-AMA" }), 201)]);
     vi.stubGlobal("fetch", fetchMock);
 
     const res = await apiRequest(env, "POST", "/api/ama/provision", undefined, token);
@@ -526,9 +580,7 @@ describe("connect-backfills-pre-ama-agents", () => {
     await db.prepare("UPDATE agents SET ama_agent_id = NULL WHERE id = ?").bind(agent.id).run();
 
     // First provision — backfills the agent.
-    const firstFetch = makeFetchMock([
-      jsonResponse({ id: "ama_agent_idem", projectId: PROJECT_ID, name: "Idempotent", providerId: "anthropic" }, 201),
-    ]);
+    const firstFetch = makeFetchMock([jsonResponse(amaAgent("ama_agent_idem", { projectId: PROJECT_ID, name: "Idempotent" }), 201)]);
     vi.stubGlobal("fetch", firstFetch);
     const first = await apiRequest(env, "POST", "/api/ama/provision", undefined, token);
     expect(((await first.json()) as any).agents_backfilled).toBe(1);
@@ -540,11 +592,11 @@ describe("connect-backfills-pre-ama-agents", () => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/projects/${PROJECT_ID}`) {
-        return jsonResponse({ id: PROJECT_ID, name: "Workspace" });
+        return jsonResponse(amaProject(PROJECT_ID));
       }
       if (url === "https://ama.test/api/v1/agents/ama_agent_idem") {
         // readAmaAgent called when ama_agent_id is already set.
-        return jsonResponse({ id: "ama_agent_idem", projectId: PROJECT_ID, name: "Idempotent", providerId: "anthropic" });
+        return jsonResponse(amaAgent("ama_agent_idem", { projectId: PROJECT_ID, name: "Idempotent" }));
       }
       if (url === "https://ama.test/api/v1/agents/ama_agent_idem" && reqMethod(input, init) === "PATCH") {
         return jsonResponse({ id: "ama_agent_idem" });
@@ -679,10 +731,7 @@ describe("connect-backfills-pre-ama-agents", () => {
 
     // A single old Agent may fail to create in AMA; provision should bind the
     // rest and leave the failed row missing ama_agent_id for the next retry.
-    const fetchMock = makeFetchMock([
-      "error",
-      jsonResponse({ id: "ama_agent_success", projectId: PROJECT_ID, name: "Agent", providerId: "anthropic" }, 201),
-    ]);
+    const fetchMock = makeFetchMock(["error", jsonResponse(amaAgent("ama_agent_success", { projectId: PROJECT_ID, name: "Agent" }), 201)]);
     vi.stubGlobal("fetch", fetchMock);
 
     const res = await apiRequest(env, "POST", "/api/ama/provision", undefined, token);
@@ -725,7 +774,7 @@ describe("connect-backfills-pre-ama-agents", () => {
       .bind(JSON.stringify([{ key: AMA_BACKFILL_FAILED_TAINT_KEY, value: "ama-agent-create-failed", effect: "NoSchedule" }]), agent.id)
       .run();
 
-    const fetchMock = makeFetchMock([jsonResponse({ id: "ama_agent_retry", projectId: PROJECT_ID, name: "Retry", providerId: "anthropic" }, 201)]);
+    const fetchMock = makeFetchMock([jsonResponse(amaAgent("ama_agent_retry", { projectId: PROJECT_ID, name: "Retry" }), 201)]);
     vi.stubGlobal("fetch", fetchMock);
 
     const res = await apiRequest(env, "POST", "/api/ama/provision", undefined, token);
