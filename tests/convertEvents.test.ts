@@ -350,16 +350,20 @@ describe("convertEvents — edge cases", () => {
   });
 });
 
-describe("amaEventToRelayEvent — message role mapping", () => {
-  it("maps AMA user message_end events to user chat messages", () => {
+describe("amaEventToRelayEvent — canonical AMA EventRecord mapping", () => {
+  it("maps canonical turn.started records with user message payloads to user chat messages", () => {
     const relayEvent = amaEventToRelayEvent({
-      id: "ama-user-1",
-      type: "message_end",
+      id: "evt-turn-started",
+      sequence: 1,
       createdAt: "2026-04-08T10:00:00.000Z",
-      payload: {
-        message: {
-          role: "user",
-          content: [{ type: "text", text: "Please update the PR" }],
+      event: {
+        type: "turn.started",
+        payload: {
+          message: {
+            id: "msg-user-1",
+            role: "user",
+            content: [{ type: "text", text: "Run the smoke test again" }],
+          },
         },
       },
     });
@@ -368,65 +372,125 @@ describe("amaEventToRelayEvent — message role mapping", () => {
 
     expect(messages).toHaveLength(1);
     expect(messages[0].role).toBe("user");
-    expect((messages[0].content as any[])[0].text).toBe("Please update the PR");
+    expect((messages[0].content as any[])[0].text).toBe("Run the smoke test again");
   });
 
-  it("keeps AMA assistant message_end events as agent chat messages", () => {
-    const relayEvent = amaEventToRelayEvent({
-      id: "ama-assistant-1",
-      type: "message_end",
-      createdAt: "2026-04-08T10:00:01.000Z",
-      payload: {
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "PR updated" }],
+  it("maps canonical assistant tool call and tool result records into one rendered tool call", () => {
+    const events = [
+      amaEventToRelayEvent({
+        id: "evt-tool-call",
+        sequence: 2,
+        createdAt: "2026-04-08T10:00:01.000Z",
+        event: {
+          type: "message.completed",
+          payload: {
+            message: {
+              id: "msg-assistant-1",
+              role: "assistant",
+              content: [{ type: "tool_call", toolCall: { id: "call-1", name: "sandbox.exec", input: { command: "echo ok" } } }],
+            },
+          },
         },
-      },
-    });
-
-    const messages = convertEvents([relayEvent], "idle");
-
-    expect(messages).toHaveLength(1);
-    expect(messages[0].role).toBe("assistant");
-    expect((messages[0].content as any[])[0].text).toBe("PR updated");
-  });
-
-  it("maps canonical AMA session rows with top-level user role", () => {
-    const relayEvent = amaEventToRelayEvent({
-      id: "ama-row-user-1",
-      type: "message_end",
-      role: "user",
-      createdAt: "2026-04-08T10:00:02.000Z",
-      payload: {
-        message: {
-          content: [{ type: "text", text: "Can you rerun the smoke test?" }],
+      }),
+      amaEventToRelayEvent({
+        id: "evt-tool-result",
+        sequence: 3,
+        createdAt: "2026-04-08T10:00:02.000Z",
+        event: {
+          type: "message.completed",
+          payload: {
+            message: {
+              id: "msg-tool-1",
+              role: "tool",
+              parentToolCallId: "call-1",
+              content: [
+                {
+                  type: "tool_result",
+                  toolCallId: "call-1",
+                  result: { content: [{ type: "text", text: "ok" }], exitCode: 0 },
+                },
+              ],
+            },
+          },
         },
-      },
-    });
+      }),
+    ];
 
-    const messages = convertEvents([relayEvent], "idle");
+    const messages = convertEvents(events, "idle");
 
     expect(messages).toHaveLength(1);
-    expect(messages[0].role).toBe("user");
-    expect((messages[0].content as any[])[0].text).toBe("Can you rerun the smoke test?");
+    const toolCall = (messages[0].content as any[]).find((part) => part.type === "tool-call");
+    expect(toolCall).toMatchObject({
+      toolCallId: "call-1",
+      toolName: "Bash",
+      args: { command: "echo ok" },
+      result: "ok",
+    });
   });
 
-  it("maps canonical AMA user rows when content is stored on payload", () => {
-    const relayEvent = amaEventToRelayEvent({
-      id: "ama-row-user-2",
-      type: "message_end",
-      role: "user",
-      createdAt: "2026-04-08T10:00:03.000Z",
-      payload: {
-        content: "Please keep the same session.",
-      },
-    });
+  it("treats canonical message.updated payloads as snapshots instead of appending duplicate text", () => {
+    const events = [
+      amaEventToRelayEvent({
+        id: "evt-update-1",
+        sequence: 4,
+        createdAt: "2026-04-08T10:00:03.000Z",
+        event: {
+          type: "message.updated",
+          payload: { message: { id: "msg-stream-1", role: "assistant", content: [{ type: "text", text: "hel" }] } },
+        },
+      }),
+      amaEventToRelayEvent({
+        id: "evt-update-2",
+        sequence: 5,
+        createdAt: "2026-04-08T10:00:04.000Z",
+        event: {
+          type: "message.updated",
+          payload: { message: { id: "msg-stream-1", role: "assistant", content: [{ type: "text", text: "hello" }] } },
+        },
+      }),
+      amaEventToRelayEvent({
+        id: "evt-completed",
+        sequence: 6,
+        createdAt: "2026-04-08T10:00:05.000Z",
+        event: {
+          type: "message.completed",
+          payload: { message: { id: "msg-stream-1", role: "assistant", content: [{ type: "text", text: "hello" }] } },
+        },
+      }),
+    ];
 
-    const messages = convertEvents([relayEvent], "idle");
+    const messages = convertEvents(events, "idle");
 
     expect(messages).toHaveLength(1);
-    expect(messages[0].role).toBe("user");
-    expect((messages[0].content as any[])[0].text).toBe("Please keep the same session.");
+    expect((messages[0].content as any[])[0].text).toBe("hello");
+  });
+
+  it("treats canonical turn.completed as a lifecycle event without adding a duplicate summary", () => {
+    const events = [
+      amaEventToRelayEvent({
+        id: "evt-message",
+        sequence: 7,
+        createdAt: "2026-04-08T10:00:06.000Z",
+        event: {
+          type: "message.completed",
+          payload: { message: { id: "msg-final-1", role: "assistant", content: [{ type: "text", text: "finished" }] } },
+        },
+      }),
+      amaEventToRelayEvent({
+        id: "evt-turn-completed",
+        sequence: 8,
+        createdAt: "2026-04-08T10:00:07.000Z",
+        event: {
+          type: "turn.completed",
+          payload: { status: "completed", reason: "stop" },
+        },
+      }),
+    ];
+
+    const messages = convertEvents(events, "idle");
+
+    expect(messages).toHaveLength(1);
+    expect((messages[0].content as any[])[0].text).toBe("finished");
   });
 });
 

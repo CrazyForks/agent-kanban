@@ -288,6 +288,16 @@ export function convertEvents(events: RelayEvent[], agentStatus: AgentStatus): T
     }
 
     if (event.type === "message") {
+      const snapshotMessageId = typeof (event as any).message_id === "string" ? (event as any).message_id : null;
+      if ((event as any).snapshot === true) {
+        if (currentId && currentId !== (snapshotMessageId ?? re.id)) {
+          flushAssistant({ type: "complete", reason: "unknown" });
+        }
+        currentId = snapshotMessageId ?? re.id;
+        currentTimestamp = re.timestamp;
+        currentParts = [];
+        turnRunning = true;
+      }
       for (const block of event.blocks) {
         if (routeSubtaskBlock(block as any)) continue;
         ensureCurrentTurn(re);
@@ -419,9 +429,9 @@ export function AmaRuntimeProvider({ events: rawEvents, taskDone, children }: Am
 }
 
 export function amaEventToRelayEvent(raw: Record<string, unknown>): RelayEvent {
-  const payload = objectValue(raw.payload);
-  const embedded = objectValue(payload?.event);
-  const event = embedded ? (embedded as AgentEvent) : fallbackAmaAgentEvent(raw, payload);
+  const canonical = canonicalAmaEvent(raw);
+  if (!canonical) throw new Error("Invalid AMA EventRecord");
+  const event = canonicalAmaAgentEvent(canonical);
   return {
     id: stringValue(raw.id) ?? stringValue(raw.eventId) ?? `runtime-${stringValue(raw.sequence) ?? crypto.randomUUID()}`,
     event,
@@ -429,103 +439,97 @@ export function amaEventToRelayEvent(raw: Record<string, unknown>): RelayEvent {
   };
 }
 
-function fallbackAmaAgentEvent(raw: Record<string, unknown>, payload: Record<string, unknown> | null): AgentEvent {
-  const type = stringValue(raw.type);
-
-  if (type === "turn_start") {
-    return { type: "turn.start" };
-  }
-
-  if (type === "turn_end") {
-    return { type: "turn.end" };
-  }
-
-  if (type === "message_end") {
-    const messageValue = payload?.message;
-    const message = objectValue(messageValue);
-    const role = stringValue(raw.role) ?? stringValue(message?.role) ?? stringValue(payload?.role);
-    const blocks = messageContentBlocks(message, payload, messageValue);
-    if (role === "user") {
-      return { type: "message.user", text: textFromMessageBlocks(blocks) };
-    }
-    return { type: "message", blocks };
-  }
-
-  if (type === "tool_execution_start") {
-    const toolCallId = stringValue(payload?.toolCallId) ?? stringValue(payload?.id) ?? stringValue(raw.id) ?? crypto.randomUUID();
-    return {
-      type: "block.start",
-      block: {
-        type: "tool_use",
-        id: toolCallId,
-        name: normalizeAmaToolName(stringValue(payload?.toolName)),
-        input: objectValue(payload?.args) ?? {},
-      },
-    };
-  }
-
-  if (type === "tool_execution_end") {
-    const toolCallId = stringValue(payload?.toolCallId) ?? stringValue(payload?.id) ?? "";
-    return {
-      type: "block.done",
-      block: {
-        type: "tool_result",
-        tool_use_id: toolCallId,
-        output: amaToolResultText(payload),
-        error: booleanValue(payload?.isError),
-      },
-    };
-  }
-
-  if (type === "runtime.output") {
-    const content = stringValue(payload?.content);
-    return content ? { type: "message", blocks: [{ type: "text", text: content }] } : { type: "message", blocks: [] };
-  }
-
-  if (type === "runtime.metadata" || type === "usage.recorded") {
-    return { type: "message", blocks: [] };
-  }
-
-  const text =
-    stringValue(payload?.text) ??
-    stringValue(payload?.message) ??
-    stringValue(raw.summary) ??
-    `${stringValue(raw.type) ?? "ama.event"}${stringValue(raw.status) ? ` ${stringValue(raw.status)}` : ""}`;
-  return { type: "message", blocks: [{ type: "text", text }] };
+function canonicalAmaEvent(raw: Record<string, unknown>): { type: string; payload: Record<string, unknown> } | null {
+  const stored = objectValue(raw.event);
+  const storedType = stringValue(stored?.type);
+  const storedPayload = objectValue(stored?.payload);
+  return storedType && storedPayload ? { type: storedType, payload: storedPayload } : null;
 }
 
-function messageContentBlocks(
-  message: Record<string, unknown> | null,
-  payload?: Record<string, unknown> | null,
-  messageValue?: unknown,
-): ContentBlock[] {
-  if (typeof message?.content === "string") {
-    return [{ type: "text", text: message.content }];
+function canonicalAmaAgentEvent(input: { type: string; payload: Record<string, unknown> }): AgentEvent {
+  const message = objectValue(input.payload.message);
+  switch (input.type) {
+    case "runtime.started":
+    case "runtime.completed":
+    case "usage.recorded":
+    case "permission.requested":
+    case "permission.resolved":
+      return { type: "message", blocks: [] };
+    case "turn.started":
+      if (message?.role === "user") return { type: "message.user", text: textFromCanonicalMessage(message) };
+      return { type: "turn.start" };
+    case "turn.completed":
+      return { type: "turn.end" };
+    case "message.started":
+    case "message.updated":
+    case "message.completed":
+      return canonicalMessageEvent(message, input.type);
+    case "permission.denied":
+      return { type: "turn.error", detail: stringValue(input.payload.reason) ?? "Permission denied" };
+    case "runtime.error":
+      return {
+        type: "turn.error",
+        code: stringValue(input.payload.code) ?? undefined,
+        detail: stringValue(input.payload.message) ?? "Runtime error",
+      };
+    default:
+      return { type: "message", blocks: [] };
   }
-  if (typeof payload?.content === "string") {
-    return [{ type: "text", text: payload.content }];
-  }
-  if (typeof payload?.text === "string") {
-    return [{ type: "text", text: payload.text }];
-  }
-  if (typeof messageValue === "string") {
-    return [{ type: "text", text: messageValue }];
-  }
-  const content = Array.isArray(message?.content) ? message.content : [];
-  const blocks = content
-    .map((part) => {
-      const item = objectValue(part);
-      if (!item) return null;
-      const text = stringValue(item.text) ?? stringValue(item.content);
-      if (!text) return null;
-      return { type: "text" as const, text };
+}
+
+function canonicalMessageEvent(message: Record<string, unknown> | null, eventType: string): AgentEvent {
+  if (!message) return { type: "message", blocks: [] };
+  const role = stringValue(message.role);
+  if (role === "user") return { type: "message.user", text: textFromCanonicalMessage(message) };
+
+  const blocks = canonicalContentBlocks(Array.isArray(message.content) ? message.content : []);
+  return {
+    type: "message",
+    blocks,
+    ...(role === "assistant" || role === "system" ? { snapshot: true, message_id: stringValue(message.id) ?? eventType } : {}),
+  } as AgentEvent;
+}
+
+function canonicalContentBlocks(content: unknown[]): ContentBlock[] {
+  return content
+    .map((part): ContentBlock | null => {
+      const block = objectValue(part);
+      switch (block?.type) {
+        case "text":
+          return { type: "text", text: stringValue(block.text) ?? "" };
+        case "reasoning":
+          return { type: "thinking", text: stringValue(block.text) ?? "" };
+        case "tool_call": {
+          const toolCall = objectValue(block.toolCall);
+          return {
+            type: "tool_use",
+            id: stringValue(toolCall?.id) ?? crypto.randomUUID(),
+            name: normalizeAmaToolName(stringValue(toolCall?.name)),
+            input: objectValue(toolCall?.input) ?? {},
+          };
+        }
+        case "tool_result": {
+          const error = objectValue(block.error);
+          return {
+            type: "tool_result",
+            tool_use_id: stringValue(block.toolCallId) ?? "",
+            output: canonicalToolResultText(objectValue(block.result)),
+            error: Boolean(error),
+          };
+        }
+        case "image":
+          return { type: "text", text: stringValue(block.url) ? `[image] ${stringValue(block.url)}` : "[image]" };
+        case "file":
+          return { type: "text", text: `[file] ${stringValue(block.path) ?? stringValue(block.name) ?? "attachment"}` };
+        default:
+          return null;
+      }
     })
-    .filter((block): block is { type: "text"; text: string } => block !== null);
-  return blocks;
+    .filter((block): block is ContentBlock => block !== null);
 }
 
-function textFromMessageBlocks(blocks: ContentBlock[]): string {
-  return blocks
+function textFromCanonicalMessage(message: Record<string, unknown>): string {
+  return canonicalContentBlocks(Array.isArray(message.content) ? message.content : [])
     .filter((block): block is { type: "text"; text: string } => block.type === "text")
     .map((block) => block.text)
     .join("\n");
@@ -536,17 +540,29 @@ function normalizeAmaToolName(toolName: string | null): string {
   return toolName ?? "tool";
 }
 
-function amaToolResultText(payload: Record<string, unknown> | null): string {
-  const result = objectValue(payload?.result);
+function canonicalToolResultText(result: Record<string, unknown> | null): string {
   if (!result) return "";
   const stdout = stringValue(result.stdout);
   const stderr = stringValue(result.stderr);
   const output = stringValue(result.output);
+  const content = Array.isArray(result.content)
+    ? result.content
+        .map((part) => {
+          const block = objectValue(part);
+          if (block?.type === "text") return stringValue(block.text);
+          if (block?.type === "json") return JSON.stringify(block.value);
+          if (block?.type === "file") return stringValue(block.path) ?? stringValue(block.name);
+          if (block?.type === "image") return stringValue(block.url) ?? "[image]";
+          return null;
+        })
+        .filter((part): part is string => Boolean(part))
+    : [];
   const exitCode = result.exit_code ?? result.exitCode;
   const parts = [];
   if (stdout) parts.push(stdout);
   if (stderr) parts.push(stderr);
   if (output) parts.push(output);
+  parts.push(...content);
   if (parts.length > 0) return parts.join("\n");
   if (exitCode !== undefined && exitCode !== null) return `exit_code: ${String(exitCode)}`;
   return JSON.stringify(result);
@@ -560,8 +576,4 @@ function stringValue(value: unknown): string | null {
   if (typeof value === "string" && value.length > 0) return value;
   if (typeof value === "number") return String(value);
   return null;
-}
-
-function booleanValue(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
 }

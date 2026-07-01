@@ -8,6 +8,7 @@ import { AmaSessionChat, ChatPanel } from "./ChatPanel";
 
 const sessionWsMock = vi.fn();
 const directSessionWsMock = vi.fn();
+let lastAmaRuntimeEvents: Record<string, unknown>[] = [];
 
 vi.mock("../lib/api", () => ({
   api: {
@@ -21,8 +22,10 @@ vi.mock("../lib/api", () => ({
 }));
 
 vi.mock("./RelayRuntimeProvider", () => ({
-  AmaRuntimeProvider: ({ children }: { children: React.ReactNode }) =>
-    React.createElement("div", { "data-testid": "ama-runtime-provider" }, children),
+  AmaRuntimeProvider: ({ events, children }: { events: Record<string, unknown>[]; children: React.ReactNode }) => {
+    lastAmaRuntimeEvents = events;
+    return React.createElement("div", { "data-testid": "ama-runtime-provider", "data-event-count": events.length }, children);
+  },
   RelayRuntimeProvider: ({ sessionId, children }: { sessionId: string; children: React.ReactNode }) =>
     React.createElement("div", { "data-testid": "relay-runtime-provider", "data-session-id": sessionId }, children),
 }));
@@ -127,6 +130,7 @@ describe("ChatPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     lastWebSocket = null;
+    lastAmaRuntimeEvents = [];
 
     // Default: socket url for AMA branch.
     sessionWsMock.mockResolvedValue({ url: "wss://test/socket" });
@@ -311,29 +315,29 @@ describe("ChatPanel", () => {
 
     // ── Live event appends ────────────────────────────────────────────────────
 
-    it("appends a live event delivered after the initial backfill", async () => {
+    it("appends a live event record delivered after the initial backfill", async () => {
       renderPanel({ amaSessionId: "session_x" });
 
       await deliverBackfill([makeEvent(1)]);
 
-      // Deliver a live event frame.
       await act(async () => {
-        lastWebSocket!.emit({ type: "event", event: makeEvent(10) });
+        lastWebSocket!.emit({ type: "event", record: makeEvent(10) });
       });
 
-      // Provider remains rendered (events were appended without error).
-      expect(screen.getByTestId("ama-runtime-provider")).toBeInTheDocument();
+      expect(screen.getByTestId("ama-runtime-provider")).toHaveAttribute("data-event-count", "2");
+      expect(lastAmaRuntimeEvents.map((event) => event.sequence)).toEqual([1, 10]);
     });
 
-    it("transitions to ready on a live event frame even without a prior backfill", async () => {
+    it("transitions to ready on a live event record even without a prior backfill", async () => {
       renderPanel({ amaSessionId: "session_x" });
 
       const ws = await waitForWebSocket();
       await act(async () => {
-        ws.emit({ type: "event", event: makeEvent(1) });
+        ws.emit({ type: "event", record: makeEvent(1) });
       });
 
       expect(screen.getByTestId("ama-runtime-provider")).toBeInTheDocument();
+      expect(lastAmaRuntimeEvents.map((event) => event.sequence)).toEqual([1]);
     });
 
     // ── WebSocket construction ────────────────────────────────────────────────

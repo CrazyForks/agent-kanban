@@ -202,6 +202,7 @@ create_agent() {
     --model "$model" \
     --role "fullstack-developer" \
     --bio "$bio" \
+    --soul "I am a daemon smoke-test worker. Complete only the assigned smoke task, keep changes minimal, and report deterministic evidence in the task log." \
     -o json | json_query "data.id")
   echo "$id"
 }
@@ -214,7 +215,7 @@ agent_field() {
 ensure_smoke_subagent() {
   local runtime="$1"
   local username="smoke-subagent-$runtime-$TIMESTAMP"
-  local name="Smoke Subagent $runtime $TIMESTAMP"
+  local name="$username"
   local model
   model="$(runtime_default_model "$runtime")"
   SUBAGENT_ID=$(ak create subagent \

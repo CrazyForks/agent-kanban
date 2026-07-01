@@ -111,8 +111,9 @@ export function AmaSessionChat({
               if (frame.hasMore && typeof frame.nextCursor === "number" && ws?.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: "backfill", order: "asc", limit: 200, cursor: frame.nextCursor }));
               }
-            } else if (frame?.type === "event" && frame.event) {
-              setEvents((prev) => mergeUnique(prev, [frame.event as RuntimeEvent]));
+            } else if (frame?.type === "event") {
+              if (!frame.record) return;
+              setEvents((prev) => mergeUnique(prev, [frame.record as RuntimeEvent]));
               setPhase("ready");
             }
           } catch {
