@@ -428,6 +428,74 @@ describe("amaEventToRelayEvent — canonical AMA EventRecord mapping", () => {
     });
   });
 
+  it("maps latest AMA lowercase bash tool calls to the Bash renderer", () => {
+    const events = [
+      amaEventToRelayEvent({
+        id: "evt-tool-call-bash",
+        sequence: 30,
+        createdAt: "2026-04-08T10:00:01.000Z",
+        event: {
+          type: "message.completed",
+          payload: {
+            message: {
+              id: "msg-assistant-bash",
+              role: "assistant",
+              content: [{ type: "tool_call", toolCall: { id: "call-bash", name: "bash", input: { command: "pnpm test" } } }],
+            },
+          },
+        },
+      }),
+    ];
+
+    const messages = convertEvents(events, "idle");
+
+    const toolCall = (messages[0].content as any[]).find((part) => part.type === "tool-call");
+    expect(toolCall).toMatchObject({
+      toolCallId: "call-bash",
+      toolName: "Bash",
+      args: { command: "pnpm test" },
+    });
+  });
+
+  it("rejects canonical assistant messages without a message id", () => {
+    expect(() =>
+      amaEventToRelayEvent({
+        id: "event-without-message-id",
+        sequence: 31,
+        createdAt: "2026-04-08T10:00:01.000Z",
+        event: {
+          type: "message.completed",
+          payload: {
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "no message id" }],
+            },
+          },
+        },
+      }),
+    ).toThrow("Invalid AMA EventRecord: message.id is required");
+  });
+
+  it("rejects canonical tool calls without object input", () => {
+    expect(() =>
+      amaEventToRelayEvent({
+        id: "evt-tool-call-invalid",
+        sequence: 32,
+        createdAt: "2026-04-08T10:00:01.000Z",
+        event: {
+          type: "message.completed",
+          payload: {
+            message: {
+              id: "msg-assistant-invalid-tool",
+              role: "assistant",
+              content: [{ type: "tool_call", toolCall: { id: "call-invalid", name: "bash", input: "not-object" } }],
+            },
+          },
+        },
+      }),
+    ).toThrow("Invalid AMA EventRecord: tool_call requires toolCall.id, toolCall.name, and object toolCall.input");
+  });
+
   it("treats canonical message.updated payloads as snapshots instead of appending duplicate text", () => {
     const events = [
       amaEventToRelayEvent({

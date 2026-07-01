@@ -431,9 +431,10 @@ export function AmaRuntimeProvider({ events: rawEvents, taskDone, children }: Am
 export function amaEventToRelayEvent(raw: Record<string, unknown>): RelayEvent {
   const canonical = canonicalAmaEvent(raw);
   if (!canonical) throw new Error("Invalid AMA EventRecord");
+  const id = stringValue(raw.id) ?? stringValue(raw.eventId) ?? `runtime-${stringValue(raw.sequence) ?? crypto.randomUUID()}`;
   const event = canonicalAmaAgentEvent(canonical);
   return {
-    id: stringValue(raw.id) ?? stringValue(raw.eventId) ?? `runtime-${stringValue(raw.sequence) ?? crypto.randomUUID()}`,
+    id,
     event,
     timestamp: stringValue(raw.createdAt) ?? stringValue(raw.timestamp) ?? new Date().toISOString(),
   };
@@ -456,14 +457,17 @@ function canonicalAmaAgentEvent(input: { type: string; payload: Record<string, u
     case "permission.resolved":
       return { type: "message", blocks: [] };
     case "turn.started":
-      if (message?.role === "user") return { type: "message.user", text: textFromCanonicalMessage(message) };
+      if (message?.role === "user") {
+        requireAmaMessageId(message);
+        return { type: "message.user", text: textFromCanonicalMessage(message) };
+      }
       return { type: "turn.start" };
     case "turn.completed":
       return { type: "turn.end" };
     case "message.started":
     case "message.updated":
     case "message.completed":
-      return canonicalMessageEvent(message, input.type);
+      return canonicalMessageEvent(message);
     case "permission.denied":
       return { type: "turn.error", detail: stringValue(input.payload.reason) ?? "Permission denied" };
     case "runtime.error":
@@ -477,16 +481,20 @@ function canonicalAmaAgentEvent(input: { type: string; payload: Record<string, u
   }
 }
 
-function canonicalMessageEvent(message: Record<string, unknown> | null, eventType: string): AgentEvent {
-  if (!message) return { type: "message", blocks: [] };
+function canonicalMessageEvent(message: Record<string, unknown> | null): AgentEvent {
+  if (!message) throw new Error("Invalid AMA EventRecord: message payload is required");
   const role = stringValue(message.role);
+  const messageId = requireAmaMessageId(message);
+  if (role !== "user" && role !== "assistant" && role !== "system" && role !== "tool") {
+    throw new Error("Invalid AMA EventRecord: message.role is required");
+  }
   if (role === "user") return { type: "message.user", text: textFromCanonicalMessage(message) };
 
   const blocks = canonicalContentBlocks(Array.isArray(message.content) ? message.content : []);
   return {
     type: "message",
     blocks,
-    ...(role === "assistant" || role === "system" ? { snapshot: true, message_id: stringValue(message.id) ?? eventType } : {}),
+    ...(role === "assistant" || role === "system" ? { snapshot: true, message_id: messageId } : {}),
   } as AgentEvent;
 }
 
@@ -501,19 +509,30 @@ function canonicalContentBlocks(content: unknown[]): ContentBlock[] {
           return { type: "thinking", text: stringValue(block.text) ?? "" };
         case "tool_call": {
           const toolCall = objectValue(block.toolCall);
+          const toolCallId = stringValue(toolCall?.id);
+          const toolName = stringValue(toolCall?.name);
+          const input = objectValue(toolCall?.input);
+          if (!toolCallId || !toolName || !input) {
+            throw new Error("Invalid AMA EventRecord: tool_call requires toolCall.id, toolCall.name, and object toolCall.input");
+          }
           return {
             type: "tool_use",
-            id: stringValue(toolCall?.id) ?? crypto.randomUUID(),
-            name: normalizeAmaToolName(stringValue(toolCall?.name)),
-            input: objectValue(toolCall?.input) ?? {},
+            id: toolCallId,
+            name: normalizeAmaToolName(toolName),
+            input,
           };
         }
         case "tool_result": {
           const error = objectValue(block.error);
+          const toolCallId = stringValue(block.toolCallId);
+          const result = objectValue(block.result);
+          if (!toolCallId || !result) {
+            throw new Error("Invalid AMA EventRecord: tool_result requires toolCallId and object result");
+          }
           return {
             type: "tool_result",
-            tool_use_id: stringValue(block.toolCallId) ?? "",
-            output: canonicalToolResultText(objectValue(block.result)),
+            tool_use_id: toolCallId,
+            output: canonicalToolResultText(result),
             error: Boolean(error),
           };
         }
@@ -535,9 +554,16 @@ function textFromCanonicalMessage(message: Record<string, unknown>): string {
     .join("\n");
 }
 
-function normalizeAmaToolName(toolName: string | null): string {
+function requireAmaMessageId(message: Record<string, unknown>): string {
+  const messageId = stringValue(message.id);
+  if (!messageId) throw new Error("Invalid AMA EventRecord: message.id is required");
+  return messageId;
+}
+
+function normalizeAmaToolName(toolName: string): string {
+  if (toolName === "bash") return "Bash";
   if (toolName === "sandbox.exec") return "Bash";
-  return toolName ?? "tool";
+  return toolName;
 }
 
 function canonicalToolResultText(result: Record<string, unknown> | null): string {
