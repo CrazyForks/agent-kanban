@@ -1,3 +1,4 @@
+import { AK_GITHUB_ACTION_ANNOTATION, AK_GITHUB_EVENT_ANNOTATION, AK_GITHUB_SUBJECT_KEY_LABEL } from "@agent-kanban/shared";
 import { ArrowLeft, ExternalLink, FileText, MessageSquare, RefreshCw, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -467,25 +468,52 @@ function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function numberValue(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
 function githubSubjectFromMetadata(metadata: Record<string, unknown> | undefined): GithubSubject | null {
   const metadataObject = objectValue(metadata);
   const sessionMetadata = objectValue(metadataObject?.sessionMetadata);
-  const github = objectValue(metadataObject?.github) ?? objectValue(sessionMetadata?.github);
-  if (!github) return null;
-  const subjectType = github.subject_type === "issue" || github.subject_type === "pull" ? github.subject_type : null;
+  const sessionKey = metadataString(metadataObject, sessionMetadata, "label", AK_GITHUB_SUBJECT_KEY_LABEL);
+  const subject = sessionKey ? githubSubjectFromSessionKey(sessionKey) : null;
+  if (!subject) return null;
   return {
-    event: stringValue(github.event),
-    action: stringValue(github.action),
-    repository: stringValue(github.repository),
-    repositoryUrl: stringValue(github.repository_url),
+    ...subject,
+    event: metadataString(metadataObject, sessionMetadata, "annotation", AK_GITHUB_EVENT_ANNOTATION),
+    action: metadataString(metadataObject, sessionMetadata, "annotation", AK_GITHUB_ACTION_ANNOTATION),
+  };
+}
+
+function metadataString(
+  metadata: Record<string, unknown> | null,
+  sessionMetadata: Record<string, unknown> | null,
+  source: "label" | "annotation",
+  key: string,
+): string | null {
+  const collectionName = source === "label" ? "labels" : "annotations";
+  const metadataCollection = objectValue(metadata?.[collectionName]);
+  const sessionCollection = objectValue(sessionMetadata?.[collectionName]);
+  return (
+    stringValue(metadata?.[key]) ??
+    stringValue(metadataCollection?.[key]) ??
+    stringValue(sessionMetadata?.[key]) ??
+    stringValue(sessionCollection?.[key])
+  );
+}
+
+function githubSubjectFromSessionKey(sessionKey: string): GithubSubject | null {
+  const match = /^github:([^:]+):(issue|pull):(\d+)$/.exec(sessionKey);
+  if (!match) return null;
+  const repository = match[1];
+  const subjectType = match[2] as "issue" | "pull";
+  const subjectNumber = Number.parseInt(match[3], 10);
+  const subjectPath = subjectType === "pull" ? "pull" : "issues";
+  return {
+    event: null,
+    action: null,
+    repository,
+    repositoryUrl: `https://github.com/${repository}`,
     subjectType,
-    subjectNumber: numberValue(github.subject_number),
-    subjectTitle: stringValue(github.subject_title),
-    subjectUrl: stringValue(github.subject_url),
+    subjectNumber,
+    subjectTitle: null,
+    subjectUrl: `https://github.com/${repository}/${subjectPath}/${subjectNumber}`,
   };
 }
 

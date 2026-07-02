@@ -1,3 +1,9 @@
+import {
+  AK_GITHUB_ACTION_ANNOTATION,
+  AK_GITHUB_DELIVERY_ID_ANNOTATION,
+  AK_GITHUB_EVENT_ANNOTATION,
+  AK_GITHUB_SUBJECT_KEY_LABEL,
+} from "@agent-kanban/shared";
 import { getAmaProjectId } from "./amaOwnerIntegrationRepo";
 import { closeAmaSession, dispatchAmaHttpTriggerRun, listAmaSessions, readAmaSession, reopenAmaSession } from "./amaRuntime";
 import { listActiveBoardMaintainersForRepository } from "./boardMaintainerRepo";
@@ -12,7 +18,6 @@ import {
   upsertInstallation,
 } from "./githubInstallations";
 import { createLogger } from "./logger";
-import { AK_GITHUB_SUBJECT_KEY_LABEL } from "./metadataKeys";
 import { releaseTaskRuntimeBinding } from "./taskDispatch";
 import { cancelTask, completeTask, getTask } from "./taskRepo";
 import type { Env } from "./types";
@@ -137,12 +142,20 @@ export async function handleGithubMaintainerEvent(
   const maintainers = await listActiveBoardMaintainersForRepository(db, installationId, fullName);
   if (maintainers.length === 0) return { handled: false, maintainers: [] };
 
-  const dispatched: string[] = [];
+  const processed: string[] = [];
   for (const maintainer of maintainers) {
     if (!maintainer.ama_http_trigger_id) continue;
     const projectId = await getAmaProjectId(db, maintainer.owner_id);
     if (!projectId) {
       throw new Error(`No AMA project for maintainer owner ${maintainer.owner_id}`);
+    }
+    if (sessionKey && lifecycle.closeWithoutDispatch) {
+      const session = await findAmaMaintainerSessionByKey(env, maintainer.owner_id, projectId, maintainer.id, sessionKey);
+      if (session && session.state !== "closed" && session.state !== "error") {
+        await closeAmaSession(env, maintainer.owner_id, projectId, session.id, "user_requested");
+      }
+      processed.push(maintainer.id);
+      continue;
     }
     if (sessionKey && lifecycle.reopenBeforeDispatch) {
       const session = await findAmaMaintainerSessionByKey(env, maintainer.owner_id, projectId, maintainer.id, sessionKey);
@@ -163,9 +176,9 @@ export async function handleGithubMaintainerEvent(
       if (input.waitUntil) input.waitUntil(close);
       else void close;
     }
-    dispatched.push(maintainer.id);
+    processed.push(maintainer.id);
   }
-  return { handled: dispatched.length > 0, maintainers: dispatched };
+  return { handled: processed.length > 0, maintainers: processed };
 }
 
 function safeMessage(error: unknown): string {
@@ -180,6 +193,7 @@ function githubMaintainerSessionLifecycle(input: { event: string; payload: Maint
   const subjectCloseEvent = (input.event === "issues" || input.event === "pull_request") && action === "closed";
   const subjectReopenEvent = (input.event === "issues" || input.event === "pull_request") && action === "reopened";
   return {
+    closeWithoutDispatch: subjectCloseEvent,
     reopenBeforeDispatch: subjectReopenEvent || (subjectClosed && !subjectCloseEvent),
     closeAfterDispatch: subjectCloseEvent || (subjectClosed && !subjectReopenEvent),
   };
@@ -260,32 +274,13 @@ function githubMaintainerSessionKey(input: { event: string; payload: MaintainerW
   return fullName && number !== null ? `github:${fullName}:${type}:${number}` : null;
 }
 
-function githubSubjectUrl(repository: MaintainerWebhookPayload["repository"], subject: Record<string, unknown> | undefined, type: "issue" | "pull") {
-  const number = subjectNumber(subject);
-  if (repository?.full_name && number !== null) {
-    return `https://github.com/${repository.full_name}/${type === "pull" ? "pull" : "issues"}/${number}`;
-  }
-  return typeof subject?.html_url === "string" ? subject.html_url : null;
-}
-
-function githubMaintainerMetadata(
-  input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload },
-  key: string | null,
-): Record<string, unknown> {
-  const { subject, type } = githubMaintainerSubject(input);
-  const repository = input.payload.repository;
-  const number = subjectNumber(subject);
+function githubMaintainerMetadata(input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload }, key: string | null) {
   return {
     ...(key ? { labels: { [AK_GITHUB_SUBJECT_KEY_LABEL]: key } } : {}),
-    github: {
-      event: input.event,
-      action: input.payload.action ?? "",
-      delivery_id: input.deliveryId ?? null,
-      repository: repository?.full_name ?? null,
-      repository_url: repository?.html_url ?? null,
-      subject_type: number === null ? null : type,
-      subject_number: number,
-      subject_url: githubSubjectUrl(repository, subject, type),
+    annotations: {
+      [AK_GITHUB_EVENT_ANNOTATION]: input.event,
+      [AK_GITHUB_ACTION_ANNOTATION]: input.payload.action ?? "",
+      ...(input.deliveryId ? { [AK_GITHUB_DELIVERY_ID_ANNOTATION]: input.deliveryId } : {}),
     },
   };
 }

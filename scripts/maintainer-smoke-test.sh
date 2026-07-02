@@ -21,8 +21,10 @@ set -euo pipefail
 #   - creates a real GitHub issue in the board repository
 #   - sends a signed GitHub issues webhook with the real issue payload
 #   - waits for the event-triggered maintainer run/session to complete
-#   - closes the issue, then comments on the closed issue to verify the
-#     maintainer session can be reopened by a follow-up event and closed again
+#   - closes the issue and verifies the existing subject session is closed
+#     without dispatching another maintainer run
+#   - comments on the closed issue to verify the maintainer session can be
+#     reopened by a follow-up event and closed again
 #   - captures maintainer run history, session events, memory files, and board
 #     tasks created during the observation window
 #   - optionally waits for a scheduled heartbeat run when --wait-heartbeat is set
@@ -38,6 +40,8 @@ set -euo pipefail
 #     Wait after maintainer creation before creating the GitHub issue.
 #   AK_MAINTAINER_SMOKE_SESSION_START_TIMEOUT_SECONDS=600
 #     Fail a live session that remains pending/waiting-for-runner too long.
+#   AK_MAINTAINER_SMOKE_CLOSED_NO_RUN_SECONDS=30
+#     Observation window used to verify closed issue events do not dispatch a run.
 #
 # Missing board/repo arguments are discovered from the current AK account.
 # Defaults target a dev board named Demo, a repository named slink, and the
@@ -108,6 +112,7 @@ ARTIFACT_DIR="${AK_MAINTAINER_SMOKE_ARTIFACT_DIR:-.maintainer-smoke/$TIMESTAMP}"
 GITHUB_SMOKE_USER="${AK_MAINTAINER_SMOKE_GH_USER:-}"
 TRIGGER_READY_SECONDS="${AK_MAINTAINER_SMOKE_TRIGGER_READY_SECONDS:-30}"
 SESSION_START_TIMEOUT_SECONDS="${AK_MAINTAINER_SMOKE_SESSION_START_TIMEOUT_SECONDS:-600}"
+CLOSED_NO_RUN_SECONDS="${AK_MAINTAINER_SMOKE_CLOSED_NO_RUN_SECONDS:-30}"
 
 AGENT_ID=""
 CALLER_AGENT_ID=""
@@ -484,6 +489,23 @@ wait_for_maintainer_run() {
   return 1
 }
 
+wait_for_no_maintainer_run() {
+  local maintainer_id="$1"
+  local baseline="$2"
+  local timeout="${3:-30}"
+  local elapsed=0
+  local count
+  while [ "$elapsed" -lt "$timeout" ]; do
+    count="$(maintainer_runs_count "$maintainer_id")"
+    if [ "${count:-0}" -gt "${baseline:-0}" ]; then
+      return 1
+    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
+  done
+  return 0
+}
+
 wait_for_latest_run_session() {
   local maintainer_id="$1"
   local timeout="${2:-300}"
@@ -531,6 +553,30 @@ wait_for_session_terminal() {
     fi
     sleep 10
     elapsed=$((elapsed + 10))
+  done
+  [ -n "$state" ] && echo "$state"
+  return 1
+}
+
+wait_for_session_closed() {
+  local session_id="$1"
+  local timeout="${2:-120}"
+  local elapsed=0
+  local state=""
+  while [ "$elapsed" -lt "$timeout" ]; do
+    state="$(session_state "$session_id" 2>/dev/null || true)"
+    case "$state" in
+      closed)
+        echo "$state"
+        return 0
+        ;;
+      failed | error | cancelled | canceled)
+        echo "$state"
+        return 1
+        ;;
+    esac
+    sleep 5
+    elapsed=$((elapsed + 5))
   done
   [ -n "$state" ] && echo "$state"
   return 1
@@ -685,6 +731,10 @@ if ! [[ "$TRIGGER_READY_SECONDS" =~ ^[0-9]+$ ]]; then
 fi
 if ! [[ "$SESSION_START_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || [ "$SESSION_START_TIMEOUT_SECONDS" -le 0 ]; then
   echo "FATAL: AK_MAINTAINER_SMOKE_SESSION_START_TIMEOUT_SECONDS must be a positive integer"
+  exit 1
+fi
+if ! [[ "$CLOSED_NO_RUN_SECONDS" =~ ^[0-9]+$ ]] || [ "$CLOSED_NO_RUN_SECONDS" -le 0 ]; then
+  echo "FATAL: AK_MAINTAINER_SMOKE_CLOSED_NO_RUN_SECONDS must be a positive integer"
   exit 1
 fi
 
@@ -987,7 +1037,7 @@ if [ "$LIVE" = 1 ]; then
   fi
 
   CLOSED_BASELINE="$(maintainer_runs_count "$HTTP_MAINTAINER_ID")"
-  if gh_smoke issue close "$HTTP_ISSUE_NUMBER" -R "$REPO_FULL_NAME" --reason "not planned" --comment "Closed by AK maintainer smoke test." >/dev/null; then
+  if gh_smoke issue close "$HTTP_ISSUE_NUMBER" -R "$REPO_FULL_NAME" --reason "not planned" >/dev/null; then
     refresh_github_issue_json
     pass "GitHub issue closed for maintainer lifecycle smoke"
   else
@@ -1002,31 +1052,27 @@ if [ "$LIVE" = 1 ]; then
   else
     echo "  OBSERVE: waiting for real GitHub issues closed webhook delivery"
   fi
-  if wait_for_maintainer_run "$HTTP_MAINTAINER_ID" "$CLOSED_BASELINE" "$OBSERVE_SECONDS"; then
-    pass "GitHub issues closed webhook dispatched a maintainer run"
+  if wait_for_no_maintainer_run "$HTTP_MAINTAINER_ID" "$CLOSED_BASELINE" "$CLOSED_NO_RUN_SECONDS"; then
+    pass "GitHub issues closed webhook did not dispatch a maintainer run"
   else
-    fail "GitHub issues closed webhook did not dispatch a maintainer run"
+    fail "GitHub issues closed webhook dispatched an unexpected maintainer run"
   fi
   maintainer_runs_json "$HTTP_MAINTAINER_ID" 30 | write_artifact "http-closed-runs.json"
-  CLOSED_SESSION_ID="$(wait_for_latest_run_session "$HTTP_MAINTAINER_ID" 300 || true)"
-  if [ -n "$CLOSED_SESSION_ID" ]; then
-    CLOSED_SESSION_STATE="$(wait_for_session_terminal "$CLOSED_SESSION_ID" "$OBSERVE_SECONDS" || true)"
+  if [ -n "$HTTP_SESSION_ID" ]; then
+    CLOSED_SESSION_STATE="$(wait_for_session_closed "$HTTP_SESSION_ID" "$OBSERVE_SECONDS" || true)"
     case "$CLOSED_SESSION_STATE" in
-      completed | idle | closed | stopped)
-        pass "closed issue maintainer session reached terminal state: $CLOSED_SESSION_STATE"
+      closed)
+        pass "closed issue event closed the existing maintainer session"
         ;;
       failed | error | cancelled | canceled)
         fail "closed issue maintainer session ended with failure state: $CLOSED_SESSION_STATE"
         ;;
-      pending)
-        fail "closed issue maintainer session stayed pending longer than ${SESSION_START_TIMEOUT_SECONDS}s"
-        ;;
       *)
-        fail "closed issue maintainer session did not reach terminal state within ${OBSERVE_SECONDS}s; latest state: ${CLOSED_SESSION_STATE:-unknown}"
+        fail "closed issue event did not close the existing maintainer session within ${OBSERVE_SECONDS}s; latest state: ${CLOSED_SESSION_STATE:-unknown}"
         ;;
     esac
   else
-    fail "closed issue maintainer run did not record AMA session id"
+    fail "closed issue session close could not be verified because the original session id is missing"
   fi
 
   COMMENT_BASELINE="$(maintainer_runs_count "$HTTP_MAINTAINER_ID")"

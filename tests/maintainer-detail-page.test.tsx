@@ -1,4 +1,5 @@
 import "@testing-library/jest-dom/vitest";
+import { AK_GITHUB_ACTION_ANNOTATION, AK_GITHUB_EVENT_ANNOTATION, AK_GITHUB_SUBJECT_KEY_LABEL } from "@agent-kanban/shared";
 import { fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -81,15 +82,12 @@ describe("MaintainerDetailPage", () => {
           error_message: null,
           metadata: {
             sessionMetadata: {
-              github: {
-                event: "issues",
-                action: "opened",
-                repository: "saltbo/slink",
-                repository_url: "https://github.com/saltbo/slink",
-                subject_type: "issue",
-                subject_number: 42,
-                subject_title: "Webhook issue",
-                subject_url: "https://github.com/saltbo/slink/issues/42",
+              labels: {
+                [AK_GITHUB_SUBJECT_KEY_LABEL]: "github:saltbo/slink:issue:42",
+              },
+              annotations: {
+                [AK_GITHUB_EVENT_ANNOTATION]: "issues",
+                [AK_GITHUB_ACTION_ANNOTATION]: "opened",
               },
             },
           },
@@ -116,16 +114,13 @@ describe("MaintainerDetailPage", () => {
           agentId: "ama_agent_1",
           title: "Daily maintainer",
           metadata: {
-            labels: { maintainerId: "maintainer-1" },
-            github: {
-              event: "issues",
-              action: "opened",
-              repository: "saltbo/slink",
-              repository_url: "https://github.com/saltbo/slink",
-              subject_type: "issue",
-              subject_number: 42,
-              subject_title: "Webhook issue",
-              subject_url: "https://github.com/saltbo/slink/issues/42",
+            labels: {
+              maintainerId: "maintainer-1",
+              [AK_GITHUB_SUBJECT_KEY_LABEL]: "github:saltbo/slink:issue:42",
+            },
+            annotations: {
+              [AK_GITHUB_EVENT_ANNOTATION]: "issues",
+              [AK_GITHUB_ACTION_ANNOTATION]: "opened",
             },
           },
           createdAt: "2026-06-08T12:00:00.000Z",

@@ -8,9 +8,14 @@
  */
 
 import { randomUUID } from "node:crypto";
+import {
+  AK_GITHUB_ACTION_ANNOTATION,
+  AK_GITHUB_DELIVERY_ID_ANNOTATION,
+  AK_GITHUB_EVENT_ANNOTATION,
+  AK_GITHUB_SUBJECT_KEY_LABEL,
+} from "@agent-kanban/shared";
 import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { AK_GITHUB_SUBJECT_KEY_LABEL } from "../apps/web/server/metadataKeys";
 import { createTestAgent, seedUser, setupMiniflare } from "./helpers/db";
 
 const WEBHOOK_SECRET = "test-webhook-secret-xyz";
@@ -295,7 +300,7 @@ describe("POST /api/webhooks/github-app route", () => {
     expect(res.status).toBe(200);
   });
 
-  it("closes the maintainer session after an issue is closed", async () => {
+  it("closes the maintainer session directly when an issue is closed", async () => {
     const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
     const ownerId = `webhook-maintainer-close-${randomUUID()}`;
     const projectId = `project_close_${randomUUID()}`;
@@ -307,20 +312,23 @@ describe("POST /api/webhooks/github-app route", () => {
       projectId,
       httpTriggerId,
     });
+    const key = `github:${repoFullName.toLowerCase()}:issue:42`;
 
+    const calls: Array<{ method: string; url: string; body?: any }> = [];
     const sessionPatches: any[] = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = reqUrl(input);
-        if (url === `https://ama.test/api/v1/triggers/${httpTriggerId}/runs` && reqMethod(input, init) === "POST") {
-          return jsonResponse(amaTriggerRun("run_close", { projectId, triggerId: httpTriggerId, sessionId }), 201);
+        const method = reqMethod(input, init);
+        if (url.startsWith("https://ama.test/api/v1/sessions?") && method === "GET") {
+          calls.push({ method, url });
+          return jsonResponse({ data: [amaSession(sessionId, { projectId, key, maintainerId: maintainer.id, phase: "idle" })], pagination: {} });
         }
-        if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "GET") {
-          return jsonResponse(amaSession(sessionId, { projectId, phase: "idle" }));
-        }
-        if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH") {
-          sessionPatches.push(JSON.parse(await reqBody(input, init)));
+        if (url === `https://ama.test/api/v1/sessions/${sessionId}` && method === "PATCH") {
+          const body = JSON.parse(await reqBody(input, init));
+          calls.push({ method, url, body });
+          sessionPatches.push(body);
           return jsonResponse(amaSession(sessionId, { projectId, phase: "closed" }));
         }
         throw new Error(`Unexpected fetch: ${url}`);
@@ -340,9 +348,15 @@ describe("POST /api/webhooks/github-app route", () => {
         sender: { login: "octocat" },
       },
     });
-    await Promise.all(waitUntil);
 
     expect(result).toEqual({ handled: true, maintainers: [maintainer.id] });
+    expect(waitUntil).toEqual([]);
+    const lookupUrl = new URL(calls[0].url);
+    expect(lookupUrl.searchParams.get("labelSelector")).toBe(`maintainerId=${maintainer.id},${AK_GITHUB_SUBJECT_KEY_LABEL}=${key}`);
+    expect(calls.map((call) => [call.method, call.url.includes("/triggers/") ? "trigger" : (call.body?.state ?? "read")])).toEqual([
+      ["GET", "read"],
+      ["PATCH", "closed"],
+    ]);
     expect(sessionPatches).toEqual([{ state: "closed", metadata: { annotations: { closeReason: "user_requested" } } }]);
   });
 
@@ -644,15 +658,10 @@ describe("POST /api/webhooks/github-app route", () => {
         labels: {
           [AK_GITHUB_SUBJECT_KEY_LABEL]: expectedKey,
         },
-        github: {
-          event,
-          action,
-          delivery_id: deliveryId,
-          repository: repoFullName,
-          repository_url: payload.repository.html_url,
-          subject_type: expectedKeyKind,
-          subject_number: subject.number,
-          subject_url: `https://github.com/${repoFullName}/${subjectPath}/${subject.number}`,
+        annotations: {
+          [AK_GITHUB_EVENT_ANNOTATION]: event,
+          [AK_GITHUB_ACTION_ANNOTATION]: action,
+          [AK_GITHUB_DELIVERY_ID_ANNOTATION]: deliveryId,
         },
       },
       repository: payload.repository,
@@ -678,6 +687,7 @@ describe("POST /api/webhooks/github-app route", () => {
           : { id: null, node_id: null, html_url: null, state: null },
       sender,
     });
+    expect(dispatched[0].body.metadata.github).toBeUndefined();
     expect(JSON.stringify(dispatched[0].body)).not.toContain("Can you look at this?");
     expect(JSON.stringify(dispatched[0].body)).not.toContain("PR conversation follow-up");
     expect(JSON.stringify(dispatched[0].body)).not.toContain("Review feedback");
