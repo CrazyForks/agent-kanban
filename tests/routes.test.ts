@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { randomUUID } from "node:crypto";
+import { AK_ANNOTATION_KEY_SOURCE_EVENT, AK_LABEL_KEY_GITHUB_SUBJECT } from "@agent-kanban/shared";
 import { SignJWT } from "jose";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -146,6 +147,8 @@ function amaSession(
     reason?: string | null;
     labels?: Record<string, string>;
     annotations?: Record<string, string>;
+    createdAt?: string;
+    updatedAt?: string;
   } = {},
 ) {
   return {
@@ -156,8 +159,8 @@ function amaSession(
       labels: input.labels ?? {},
       annotations: input.annotations ?? {},
       archivedAt: null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: input.createdAt ?? new Date().toISOString(),
+      updatedAt: input.updatedAt ?? new Date().toISOString(),
     },
     spec: {
       agentId: input.agentId ?? "ama_agent_123",
@@ -619,7 +622,10 @@ describe("routes", () => {
               phase: "dispatched",
               sessionId: "session_maintainer_http_1",
               errorMessage: null,
-              metadata: { event: "issues" },
+              metadata: {
+                labels: { [AK_LABEL_KEY_GITHUB_SUBJECT]: "github:maintainer-org/maintainer-repo:issue:42" },
+                annotations: { [AK_ANNOTATION_KEY_SOURCE_EVENT]: "issues.opened" },
+              },
               createdAt: "2026-06-08T12:09:59.000Z",
               updatedAt: "2026-06-08T12:10:00.000Z",
             }),
@@ -738,7 +744,10 @@ describe("routes", () => {
           status: "dispatched",
           session_id: "session_maintainer_http_1",
           error_message: null,
-          metadata: { event: "issues" },
+          metadata: {
+            labels: { [AK_LABEL_KEY_GITHUB_SUBJECT]: "github:maintainer-org/maintainer-repo:issue:42" },
+            annotations: { [AK_ANNOTATION_KEY_SOURCE_EVENT]: "issues.opened" },
+          },
         },
       });
       expect(maintainer.latest_run).not.toHaveProperty("sessionId");
@@ -990,7 +999,10 @@ describe("routes", () => {
             status: "dispatched",
             session_id: "session_maintainer_http_1",
             error_message: null,
-            metadata: { event: "issues" },
+            metadata: {
+              labels: { [AK_LABEL_KEY_GITHUB_SUBJECT]: "github:maintainer-org/maintainer-repo:issue:42" },
+              annotations: { [AK_ANNOTATION_KEY_SOURCE_EVENT]: "issues.opened" },
+            },
           }),
           expect.objectContaining({
             id: "run_maintainer_1",
@@ -3518,6 +3530,8 @@ describe("routes", () => {
                 phase: "idle",
                 agentId: "ama_agent_123",
                 labels: { maintainerId: "maintainer_123" },
+                createdAt: "2026-06-08T12:00:00.000Z",
+                updatedAt: "2026-06-08T12:08:00.000Z",
               }),
             ],
             pagination: { limit: 25, hasMore: false },
@@ -3532,7 +3546,14 @@ describe("routes", () => {
       const res = await apiRequest("GET", "/api/sessions?limit=25&labelSelector=maintainerId%3Dmaintainer_123", undefined, apiKey);
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toMatchObject({
-        data: [{ id: "session_maintainer_123", metadata: { labels: { maintainerId: "maintainer_123" } } }],
+        data: [
+          {
+            id: "session_maintainer_123",
+            createdAt: "2026-06-08T12:00:00.000Z",
+            updatedAt: "2026-06-08T12:08:00.000Z",
+            metadata: { labels: { maintainerId: "maintainer_123" } },
+          },
+        ],
         pagination: { limit: 25, hasMore: false },
       });
     } finally {

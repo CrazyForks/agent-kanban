@@ -919,7 +919,7 @@ describe("POST /api/webhooks/github-app route", () => {
           [AK_LABEL_KEY_GITHUB_SUBJECT]: expectedKey,
         },
         annotations: {
-          [AK_ANNOTATION_KEY_SOURCE_EVENT]: event,
+          [AK_ANNOTATION_KEY_SOURCE_EVENT]: `${event}.${action}`,
         },
       },
       repository: payload.repository,

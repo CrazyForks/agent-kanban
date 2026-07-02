@@ -298,10 +298,12 @@ function githubMaintainerSessionKey(input: { event: string; payload: MaintainerW
 }
 
 function githubMaintainerMetadata(input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload }, key: string | null) {
+  const action = input.payload.action;
+  const sourceEvent = typeof action === "string" && action.length > 0 ? `${input.event}.${action}` : input.event;
   return {
     ...(key ? { labels: { [AK_LABEL_KEY_GITHUB_SUBJECT]: key } } : {}),
     annotations: {
-      [AK_ANNOTATION_KEY_SOURCE_EVENT]: input.event,
+      [AK_ANNOTATION_KEY_SOURCE_EVENT]: sourceEvent,
     },
   };
 }

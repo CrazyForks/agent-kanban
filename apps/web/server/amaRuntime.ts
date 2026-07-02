@@ -518,6 +518,8 @@ function normalizeSession(session: SdkSession): Record<string, unknown> {
     state: session.status.phase,
     stateReason: session.status.reason,
     status: session.status.phase,
+    createdAt: session.metadata.createdAt,
+    updatedAt: session.metadata.updatedAt,
     metadata: {
       ...session.metadata,
       ...session.metadata.labels,

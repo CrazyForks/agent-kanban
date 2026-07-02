@@ -81,13 +81,11 @@ describe("MaintainerDetailPage", () => {
           session_id: "session_1",
           error_message: null,
           metadata: {
-            sessionMetadata: {
-              labels: {
-                [AK_LABEL_KEY_GITHUB_SUBJECT]: "github:saltbo/slink:issue:42",
-              },
-              annotations: {
-                [AK_ANNOTATION_KEY_SOURCE_EVENT]: "issues",
-              },
+            labels: {
+              [AK_LABEL_KEY_GITHUB_SUBJECT]: "github:saltbo/slink:issue:42",
+            },
+            annotations: {
+              [AK_ANNOTATION_KEY_SOURCE_EVENT]: "issues.opened",
             },
           },
         },
@@ -118,7 +116,7 @@ describe("MaintainerDetailPage", () => {
               [AK_LABEL_KEY_GITHUB_SUBJECT]: "github:saltbo/slink:issue:42",
             },
             annotations: {
-              [AK_ANNOTATION_KEY_SOURCE_EVENT]: "issues",
+              [AK_ANNOTATION_KEY_SOURCE_EVENT]: "issues.opened",
             },
           },
           createdAt: "2026-06-08T12:00:00.000Z",
@@ -162,7 +160,7 @@ describe("MaintainerDetailPage", () => {
     expect(screen.queryByText("run_failed_without_session")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: /Activity/ }));
-    expect(screen.getAllByText("issues").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("issues.opened").length).toBeGreaterThan(0);
     expect(screen.getByText("dispatched")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: /Memory/ }));
