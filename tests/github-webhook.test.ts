@@ -963,7 +963,7 @@ describe("POST /api/webhooks/github-app route", () => {
       event,
       action,
       delivery_id: deliveryId,
-      key: expectedKey,
+      routing_key: expectedKey,
       metadata: {
         labels: {
           [AK_LABEL_KEY_GITHUB_SUBJECT]: expectedKey,
@@ -975,7 +975,7 @@ describe("POST /api/webhooks/github-app route", () => {
       },
       repository: payload.repository,
       subject: {
-        type: expectedKeyKind,
+        type: expectedKeyKind === "pull" ? "pull_request" : expectedKeyKind,
         id: subject.id,
         node_id: subject.node_id,
         number: subject.number,

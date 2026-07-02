@@ -537,26 +537,27 @@ describe("routes", () => {
         expect(spec.promptTemplate).not.toContain("Do not use pre-existing gh login state or human GitHub tokens");
         if (body.spec.source.type === "http") {
           expect(body.metadata.name).toMatch(new RegExp(`^${maintainerBoard.name} maintainer .+ GitHub events$`));
-          expect(spec.promptTemplate).toContain(`Received a new GitHub webhook event for AK board ${maintainerBoard.id}`);
-          expect(spec.promptTemplate).not.toContain("Discover the current repository scope with AK");
-          expect(spec.promptTemplate).not.toContain("Read or create HEARTBEAT.md");
-          expect(spec.promptTemplate).toContain("{{ body.event }}.{{ body.action }}");
-          expect(spec.promptTemplate).toContain("{{ body.repository.full_name }}");
-          expect(spec.promptTemplate).toContain('{{#if eq body.subject.type "issue"}}');
-          expect(spec.promptTemplate).toContain('{{#if eq body.subject.type "pull"}}');
-          expect(spec.promptTemplate).toContain("{{#if body.comment.id}}");
-          expect(spec.promptTemplate).toContain("{{#if body.review.id}}");
-          expect(spec.promptTemplate).not.toContain("{{ body.subject.id }}");
-          expect(spec.promptTemplate).not.toContain("{{ body.subject.node_id }}");
-          expect(spec.promptTemplate).toContain("{{ body.subject.number }}");
-          expect(spec.promptTemplate).toContain("{{ body.comment.id }}");
-          expect(spec.promptTemplate).toContain("{{ body.comment.node_id }}");
-          expect(spec.promptTemplate).toContain("{{ body.review.id }}");
-          expect(spec.promptTemplate).toContain("{{ body.review.node_id }}");
-          expect(spec.promptTemplate).not.toContain("{{ body.subject.title }}");
-          expect(spec.promptTemplate).not.toContain("{{ body.subject.body }}");
-          expect(spec.promptTemplate).not.toContain("{{ body.comment.body }}");
-          expect(spec.promptTemplate).not.toContain("{{ body.review.body }}");
+          expect(spec.promptTemplate).toContain("{% if .ama.run.session_reused == false %}");
+          expect(spec.promptTemplate).toContain("# AK Maintainer GitHub Event");
+          expect(spec.promptTemplate).toContain("# GitHub Event");
+          expect(spec.promptTemplate).toContain("## Event");
+          expect(spec.promptTemplate).toContain("{{ .body.event }}.{{ .body.action }}");
+          expect(spec.promptTemplate).toContain("{{ .body.repository.full_name }}");
+          expect(spec.promptTemplate).toContain('{% if .body.subject.type == "issue" %}');
+          expect(spec.promptTemplate).toContain('{% if .body.subject.type == "pull_request" %}');
+          expect(spec.promptTemplate).toContain("{% if .body.comment.id %}");
+          expect(spec.promptTemplate).toContain("{% if .body.review.id %}");
+          expect(spec.promptTemplate).not.toContain("{{ .subject.id }}");
+          expect(spec.promptTemplate).not.toContain("{{ .subject.node_id }}");
+          expect(spec.promptTemplate).toContain("{{ .body.subject.number }}");
+          expect(spec.promptTemplate).toContain("{{ .body.comment.id }}");
+          expect(spec.promptTemplate).toContain("{{ .body.comment.node_id }}");
+          expect(spec.promptTemplate).toContain("{{ .body.review.id }}");
+          expect(spec.promptTemplate).toContain("{{ .body.review.node_id }}");
+          expect(spec.promptTemplate).not.toContain("{{ .body.subject.title }}");
+          expect(spec.promptTemplate).not.toContain("{{ .body.subject.body }}");
+          expect(spec.promptTemplate).not.toContain("{{ .body.comment.body }}");
+          expect(spec.promptTemplate).not.toContain("{{ .body.review.body }}");
           expect(spec.promptTemplate).not.toContain("event_context_json");
           return jsonResponse(amaTrigger("http_maintainer", body, { type: "http" }), 201);
         }
@@ -959,7 +960,7 @@ describe("routes", () => {
         body: { spec: { suspend: false } },
       });
       expect(heartbeatOnRequests.find((request) => request.triggerId === "http_maintainer")?.body.spec?.template?.spec?.promptTemplate).toContain(
-        "Received a new GitHub webhook event",
+        "# GitHub Event",
       );
 
       const updateRes = await apiRequest(
@@ -987,21 +988,21 @@ describe("routes", () => {
       expect(
         updateRequests.find(
           (request) =>
-            request.triggerId === "http_maintainer" && request.body.spec?.template?.spec?.promptTemplate?.includes("{{ body.comment.id }}"),
+            request.triggerId === "http_maintainer" && request.body.spec?.template?.spec?.promptTemplate?.includes("{{ .body.comment.id }}"),
         )?.body.name,
       ).toBeUndefined();
       expect(
         updateRequests.find(
           (request) =>
-            request.triggerId === "http_maintainer" && request.body.spec?.template?.spec?.promptTemplate?.includes("{{ body.comment.id }}"),
+            request.triggerId === "http_maintainer" && request.body.spec?.template?.spec?.promptTemplate?.includes("{{ .body.comment.id }}"),
         )?.body.skills,
       ).toBeUndefined();
       expect(
         updateRequests.find(
           (request) =>
-            request.triggerId === "http_maintainer" && request.body.spec?.template?.spec?.promptTemplate?.includes("{{ body.comment.id }}"),
+            request.triggerId === "http_maintainer" && request.body.spec?.template?.spec?.promptTemplate?.includes("{{ .body.comment.id }}"),
         )?.body.spec?.template?.spec?.promptTemplate,
-      ).toContain(`Received a new GitHub webhook event for AK board ${maintainerBoard.id}`);
+      ).toContain("# GitHub Event");
 
       const runsRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/runs?limit=2`, undefined, userToken);
       expect(runsRes.status).toBe(200);

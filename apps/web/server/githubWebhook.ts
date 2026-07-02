@@ -274,20 +274,21 @@ function subjectNumber(subject: Record<string, unknown> | undefined): number | n
 
 function githubMaintainerSubject(input: { event: string; payload: MaintainerWebhookPayload }): {
   subject: Record<string, unknown> | undefined;
-  type: "issue" | "pull";
+  type: "issue" | "pull_request";
 } {
   if (input.event === "issues") return { subject: input.payload.issue, type: "issue" };
   if (input.event === "issue_comment") {
-    return { subject: input.payload.issue, type: input.payload.issue?.pull_request ? "pull" : "issue" };
+    return { subject: input.payload.issue, type: input.payload.issue?.pull_request ? "pull_request" : "issue" };
   }
-  return { subject: input.payload.pull_request, type: "pull" };
+  return { subject: input.payload.pull_request, type: "pull_request" };
 }
 
 function githubMaintainerSessionKey(input: { event: string; payload: MaintainerWebhookPayload }): string | null {
   const fullName = input.payload.repository?.full_name?.toLowerCase();
   const { subject, type } = githubMaintainerSubject(input);
   const number = subjectNumber(subject);
-  return fullName && number !== null ? `github:${fullName}:${type}:${number}` : null;
+  const keyType = type === "pull_request" ? "pull" : type;
+  return fullName && number !== null ? `github:${fullName}:${keyType}:${number}` : null;
 }
 
 function githubMaintainerSourceUrl(input: { event: string; payload: MaintainerWebhookPayload }): string | null {
@@ -335,7 +336,7 @@ function compactRepository(repository: MaintainerWebhookPayload["repository"]) {
   };
 }
 
-function compactSubject(subject: Record<string, unknown> | undefined, type: "issue" | "pull") {
+function compactSubject(subject: Record<string, unknown> | undefined, type: "issue" | "pull_request") {
   return {
     type,
     id: typeof subject?.id === "number" ? subject.id : null,
@@ -380,7 +381,7 @@ function githubMaintainerRunBody(
     event: input.event,
     action: input.payload.action ?? "",
     delivery_id: input.deliveryId ?? null,
-    key,
+    routing_key: key,
     repository: compactRepository(input.payload.repository),
     subject: compactSubject(subject, type),
     comment: compactComment(input.payload.comment),
