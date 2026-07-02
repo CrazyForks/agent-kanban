@@ -355,6 +355,60 @@ describe("POST /api/webhooks/github-app route", () => {
     expect(sessionPatches).toEqual([{ state: "closed", metadata: { annotations: { closeReason: "user_requested" } } }]);
   });
 
+  it("closes the maintainer session directly when a pull request is converted to draft", async () => {
+    const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
+    const ownerId = `webhook-maintainer-draft-close-${randomUUID()}`;
+    const projectId = `project_draft_close_${randomUUID()}`;
+    const httpTriggerId = `http_draft_close_${randomUUID()}`;
+    const sessionId = `session_draft_close_${randomUUID()}`;
+    const { repoFullName, installationId, maintainer } = await seedMaintainerWebhookTarget({
+      ownerId,
+      repoName: `maintainer-repo-draft-close-${randomUUID()}`,
+      projectId,
+      httpTriggerId,
+    });
+    const key = `github:${repoFullName.toLowerCase()}:pull:77`;
+
+    const calls: Array<{ method: string; url: string; body?: any }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = reqUrl(input);
+        const method = reqMethod(input, init);
+        if (url.startsWith("https://ama.test/api/v1/sessions?") && method === "GET") {
+          calls.push({ method, url });
+          return jsonResponse({ data: [amaSession(sessionId, { projectId, key, maintainerId: maintainer.id, phase: "idle" })], pagination: {} });
+        }
+        if (url === `https://ama.test/api/v1/sessions/${sessionId}` && method === "PATCH") {
+          const body = JSON.parse(await reqBody(input, init));
+          calls.push({ method, url, body });
+          return jsonResponse(amaSession(sessionId, { projectId, key, maintainerId: maintainer.id, phase: "closed" }));
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    const result = await handleGithubMaintainerEvent(db, makeEnv(), {
+      event: "pull_request",
+      deliveryId: `delivery-converted-to-draft-${randomUUID()}`,
+      payload: {
+        action: "converted_to_draft",
+        installation: { id: installationId },
+        repository: { id: 123, full_name: repoFullName, html_url: `https://github.com/${repoFullName}` },
+        pull_request: { id: 77, number: 77, draft: true, state: "open", html_url: `https://github.com/${repoFullName}/pull/77` },
+        sender: { login: "octocat" },
+      },
+    });
+
+    expect(result).toEqual({ handled: true, maintainers: [maintainer.id] });
+    const lookupUrl = new URL(calls[0].url);
+    expect(lookupUrl.searchParams.get("labelSelector")).toBe(`maintainerId=${maintainer.id},${AK_LABEL_KEY_GITHUB_SUBJECT}=${key}`);
+    expect(calls.map((call) => [call.method, call.url.includes("/triggers/") ? "trigger" : (call.body?.state ?? "read")])).toEqual([
+      ["GET", "read"],
+      ["PATCH", "closed"],
+    ]);
+  });
+
   it("reopens the maintainer session directly when an issue is reopened", async () => {
     const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
     const ownerId = `webhook-maintainer-open-${randomUUID()}`;
@@ -437,7 +491,7 @@ describe("POST /api/webhooks/github-app route", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("does not dispatch a draft pull request opened event to maintainers", async () => {
+  it.each(["opened", "synchronize"])("does not dispatch a draft pull request %s event to maintainers", async (action) => {
     const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
     vi.stubGlobal(
       "fetch",
@@ -450,7 +504,7 @@ describe("POST /api/webhooks/github-app route", () => {
       event: "pull_request",
       deliveryId: `delivery-draft-${randomUUID()}`,
       payload: {
-        action: "opened",
+        action,
         installation: { id: 123 },
         repository: { id: 123, full_name: "maintainer-org/maintainer-repo", html_url: "https://github.com/maintainer-org/maintainer-repo" },
         pull_request: {
@@ -590,6 +644,24 @@ describe("POST /api/webhooks/github-app route", () => {
       extraPayload: {},
     },
     {
+      event: "pull_request",
+      subjectKey: "pull_request",
+      subject: {
+        id: 7702,
+        node_id: "PR_sync",
+        number: 79,
+        title: "Webhook PR sync",
+        body: "PR synchronize body",
+        html_url: "https://github.com/maintainer-org/maintainer-repo/pull/79",
+        draft: false,
+        merged: false,
+      },
+      action: "synchronize",
+      subjectPath: "pull",
+      expectedKeyKind: "pull",
+      extraPayload: {},
+    },
+    {
       event: "issue_comment",
       subjectKey: "issue",
       subject: {
@@ -605,6 +677,24 @@ describe("POST /api/webhooks/github-app route", () => {
       expectedKeyKind: "issue",
       extraPayload: {
         comment: { id: 12345, node_id: "IC_issue_comment", body: "Can you look at this?", html_url: "https://github.com/comment/12345" },
+      },
+    },
+    {
+      event: "issue_comment",
+      subjectKey: "issue",
+      subject: {
+        id: 4201,
+        node_id: "I_issue_edited_comment",
+        number: 43,
+        title: "Webhook issue comment edited",
+        body: "Issue edited-comment subject body",
+        html_url: "https://github.com/maintainer-org/maintainer-repo/issues/43",
+      },
+      action: "edited",
+      subjectPath: "issues",
+      expectedKeyKind: "issue",
+      extraPayload: {
+        comment: { id: 12346, node_id: "IC_issue_comment_edited", body: "Edited issue comment", html_url: "https://github.com/comment/12346" },
       },
     },
     {
@@ -646,6 +736,31 @@ describe("POST /api/webhooks/github-app route", () => {
       },
     },
     {
+      event: "pull_request_review",
+      subjectKey: "pull_request",
+      subject: {
+        id: 7701,
+        node_id: "PR_review_edited",
+        number: 78,
+        title: "Webhook PR review edited",
+        body: "PR edited-review body",
+        html_url: "https://github.com/maintainer-org/maintainer-repo/pull/78",
+        merged: false,
+      },
+      action: "edited",
+      subjectPath: "pull",
+      expectedKeyKind: "pull",
+      extraPayload: {
+        review: {
+          id: 34568,
+          node_id: "PRR_review_edited",
+          body: "Edited review feedback",
+          state: "commented",
+          html_url: "https://github.com/review/34568",
+        },
+      },
+    },
+    {
       event: "pull_request_review_comment",
       subjectKey: "pull_request",
       subject: {
@@ -661,6 +776,25 @@ describe("POST /api/webhooks/github-app route", () => {
       subjectPath: "pull",
       expectedKeyKind: "pull",
       extraPayload: { comment: { id: 45678, node_id: "PRRC_inline_comment", body: "Inline comment", html_url: "https://github.com/comment/45678" } },
+    },
+    {
+      event: "pull_request_review_comment",
+      subjectKey: "pull_request",
+      subject: {
+        id: 7701,
+        node_id: "PR_inline_edited",
+        number: 78,
+        title: "Webhook PR inline edited",
+        body: "PR edited-inline subject body",
+        html_url: "https://github.com/maintainer-org/maintainer-repo/pull/78",
+        merged: false,
+      },
+      action: "edited",
+      subjectPath: "pull",
+      expectedKeyKind: "pull",
+      extraPayload: {
+        comment: { id: 45679, node_id: "PRRC_inline_comment_edited", body: "Edited inline comment", html_url: "https://github.com/comment/45679" },
+      },
     },
   ])("dispatches $event events to active maintainer HTTP trigger with compact event context and a stable subject key", async ({
     event,

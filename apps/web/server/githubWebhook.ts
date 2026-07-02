@@ -198,11 +198,12 @@ function githubMaintainerSessionLifecycle(input: { event: string; payload: Maint
   const subjectClosed = subjectState === "closed";
   const subjectCloseEvent = (input.event === "issues" || input.event === "pull_request") && action === "closed";
   const subjectReopenEvent = (input.event === "issues" || input.event === "pull_request") && action === "reopened";
+  const subjectDraftEvent = input.event === "pull_request" && action === "converted_to_draft";
   return {
     dispatchToAgent: githubMaintainerShouldDispatch(input),
-    closeWithoutDispatch: subjectCloseEvent,
+    closeWithoutDispatch: subjectCloseEvent || subjectDraftEvent,
     reopenWithoutDispatch: subjectReopenEvent,
-    reopenBeforeDispatch: subjectReopenEvent || (subjectClosed && !subjectCloseEvent),
+    reopenBeforeDispatch: subjectReopenEvent || (subjectClosed && !subjectCloseEvent && !subjectDraftEvent),
     closeAfterDispatch: subjectCloseEvent || (subjectClosed && !subjectReopenEvent),
   };
 }
@@ -212,11 +213,12 @@ function githubMaintainerShouldDispatch(input: { event: string; payload: Maintai
   if (input.event === "issues") return action === "opened";
   if (input.event === "pull_request") {
     if (action === "ready_for_review") return true;
-    return action === "opened" && input.payload.pull_request?.draft !== true;
+    if (action === "opened" || action === "synchronize") return input.payload.pull_request?.draft !== true;
+    return false;
   }
-  if (input.event === "issue_comment") return action === "created";
-  if (input.event === "pull_request_review") return action === "submitted";
-  if (input.event === "pull_request_review_comment") return action === "created";
+  if (input.event === "issue_comment") return action === "created" || action === "edited";
+  if (input.event === "pull_request_review") return action === "submitted" || action === "edited";
+  if (input.event === "pull_request_review_comment") return action === "created" || action === "edited";
   return false;
 }
 
