@@ -21,6 +21,8 @@ set -euo pipefail
 #   - creates a real GitHub issue in the board repository
 #   - sends a signed GitHub issues webhook with the real issue payload
 #   - waits for the event-triggered maintainer run/session to complete
+#   - closes the issue, then comments on the closed issue to verify the
+#     maintainer session can be reopened by a follow-up event and closed again
 #   - captures maintainer run history, session events, memory files, and board
 #     tasks created during the observation window
 #   - optionally waits for a scheduled heartbeat run when --wait-heartbeat is set
@@ -119,6 +121,7 @@ HTTP_ISSUE_TITLE=""
 HTTP_ISSUE_URL=""
 HTTP_ISSUE_REST_JSON=""
 HTTP_REPOSITORY_REST_JSON=""
+HTTP_COMMENT_REST_JSON=""
 TEMP_AMA_WORKSPACE=""
 
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
@@ -305,8 +308,18 @@ create_real_github_issue() {
   HTTP_ISSUE_NUMBER="$(printf '%s' "$issue_json" | json_query "data.number")"
   HTTP_ISSUE_TITLE="$(printf '%s' "$issue_json" | json_query "data.title")"
   HTTP_ISSUE_URL="$(printf '%s' "$issue_json" | json_query "data.url")"
+  refresh_github_issue_json
+}
+
+refresh_github_issue_json() {
   HTTP_ISSUE_REST_JSON="$(gh_smoke api "repos/$REPO_FULL_NAME/issues/$HTTP_ISSUE_NUMBER" --jq '{ id, node_id, number, title, html_url, state, user: { login: .user.login, id: .user.id, node_id: .user.node_id, type: .user.type } }')"
   HTTP_REPOSITORY_REST_JSON="$(gh_smoke api "repos/$REPO_FULL_NAME" --jq '{ id, node_id, full_name, html_url, private, owner: { login: .owner.login, id: .owner.id, node_id: .owner.node_id, type: .owner.type } }')"
+}
+
+create_closed_issue_comment() {
+  HTTP_COMMENT_REST_JSON="$(gh_smoke api -X POST "repos/$REPO_FULL_NAME/issues/$HTTP_ISSUE_NUMBER/comments" \
+    -f body="Maintainer smoke closed-issue follow-up $TIMESTAMP." \
+    --jq '{ id, node_id, html_url, body, user: { login: .user.login, id: .user.id, node_id: .user.node_id, type: .user.type } }')"
 }
 
 ensure_board_repo_mapping() {
@@ -366,24 +379,14 @@ if (offenders.length > 0) console.log(offenders.join('\\n'));
   fi
 }
 
-post_github_issue_event() {
-  local suffix="$1"
-  local base_url secret payload signature delivery
+post_signed_github_event() {
+  local event="$1"
+  local suffix="$2"
+  local payload="$3"
+  local base_url secret signature delivery
   base_url="$(api_url)"
   secret="$(dev_var GITHUB_APP_WEBHOOK_SECRET)"
   delivery="maintainer-smoke-${TIMESTAMP}-${suffix}"
-  payload=$(ISSUE_JSON="$HTTP_ISSUE_REST_JSON" REPOSITORY_JSON="$HTTP_REPOSITORY_REST_JSON" node -e "
-const issue = JSON.parse(process.env.ISSUE_JSON);
-const repository = JSON.parse(process.env.REPOSITORY_JSON);
-const payload = {
-  action: 'opened',
-  installation: { id: Number(process.argv[1]) },
-  repository,
-  issue,
-  sender: issue.user,
-};
-process.stdout.write(JSON.stringify(payload));
-" "$INSTALLATION_ID")
   signature=$(node -e "
 const crypto = require('crypto');
 const secret = process.argv[1];
@@ -392,10 +395,49 @@ process.stdout.write('sha256=' + crypto.createHmac('sha256', secret).update(payl
 " "$secret" "$payload")
   curl -fsS -X POST "$base_url/api/webhooks/github-app" \
     -H "content-type: application/json" \
-    -H "x-github-event: issues" \
+    -H "x-github-event: $event" \
     -H "x-github-delivery: $delivery" \
     -H "x-hub-signature-256: $signature" \
     --data "$payload" >/dev/null
+}
+
+post_github_issue_event() {
+  local suffix="$1"
+  local action="${2:-opened}"
+  local payload
+  payload=$(ISSUE_JSON="$HTTP_ISSUE_REST_JSON" REPOSITORY_JSON="$HTTP_REPOSITORY_REST_JSON" ACTION="$action" node -e "
+const issue = JSON.parse(process.env.ISSUE_JSON);
+const repository = JSON.parse(process.env.REPOSITORY_JSON);
+const payload = {
+  action: process.env.ACTION,
+  installation: { id: Number(process.argv[1]) },
+  repository,
+  issue,
+  sender: issue.user,
+};
+process.stdout.write(JSON.stringify(payload));
+" "$INSTALLATION_ID")
+  post_signed_github_event "issues" "$suffix" "$payload"
+}
+
+post_github_issue_comment_event() {
+  local suffix="$1"
+  local payload
+  payload=$(ISSUE_JSON="$HTTP_ISSUE_REST_JSON" REPOSITORY_JSON="$HTTP_REPOSITORY_REST_JSON" COMMENT_JSON="$HTTP_COMMENT_REST_JSON" node -e "
+const issue = JSON.parse(process.env.ISSUE_JSON);
+const repository = JSON.parse(process.env.REPOSITORY_JSON);
+const comment = JSON.parse(process.env.COMMENT_JSON);
+const payload = {
+  action: 'created',
+  installation: { id: Number(process.argv[1]) },
+  repository,
+  issue,
+  comment,
+  sender: comment.user,
+};
+process.stdout.write(JSON.stringify(payload));
+" "$INSTALLATION_ID")
+  post_signed_github_event "issue_comment" "$suffix" "$payload"
 }
 
 maintainer_runs_count() {
@@ -478,7 +520,7 @@ wait_for_session_terminal() {
   while [ "$elapsed" -lt "$timeout" ]; do
     state="$(session_state "$session_id" 2>/dev/null || true)"
     case "$state" in
-      completed | idle | failed | error | stopped | cancelled | canceled)
+      completed | idle | closed | failed | error | stopped | cancelled | canceled)
         echo "$state"
         return 0
         ;;
@@ -921,7 +963,7 @@ if [ "$LIVE" = 1 ]; then
     pass "HTTP maintainer run recorded AMA session id ($HTTP_SESSION_ID)"
     HTTP_SESSION_STATE="$(wait_for_session_terminal "$HTTP_SESSION_ID" "$OBSERVE_SECONDS" || true)"
     case "$HTTP_SESSION_STATE" in
-      completed | idle | stopped)
+      completed | idle | closed | stopped)
         pass "HTTP maintainer session reached terminal state: $HTTP_SESSION_STATE"
         ;;
       failed | error | cancelled | canceled)
@@ -942,6 +984,92 @@ if [ "$LIVE" = 1 ]; then
   elif [ "$HTTP_RUN_STATUS" != "failed" ] && [ "$HTTP_RUN_STATUS" != "error" ] && [ "$HTTP_RUN_STATUS" != "cancelled" ] && [ "$HTTP_RUN_STATUS" != "canceled" ]; then
     fail "HTTP maintainer run did not record AMA session id"
     echo "    latest HTTP run: $(latest_run_summary "$HTTP_MAINTAINER_ID")"
+  fi
+
+  CLOSED_BASELINE="$(maintainer_runs_count "$HTTP_MAINTAINER_ID")"
+  if gh_smoke issue close "$HTTP_ISSUE_NUMBER" -R "$REPO_FULL_NAME" --reason "not planned" --comment "Closed by AK maintainer smoke test." >/dev/null; then
+    refresh_github_issue_json
+    pass "GitHub issue closed for maintainer lifecycle smoke"
+  else
+    fail "GitHub issue close failed for maintainer lifecycle smoke"
+  fi
+  if is_local_api_url; then
+    if post_github_issue_event "issue-closed" "closed"; then
+      pass "synthetic signed GitHub issues closed webhook posted to local API"
+    else
+      fail "synthetic signed GitHub issues closed webhook failed"
+    fi
+  else
+    echo "  OBSERVE: waiting for real GitHub issues closed webhook delivery"
+  fi
+  if wait_for_maintainer_run "$HTTP_MAINTAINER_ID" "$CLOSED_BASELINE" "$OBSERVE_SECONDS"; then
+    pass "GitHub issues closed webhook dispatched a maintainer run"
+  else
+    fail "GitHub issues closed webhook did not dispatch a maintainer run"
+  fi
+  maintainer_runs_json "$HTTP_MAINTAINER_ID" 30 | write_artifact "http-closed-runs.json"
+  CLOSED_SESSION_ID="$(wait_for_latest_run_session "$HTTP_MAINTAINER_ID" 300 || true)"
+  if [ -n "$CLOSED_SESSION_ID" ]; then
+    CLOSED_SESSION_STATE="$(wait_for_session_terminal "$CLOSED_SESSION_ID" "$OBSERVE_SECONDS" || true)"
+    case "$CLOSED_SESSION_STATE" in
+      completed | idle | closed | stopped)
+        pass "closed issue maintainer session reached terminal state: $CLOSED_SESSION_STATE"
+        ;;
+      failed | error | cancelled | canceled)
+        fail "closed issue maintainer session ended with failure state: $CLOSED_SESSION_STATE"
+        ;;
+      pending)
+        fail "closed issue maintainer session stayed pending longer than ${SESSION_START_TIMEOUT_SECONDS}s"
+        ;;
+      *)
+        fail "closed issue maintainer session did not reach terminal state within ${OBSERVE_SECONDS}s; latest state: ${CLOSED_SESSION_STATE:-unknown}"
+        ;;
+    esac
+  else
+    fail "closed issue maintainer run did not record AMA session id"
+  fi
+
+  COMMENT_BASELINE="$(maintainer_runs_count "$HTTP_MAINTAINER_ID")"
+  if create_closed_issue_comment; then
+    refresh_github_issue_json
+    pass "GitHub comment created on closed issue for maintainer lifecycle smoke"
+  else
+    fail "GitHub comment on closed issue failed for maintainer lifecycle smoke"
+  fi
+  if is_local_api_url; then
+    if post_github_issue_comment_event "closed-issue-comment"; then
+      pass "synthetic signed GitHub issue_comment webhook posted to local API"
+    else
+      fail "synthetic signed GitHub issue_comment webhook failed"
+    fi
+  else
+    echo "  OBSERVE: waiting for real GitHub issue_comment webhook delivery"
+  fi
+  if wait_for_maintainer_run "$HTTP_MAINTAINER_ID" "$COMMENT_BASELINE" "$OBSERVE_SECONDS"; then
+    pass "closed issue comment dispatched a maintainer run"
+  else
+    fail "closed issue comment did not dispatch a maintainer run"
+  fi
+  maintainer_runs_json "$HTTP_MAINTAINER_ID" 40 | write_artifact "http-closed-comment-runs.json"
+  COMMENT_SESSION_ID="$(wait_for_latest_run_session "$HTTP_MAINTAINER_ID" 300 || true)"
+  if [ -n "$COMMENT_SESSION_ID" ]; then
+    COMMENT_SESSION_STATE="$(wait_for_session_terminal "$COMMENT_SESSION_ID" "$OBSERVE_SECONDS" || true)"
+    case "$COMMENT_SESSION_STATE" in
+      completed | idle | closed | stopped)
+        pass "closed issue comment maintainer session reached terminal state: $COMMENT_SESSION_STATE"
+        ;;
+      failed | error | cancelled | canceled)
+        fail "closed issue comment maintainer session ended with failure state: $COMMENT_SESSION_STATE"
+        ;;
+      pending)
+        fail "closed issue comment maintainer session stayed pending longer than ${SESSION_START_TIMEOUT_SECONDS}s"
+        ;;
+      *)
+        fail "closed issue comment maintainer session did not reach terminal state within ${OBSERVE_SECONDS}s; latest state: ${COMMENT_SESSION_STATE:-unknown}"
+        ;;
+    esac
+  else
+    fail "closed issue comment maintainer run did not record AMA session id"
   fi
 
   if maintainer_memories_json "$HTTP_MAINTAINER_ID" 100 > "$ARTIFACT_DIR/http-memories.json" 2>/dev/null; then
@@ -984,7 +1112,7 @@ if [ "$LIVE" = 1 ]; then
         pass "scheduled heartbeat run recorded AMA session id ($HEARTBEAT_SESSION_ID)"
         HEARTBEAT_SESSION_STATE="$(wait_for_session_terminal "$HEARTBEAT_SESSION_ID" "$OBSERVE_SECONDS" || true)"
         case "$HEARTBEAT_SESSION_STATE" in
-          completed | idle | stopped)
+          completed | idle | closed | stopped)
             pass "scheduled heartbeat session reached terminal state: $HEARTBEAT_SESSION_STATE"
             ;;
           failed | error | cancelled | canceled)

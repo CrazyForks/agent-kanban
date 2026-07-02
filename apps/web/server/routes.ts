@@ -789,12 +789,20 @@ api.post("/api/webhooks/github-app", async (c) => {
   const event = c.req.header("x-github-event");
   const deliveryId = c.req.header("x-github-delivery");
   const payload = JSON.parse(body);
+  const waitUntil = (promise: Promise<void>) => {
+    try {
+      c.executionCtx.waitUntil(promise);
+    } catch {
+      void promise;
+    }
+  };
   if (event === "pull_request") {
     const taskSync = await handleGithubPullRequestEvent(c.env.DB, c.env, payload);
     const maintainerDispatch = await handleGithubMaintainerEvent(c.env.DB, c.env, {
       event,
       deliveryId,
       payload,
+      waitUntil,
     });
     return c.json({ ok: true, ...taskSync, maintainer_dispatch: maintainerDispatch });
   }
@@ -805,6 +813,7 @@ api.post("/api/webhooks/github-app", async (c) => {
         event,
         deliveryId,
         payload,
+        waitUntil,
       })),
     });
   }

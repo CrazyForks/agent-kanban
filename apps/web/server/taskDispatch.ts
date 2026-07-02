@@ -13,6 +13,7 @@ import { getAmaProjectId, requireAmaProjectId, resolveAmaProjectId, resolveAmaSe
 import {
   type AmaAgent,
   type AmaRunner,
+  closeAmaSession,
   createAmaAgent,
   createAmaSessionSecret,
   createAmaTaskSession,
@@ -25,7 +26,6 @@ import {
   resolveAmaProviderModelProfile,
   revokeAmaVaultCredential,
   sendAmaSessionMessage,
-  stopAmaSession,
   updateAmaAgentConfig,
 } from "./amaRuntime";
 import type { D1 } from "./db";
@@ -467,7 +467,7 @@ export async function sendTaskRejectToAma(db: D1, env: Env, ownerId: string, tas
   });
 }
 
-// Tears down a task's active runtime binding: stops the AMA session, revokes
+// Tears down a task's active runtime binding: closes the AMA session, revokes
 // the session secret, and closes the AK agent session. The AMA session id stays
 // on the task as a historical pointer so completed tasks can still load events.
 export async function releaseTaskRuntimeBinding(
@@ -484,7 +484,7 @@ export async function releaseTaskRuntimeBinding(
   if (!sessionId && !akSessionId) return task;
 
   if (sessionId && projectId && isAmaRuntimeConfigured(env)) {
-    await stopAmaSession(env, ownerId, projectId, sessionId, reason);
+    await closeAmaSession(env, ownerId, projectId, sessionId, reason);
   }
   if (akSessionId) {
     await collectAkAgentSessionUsage(db, env, akSessionId);
@@ -618,7 +618,7 @@ export async function dispatchPendingAmaTasks(db: D1, env: Env): Promise<void> {
   }
 }
 
-const DEAD_AMA_SESSION_STATUSES = new Set(["error", "stopped"]);
+const DEAD_AMA_SESSION_STATUSES = new Set(["error", "closed", "stopped"]);
 // A freshly dispatched task may briefly reference a session AMA has not fully
 // materialized; don't treat a 404 as terminal inside this window.
 const RECONCILE_MIN_TASK_AGE_MS = 2 * 60_000;
@@ -627,7 +627,7 @@ const RECONCILE_MIN_TASK_AGE_MS = 2 * 60_000;
 const STALE_PENDING_SESSION_MS = 10 * 60_000;
 
 // Cron sweep: reconcile AK task state with AMA session state. A session that
-// died (runner crash, lease retries exhausted, stopped outside AK) leaves the
+// died (runner crash, lease retries exhausted, closed outside AK) leaves the
 // task stranded; release it so the dispatch sweep can re-dispatch. Done and
 // cancelled tasks that kept an active binding (best-effort cleanup failed
 // during complete/cancel) are torn down here.

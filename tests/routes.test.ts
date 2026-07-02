@@ -2770,10 +2770,10 @@ describe("routes", () => {
         return jsonResponse({ id: "vaultcred_release", state: "revoked" });
       }
       if (url === "https://ama.test/api/v1/sessions/session_release_old" && reqMethod(input, init) === "PATCH") {
-        return jsonResponse({ id: "session_release_old", state: "stopped" });
+        return jsonResponse({ id: "session_release_old", state: "closed" });
       }
       if (url === "https://ama.test/api/v1/sessions/session_release_1" && reqMethod(input, init) === "PATCH") {
-        return jsonResponse({ id: "session_release_1", state: "stopped" });
+        return jsonResponse({ id: "session_release_1", state: "closed" });
       }
       if (url.startsWith("https://ama.test/api/v1/usage-records?")) {
         return jsonResponse({ data: [], pagination: { limit: 100, hasMore: false, nextCursor: null } });
@@ -3119,7 +3119,7 @@ describe("routes", () => {
       }
       if (url === "https://ama.test/api/v1/sessions/session_123" && reqMethod(input, init) === "PATCH") {
         stops.push(url);
-        return jsonResponse({ id: "session_123", state: "stopped" });
+        return jsonResponse({ id: "session_123", state: "closed" });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -3249,7 +3249,7 @@ describe("routes", () => {
         return jsonResponse({ data: [], pagination: { limit: 100, hasMore: false, nextCursor: null } });
       }
       if (url === "https://ama.test/api/v1/sessions/session_usage_123" && reqMethod(input, init) === "PATCH") {
-        return jsonResponse({ id: "session_usage_123", state: "stopped" });
+        return jsonResponse({ id: "session_usage_123", state: "closed" });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -3324,7 +3324,7 @@ describe("routes", () => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return jsonResponse({ access_token: "user-token" });
       if (url === "https://ama.test/api/v1/sessions/session_runtime_123") {
-        return jsonResponse(amaSession("session_runtime_123", { projectId: "project_runtime_123", name: "Finished task", phase: "stopped" }));
+        return jsonResponse(amaSession("session_runtime_123", { projectId: "project_runtime_123", name: "Finished task", phase: "closed" }));
       }
       return jsonResponse({ error: "unexpected", url }, 500);
     });
@@ -3343,7 +3343,7 @@ describe("routes", () => {
         task_id: task.id,
         session_id: "session_runtime_123",
         project_id: "project_runtime_123",
-        session: { id: "session_runtime_123", state: "stopped" },
+        session: { id: "session_runtime_123", state: "closed" },
       });
     } finally {
       Object.assign(env, previousAma);
@@ -3370,7 +3370,7 @@ describe("routes", () => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return jsonResponse({ access_token: "user-token" });
       if (url === `https://ama.test/api/v1/sessions/${amaSessionId}`) {
-        return jsonResponse(amaSession(amaSessionId, { projectId: "project_runtime_123", name: "Finished task", phase: "stopped" }));
+        return jsonResponse(amaSession(amaSessionId, { projectId: "project_runtime_123", name: "Finished task", phase: "closed" }));
       }
       return jsonResponse({ error: "unexpected", url }, 500);
     });
@@ -3407,7 +3407,7 @@ describe("routes", () => {
         session_id: amaSessionId,
         ak_session_id: akSessionId,
         project_id: "project_runtime_123",
-        session: { id: amaSessionId, state: "stopped" },
+        session: { id: amaSessionId, state: "closed" },
       });
     } finally {
       Object.assign(env, previousAma);

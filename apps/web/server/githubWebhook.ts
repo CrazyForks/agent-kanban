@@ -1,5 +1,5 @@
 import { getAmaProjectId } from "./amaOwnerIntegrationRepo";
-import { dispatchAmaHttpTriggerRun } from "./amaRuntime";
+import { closeAmaSession, dispatchAmaHttpTriggerRun, listAmaSessions, readAmaSession, reopenAmaSession } from "./amaRuntime";
 import { listActiveBoardMaintainersForRepository } from "./boardMaintainerRepo";
 import type { D1 } from "./db";
 import {
@@ -122,7 +122,7 @@ function toRepoInputs(repos: WebhookRepo[] | undefined): { fullName: string; rep
 export async function handleGithubMaintainerEvent(
   db: D1,
   env: Env,
-  input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload },
+  input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload; waitUntil?: (promise: Promise<void>) => void },
 ): Promise<{ handled: boolean; maintainers: string[] }> {
   if (!MAINTAINER_GITHUB_EVENTS.has(input.event)) return { handled: false, maintainers: [] };
   if (isOwnGithubAppBotEvent(env, input)) return { handled: false, maintainers: [] };
@@ -130,6 +130,8 @@ export async function handleGithubMaintainerEvent(
   const installationId = input.payload.installation?.id;
   if (!fullName || !installationId) return { handled: false, maintainers: [] };
   const body = githubMaintainerRunBody(input);
+  const sessionKey = typeof body.key === "string" ? body.key : null;
+  const lifecycle = githubMaintainerSessionLifecycle(input);
 
   const maintainers = await listActiveBoardMaintainersForRepository(db, installationId, fullName);
   if (maintainers.length === 0) return { handled: false, maintainers: [] };
@@ -141,15 +143,92 @@ export async function handleGithubMaintainerEvent(
     if (!projectId) {
       throw new Error(`No AMA project for maintainer owner ${maintainer.owner_id}`);
     }
-    await dispatchAmaHttpTriggerRun(env, maintainer.owner_id, {
+    if (sessionKey && lifecycle.reopenBeforeDispatch) {
+      const session = await findAmaMaintainerSessionByKey(env, maintainer.owner_id, projectId, maintainer.id, sessionKey);
+      if (session?.state === "closed") {
+        await reopenAmaSession(env, maintainer.owner_id, projectId, session.id);
+      }
+    }
+    const run = await dispatchAmaHttpTriggerRun(env, maintainer.owner_id, {
       projectId,
       triggerId: maintainer.ama_http_trigger_id,
       idempotencyKey: input.deliveryId ?? `${input.event}:${input.payload.action ?? "unknown"}:${fullName}`,
       body,
     });
+    if (lifecycle.closeAfterDispatch && run.sessionId) {
+      const close = closeAmaSessionWhenIdle(env, maintainer.owner_id, projectId, run.sessionId).catch((error) =>
+        logger.warn(`close maintainer session ${run.sessionId} failed: ${safeMessage(error)}`),
+      );
+      if (input.waitUntil) input.waitUntil(close);
+      else void close;
+    }
     dispatched.push(maintainer.id);
   }
   return { handled: dispatched.length > 0, maintainers: dispatched };
+}
+
+function safeMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function githubMaintainerSessionLifecycle(input: { event: string; payload: MaintainerWebhookPayload }) {
+  const action = input.payload.action ?? "";
+  const { subject } = githubMaintainerSubject(input);
+  const subjectState = typeof subject?.state === "string" ? subject.state : null;
+  const subjectClosed = subjectState === "closed";
+  const subjectCloseEvent = (input.event === "issues" || input.event === "pull_request") && action === "closed";
+  const subjectReopenEvent = (input.event === "issues" || input.event === "pull_request") && action === "reopened";
+  return {
+    reopenBeforeDispatch: subjectReopenEvent || (subjectClosed && !subjectCloseEvent),
+    closeAfterDispatch: subjectCloseEvent || (subjectClosed && !subjectReopenEvent),
+  };
+}
+
+async function findAmaMaintainerSessionByKey(
+  env: Env,
+  ownerId: string,
+  projectId: string,
+  maintainerId: string,
+  key: string,
+): Promise<{ id: string; state: string | null } | null> {
+  const page = await listAmaSessions(env, ownerId, projectId, {
+    limit: 1,
+    archived: false,
+    labelSelector: `maintainerId=${maintainerId},key=${key}`,
+  });
+  const session = page.data[0];
+  const id = typeof session?.id === "string" ? session.id : null;
+  return id ? { id, state: sessionState(session) } : null;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function sessionState(session: Record<string, unknown> | null): string | null {
+  if (!session) return null;
+  if (typeof session.state === "string") return session.state;
+  if (typeof session.status === "string") return session.status;
+  const status = recordValue(session.status);
+  return typeof status?.phase === "string" ? status.phase : null;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function closeAmaSessionWhenIdle(env: Env, ownerId: string, projectId: string, sessionId: string): Promise<void> {
+  for (let attempt = 0; attempt < 36; attempt++) {
+    const session = await readAmaSession(env, ownerId, sessionId, projectId);
+    const state = sessionState(session);
+    if (!session || state === "closed" || state === "error") return;
+    if (state === "idle") {
+      await closeAmaSession(env, ownerId, projectId, sessionId, "user_requested");
+      return;
+    }
+    await delay(5_000);
+  }
+  logger.warn(`maintainer session ${sessionId} did not become idle before close timeout`);
 }
 
 function isOwnGithubAppBotEvent(env: Env, input: { payload: MaintainerWebhookPayload }): boolean {

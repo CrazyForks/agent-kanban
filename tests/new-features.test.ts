@@ -530,7 +530,7 @@ describe("session usage accounting via releaseTaskRuntimeBinding", () => {
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       // AMA session stop
       if (url === `https://ama.test/api/v1/sessions/${amaSessionId}` && reqMethod(input, init) === "PATCH")
-        return jsonResponse({ id: amaSessionId, state: "stopped" });
+        return jsonResponse({ id: amaSessionId, state: "closed" });
       // Usage summary endpoint
       if (url === `https://ama.test/api/v1/usage-records?sessionId=${amaSessionId}&limit=100`) {
         return jsonResponse({
@@ -607,7 +607,7 @@ describe("session usage accounting via releaseTaskRuntimeBinding", () => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${amaSessionId}` && reqMethod(input, init) === "PATCH")
-        return jsonResponse({ id: amaSessionId, state: "stopped" });
+        return jsonResponse({ id: amaSessionId, state: "closed" });
       // Usage summary with records:0 → function returns null → no update
       if (url === `https://ama.test/api/v1/usage-records?sessionId=${amaSessionId}&limit=100`) {
         return jsonResponse({ data: [], pagination: { nextCursor: null } });
@@ -676,7 +676,7 @@ describe("session usage accounting via releaseTaskRuntimeBinding", () => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${amaSessionId}` && reqMethod(input, init) === "PATCH")
-        return jsonResponse({ id: amaSessionId, state: "stopped" });
+        return jsonResponse({ id: amaSessionId, state: "closed" });
       // Usage endpoint fails
       if (url.includes("/api/v1/usage-records")) return new Response("Internal Server Error", { status: 500 });
       throw new Error(`Unexpected fetch: ${url}`);

@@ -770,7 +770,7 @@ describe("reconcileAmaBoundTasks", () => {
         return jsonResponse(amaSession(sessionId, { phase: "error", reason: "crashed" }), 200);
       // Stop call after release (PATCH /api/v1/sessions/{id})
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH")
-        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
+        return jsonResponse(amaSession(sessionId, { phase: "closed" }), 200);
       throw new Error(`Unexpected reconcile fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -826,7 +826,7 @@ describe("reconcileAmaBoundTasks", () => {
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH") {
         stops.push(url);
-        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
+        return jsonResponse(amaSession(sessionId, { phase: "closed" }), 200);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -888,7 +888,7 @@ describe("reconcileAmaBoundTasks", () => {
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH") return new Response(null, { status: 404 });
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH") {
         stops.push(url);
-        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
+        return jsonResponse(amaSession(sessionId, { phase: "closed" }), 200);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -921,7 +921,7 @@ describe("reconcileAmaBoundTasks", () => {
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH")
         return jsonResponse(amaSession(sessionId, { phase: "pending" }), 200);
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH")
-        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
+        return jsonResponse(amaSession(sessionId, { phase: "closed" }), 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -984,7 +984,7 @@ describe("reconcileAmaBoundTasks", () => {
         return jsonResponse(amaSession(sessionId, { phase: "idle" }), 200);
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH") {
         stops.push(url);
-        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
+        return jsonResponse(amaSession(sessionId, { phase: "closed" }), 200);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -1017,7 +1017,7 @@ describe("reconcileAmaBoundTasks", () => {
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH") return new Response(null, { status: 404 });
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH")
-        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
+        return jsonResponse(amaSession(sessionId, { phase: "closed" }), 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1054,7 +1054,7 @@ describe("reconcileAmaBoundTasks", () => {
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH")
         return jsonResponse(amaSession(sessionId, { phase: "idle" }), 200);
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH")
-        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
+        return jsonResponse(amaSession(sessionId, { phase: "closed" }), 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1094,7 +1094,7 @@ describe("reconcileAmaBoundTasks", () => {
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH")
         return jsonResponse(amaSession(sessionId, { phase: "pending" }), 200);
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH")
-        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
+        return jsonResponse(amaSession(sessionId, { phase: "closed" }), 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1132,7 +1132,7 @@ describe("reconcileAmaBoundTasks", () => {
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) !== "PATCH")
         return jsonResponse(amaSession(sessionId, { phase: "error", reason: "crashed" }), 200);
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH")
-        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
+        return jsonResponse(amaSession(sessionId, { phase: "closed" }), 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1200,7 +1200,7 @@ describe("detectAndReleaseStaleAll with AMA binding", () => {
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH") {
         stops.push(url);
-        return jsonResponse(amaSession(sessionId, { phase: "stopped" }), 200);
+        return jsonResponse(amaSession(sessionId, { phase: "closed" }), 200);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -2320,7 +2320,7 @@ describe("dispatch task_actions (dispatch_failed / dispatched)", () => {
       }
       if (url === "https://ama.test/api/v1/sessions") return sessionErrorFactory();
       // Stop call during cleanup
-      if (url.includes("/sessions/") && reqMethod(input, init) === "PATCH") return jsonResponse({ state: "stopped" }, 200);
+      if (url.includes("/sessions/") && reqMethod(input, init) === "PATCH") return jsonResponse({ state: "closed" }, 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
   }
@@ -2620,7 +2620,7 @@ describe("re-dispatch backoff (Feature B)", () => {
       // Session creation fails
       if (url === "https://ama.test/api/v1/sessions") return jsonResponse({ error: "provider_unavailable" }, 503);
       // Stop call during cleanup (if any)
-      if (url.includes("/sessions/") && reqMethod(input, init) === "PATCH") return jsonResponse({ state: "stopped" }, 200);
+      if (url.includes("/sessions/") && reqMethod(input, init) === "PATCH") return jsonResponse({ state: "closed" }, 200);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);

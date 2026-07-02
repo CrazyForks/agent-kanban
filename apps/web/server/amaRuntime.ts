@@ -772,7 +772,7 @@ export async function listAmaSessions(
   options: { limit?: number; cursor?: string; state?: string; archived?: boolean; labelSelector?: string } = {},
 ): Promise<AmaListResponse<Record<string, unknown>>> {
   const client = await createAmaClient(env, ownerId, projectId);
-  type AmaSessionState = "pending" | "running" | "idle" | "stopped" | "error";
+  type AmaSessionState = "pending" | "running" | "idle" | "closed" | "error";
   type AmaArchivedFilter = "true" | "false";
   const query = {
     limit: options.limit ?? 50,
@@ -949,7 +949,7 @@ export async function listAmaTriggerRuns(
   return { data: page.data.map((run) => toAmaTriggerRun(run as SdkTriggerRun)), pagination: page.pagination };
 }
 
-export async function stopAmaSession(
+export async function closeAmaSession(
   env: Env,
   ownerId: string,
   projectId: string,
@@ -957,8 +957,12 @@ export async function stopAmaSession(
   reason: "user_requested" | "timeout" | "policy" | "runtime_error",
 ) {
   const client = await createAmaClient(env, ownerId, projectId);
-  // /api/v1 has no dedicated stop verb: transition the session to `stopped`.
-  await client.sessions.update(sessionId, { state: "stopped", metadata: { annotations: { stopReason: reason } } });
+  await client.sessions.update(sessionId, { state: "closed", metadata: { annotations: { closeReason: reason } } });
+}
+
+export async function reopenAmaSession(env: Env, ownerId: string, projectId: string, sessionId: string) {
+  const client = await createAmaClient(env, ownerId, projectId);
+  await client.sessions.update(sessionId, { state: "idle" });
 }
 
 export async function createAmaScheduledAgentTrigger(env: Env, ownerId: string, input: AmaScheduledTriggerInput): Promise<AmaScheduledTrigger> {

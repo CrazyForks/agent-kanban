@@ -171,6 +171,72 @@ describe("verifyGithubSignature", () => {
 // ─── 2. POST /api/webhooks/github-app — route-level integration tests ────────────
 
 describe("POST /api/webhooks/github-app route", () => {
+  async function seedMaintainerWebhookTarget(input: { ownerId: string; repoName: string; projectId: string; httpTriggerId: string }) {
+    const repoFullName = `maintainer-org/${input.repoName}`;
+    const installationId = Math.floor(Math.random() * 1_000_000_000);
+    await seedUser(db, input.ownerId, `${input.ownerId}@test.com`);
+    await db
+      .prepare(
+        `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
+         VALUES (?, ?, ?, 'vault_webhook', '{}')`,
+      )
+      .bind(input.ownerId, input.projectId, input.ownerId)
+      .run();
+    await db
+      .prepare(
+        `INSERT INTO github_installations
+           (installation_id, owner_id, account_login, account_id, account_type, repository_selection, suspended_at)
+         VALUES (?, ?, 'maintainer-org', ?, 'Organization', 'selected', NULL)`,
+      )
+      .bind(installationId, input.ownerId, installationId + 1000)
+      .run();
+    await db
+      .prepare("INSERT INTO github_installation_repositories (installation_id, full_name, repo_id) VALUES (?, ?, ?)")
+      .bind(installationId, repoFullName.toLowerCase(), 123)
+      .run();
+
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createBoardMaintainer } = await import("../apps/web/server/boardMaintainerRepo");
+    const { recordBoardRepository } = await import("../apps/web/server/boardRepositoryRepo");
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    const board = await createBoard(db, input.ownerId, `webhook-maintainer-board-${randomUUID()}`, "dev");
+    const repo = await createRepository(db, input.ownerId, { name: input.repoName, url: `https://github.com/${repoFullName}` });
+    await recordBoardRepository(db, board.id, repo.id);
+    const agent = await createTestAgent(db, input.ownerId, {
+      name: "Webhook maintainer",
+      username: `webhook-maintainer-${randomUUID()}`,
+      runtime: "codex",
+      kind: "leader",
+      role: "board-maintainer",
+    });
+    const maintainer = await createBoardMaintainer(db, input.ownerId, {
+      boardId: board.id,
+      agentId: agent.id,
+      amaScheduleId: `sched_webhook_${randomUUID()}`,
+      amaHttpTriggerId: input.httpTriggerId,
+      amaMemoryStoreId: `mem_webhook_${randomUUID()}`,
+      prompt: "Watch GitHub events.",
+      intervalSeconds: 3600,
+      heartbeatEnabled: true,
+      status: "active",
+    });
+    return { repoFullName, installationId, maintainer };
+  }
+
+  function amaSession(id: string, input: { projectId: string; key?: string; maintainerId?: string; phase?: string }) {
+    return {
+      metadata: {
+        uid: id,
+        projectId: input.projectId,
+        name: id,
+        labels: { ...(input.maintainerId ? { maintainerId: input.maintainerId } : {}), ...(input.key ? { key: input.key } : {}) },
+        annotations: {},
+      },
+      spec: { agentId: "agent_1", environmentId: null, runtime: "ama", env: {}, envFrom: [], volumes: [], volumeMounts: [] },
+      status: { phase: input.phase ?? "idle", reason: null },
+    };
+  }
+
   it("returns 503 when GITHUB_APP_WEBHOOK_SECRET is not configured", async () => {
     const { api } = await import("../apps/web/server/routes");
     const body = "{}";
@@ -223,6 +289,125 @@ describe("POST /api/webhooks/github-app route", () => {
     });
     // 200 is the only acceptable status for a valid webhook (no matching tasks is OK)
     expect(res.status).toBe(200);
+  });
+
+  it("closes the maintainer session after an issue is closed", async () => {
+    const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
+    const ownerId = `webhook-maintainer-close-${randomUUID()}`;
+    const projectId = `project_close_${randomUUID()}`;
+    const httpTriggerId = `http_close_${randomUUID()}`;
+    const sessionId = `session_close_${randomUUID()}`;
+    const { repoFullName, installationId, maintainer } = await seedMaintainerWebhookTarget({
+      ownerId,
+      repoName: `maintainer-repo-close-${randomUUID()}`,
+      projectId,
+      httpTriggerId,
+    });
+
+    const sessionPatches: any[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = reqUrl(input);
+        if (url === `https://ama.test/api/v1/triggers/${httpTriggerId}/runs` && reqMethod(input, init) === "POST") {
+          return jsonResponse(amaTriggerRun("run_close", { projectId, triggerId: httpTriggerId, sessionId }), 201);
+        }
+        if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "GET") {
+          return jsonResponse(amaSession(sessionId, { projectId, phase: "idle" }));
+        }
+        if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH") {
+          sessionPatches.push(JSON.parse(await reqBody(input, init)));
+          return jsonResponse(amaSession(sessionId, { projectId, phase: "closed" }));
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    const waitUntil: Promise<void>[] = [];
+    const result = await handleGithubMaintainerEvent(db, makeEnv(), {
+      event: "issues",
+      deliveryId: `delivery-close-${randomUUID()}`,
+      waitUntil: (promise) => waitUntil.push(promise),
+      payload: {
+        action: "closed",
+        installation: { id: installationId },
+        repository: { id: 123, full_name: repoFullName, html_url: `https://github.com/${repoFullName}` },
+        issue: { id: 42, number: 42, state: "closed", html_url: `https://github.com/${repoFullName}/issues/42` },
+        sender: { login: "octocat" },
+      },
+    });
+    await Promise.all(waitUntil);
+
+    expect(result).toEqual({ handled: true, maintainers: [maintainer.id] });
+    expect(sessionPatches).toEqual([{ state: "closed", metadata: { annotations: { closeReason: "user_requested" } } }]);
+  });
+
+  it("reopens a closed maintainer session before a closed issue comment, then closes it after dispatch", async () => {
+    const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
+    const ownerId = `webhook-maintainer-reopen-${randomUUID()}`;
+    const projectId = `project_reopen_${randomUUID()}`;
+    const httpTriggerId = `http_reopen_${randomUUID()}`;
+    const sessionId = `session_reopen_${randomUUID()}`;
+    const repoName = `maintainer-repo-reopen-${randomUUID()}`;
+    const { repoFullName, installationId, maintainer } = await seedMaintainerWebhookTarget({ ownerId, repoName, projectId, httpTriggerId });
+    const key = `github:${repoFullName.toLowerCase()}:issue:42`;
+
+    const calls: Array<{ method: string; url: string; body?: any }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = reqUrl(input);
+        const method = reqMethod(input, init);
+        if (url.startsWith("https://ama.test/api/v1/sessions?") && method === "GET") {
+          calls.push({ method, url });
+          return jsonResponse({ data: [amaSession(sessionId, { projectId, key, maintainerId: maintainer.id, phase: "closed" })], pagination: {} });
+        }
+        if (url === `https://ama.test/api/v1/sessions/${sessionId}` && method === "PATCH") {
+          const body = JSON.parse(await reqBody(input, init));
+          calls.push({ method, url, body });
+          return jsonResponse(
+            amaSession(sessionId, { projectId, key, maintainerId: maintainer.id, phase: body.state === "idle" ? "idle" : "closed" }),
+          );
+        }
+        if (url === `https://ama.test/api/v1/triggers/${httpTriggerId}/runs` && method === "POST") {
+          calls.push({ method, url, body: JSON.parse(await reqBody(input, init)) });
+          return jsonResponse(amaTriggerRun("run_reopen", { projectId, triggerId: httpTriggerId, sessionId }), 201);
+        }
+        if (url === `https://ama.test/api/v1/sessions/${sessionId}` && method === "GET") {
+          calls.push({ method, url });
+          return jsonResponse(amaSession(sessionId, { projectId, key, maintainerId: maintainer.id, phase: "idle" }));
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    const waitUntil: Promise<void>[] = [];
+    const result = await handleGithubMaintainerEvent(db, makeEnv(), {
+      event: "issue_comment",
+      deliveryId: `delivery-reopen-${randomUUID()}`,
+      waitUntil: (promise) => waitUntil.push(promise),
+      payload: {
+        action: "created",
+        installation: { id: installationId },
+        repository: { id: 123, full_name: repoFullName, html_url: `https://github.com/${repoFullName}` },
+        issue: { id: 42, number: 42, state: "closed", html_url: `https://github.com/${repoFullName}/issues/42` },
+        comment: { id: 12345, html_url: `https://github.com/${repoFullName}/issues/42#issuecomment-12345` },
+        sender: { login: "octocat" },
+      },
+    });
+    await Promise.all(waitUntil);
+
+    expect(result).toEqual({ handled: true, maintainers: [maintainer.id] });
+    const lookupUrl = new URL(calls[0].url);
+    expect(lookupUrl.searchParams.get("limit")).toBe("1");
+    expect(lookupUrl.searchParams.get("labelSelector")).toBe(`maintainerId=${maintainer.id},key=${key}`);
+    expect(calls.map((call) => [call.method, call.url.includes("/triggers/") ? "trigger" : (call.body?.state ?? "read")])).toEqual([
+      ["GET", "read"],
+      ["PATCH", "idle"],
+      ["POST", "trigger"],
+      ["GET", "read"],
+      ["PATCH", "closed"],
+    ]);
   });
 
   it.each([
@@ -792,7 +977,7 @@ describe("handleGithubPullRequestEvent", () => {
         if (url === "https://auth.test/.well-known/openid-configuration") return jsonResponse({ access_token: "test-token", expires_in: 3600 });
         if (url === `https://ama.test/api/v1/sessions/${amaSessionId}` && reqMethod(input, init) === "PATCH") {
           stops.push(url);
-          return jsonResponse({ id: amaSessionId, state: "stopped" });
+          return jsonResponse({ id: amaSessionId, state: "closed" });
         }
         // Usage summary (no akSessionId on task so collectUsage is skipped)
         throw new Error(`Unexpected fetch: ${url}`);
