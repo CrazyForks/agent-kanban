@@ -257,11 +257,11 @@ export function formatTaskSession(data: any): string {
 }
 
 function sessionEventPayload(event: any): Record<string, any> {
-  return event?.event?.payload && typeof event.event.payload === "object" && !Array.isArray(event.event.payload) ? event.event.payload : {};
+  return event?.payload && typeof event.payload === "object" && !Array.isArray(event.payload) ? event.payload : {};
 }
 
 function sessionEventType(event: any): string {
-  return typeof event?.event?.type === "string" ? event.event.type : "event";
+  return typeof event?.type === "string" ? event.type : "event";
 }
 
 function sessionEventMessage(event: any): Record<string, any> {

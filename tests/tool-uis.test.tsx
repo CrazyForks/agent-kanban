@@ -181,6 +181,20 @@ describe("parseMcpToolName — MCP tool name parsing", () => {
     });
   });
 
+  it("parses AMA MCP tool name into ns and name", () => {
+    expect(parseMcpToolName("mcp.chrome_devtools.click")).toEqual({
+      ns: "chrome_devtools",
+      name: "click",
+    });
+  });
+
+  it("parses AMA MCP tool names with dotted namespaces", () => {
+    expect(parseMcpToolName("mcp.github.pull_request.create")).toEqual({
+      ns: "github.pull_request",
+      name: "create",
+    });
+  });
+
   it("parses MCP tool name with simple namespace", () => {
     expect(parseMcpToolName("mcp__context7__query-docs")).toEqual({
       ns: "context7",

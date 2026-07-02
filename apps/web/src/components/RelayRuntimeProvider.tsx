@@ -1,4 +1,4 @@
-import type { AgentEvent, ContentBlock } from "@agent-kanban/shared";
+import { type AgentEvent, type ContentBlock, ToolName } from "@agent-kanban/shared";
 import { AssistantRuntimeProvider, type ThreadMessageLike, useExternalStoreRuntime } from "@assistant-ui/react";
 import { type ReactNode, useCallback, useMemo } from "react";
 import type { AgentStatus, RelayEvent } from "../hooks/useSessionRelay";
@@ -35,6 +35,11 @@ type ToolCallPart = {
   toolName: string;
   args: Record<string, unknown>;
   result?: unknown;
+};
+
+type NormalizedToolCall = {
+  name: string;
+  input: Record<string, unknown>;
 };
 
 export function convertEvents(events: RelayEvent[], agentStatus: AgentStatus): ThreadMessageLike[] {
@@ -430,21 +435,23 @@ export function AmaRuntimeProvider({ events: rawEvents, taskDone, children }: Am
 
 export function amaEventToRelayEvent(raw: Record<string, unknown>): RelayEvent {
   const canonical = canonicalAmaEvent(raw);
-  if (!canonical) throw new Error("Invalid AMA EventRecord");
-  const id = stringValue(raw.id) ?? stringValue(raw.eventId) ?? `runtime-${stringValue(raw.sequence) ?? crypto.randomUUID()}`;
+  if (!canonical) throw new Error("Invalid AMA SessionEvent: type and payload are required");
+  const id = stringValue(raw.id);
+  if (!id) throw new Error("Invalid AMA SessionEvent: id is required");
+  const timestamp = stringValue(raw.createdAt);
+  if (!timestamp) throw new Error("Invalid AMA SessionEvent: createdAt is required");
   const event = canonicalAmaAgentEvent(canonical);
   return {
     id,
     event,
-    timestamp: stringValue(raw.createdAt) ?? stringValue(raw.timestamp) ?? new Date().toISOString(),
+    timestamp,
   };
 }
 
 function canonicalAmaEvent(raw: Record<string, unknown>): { type: string; payload: Record<string, unknown> } | null {
-  const stored = objectValue(raw.event);
-  const storedType = stringValue(stored?.type);
-  const storedPayload = objectValue(stored?.payload);
-  return storedType && storedPayload ? { type: storedType, payload: storedPayload } : null;
+  const type = stringValue(raw.type);
+  const payload = objectValue(raw.payload);
+  return type && payload ? { type, payload } : null;
 }
 
 function canonicalAmaAgentEvent(input: { type: string; payload: Record<string, unknown> }): AgentEvent {
@@ -515,11 +522,12 @@ function canonicalContentBlocks(content: unknown[]): ContentBlock[] {
           if (!toolCallId || !toolName || !input) {
             throw new Error("Invalid AMA EventRecord: tool_call requires toolCall.id, toolCall.name, and object toolCall.input");
           }
+          const normalized = normalizeAmaToolCall(toolName, input);
           return {
             type: "tool_use",
             id: toolCallId,
-            name: normalizeAmaToolName(toolName),
-            input,
+            name: normalized.name,
+            input: normalized.input,
           };
         }
         case "tool_result": {
@@ -560,10 +568,70 @@ function requireAmaMessageId(message: Record<string, unknown>): string {
   return messageId;
 }
 
-function normalizeAmaToolName(toolName: string): string {
-  if (toolName === "bash") return "Bash";
-  if (toolName === "sandbox.exec") return "Bash";
-  return toolName;
+function normalizeAmaToolCall(toolName: string, input: Record<string, unknown>): NormalizedToolCall {
+  switch (toolName) {
+    case "bash":
+      return { name: ToolName.Bash, input };
+    case "read":
+      return {
+        name: ToolName.Read,
+        input: {
+          filePath: input.path,
+          offset: input.offset,
+          limit: input.limit,
+        },
+      };
+    case "write":
+      return {
+        name: ToolName.Write,
+        input: {
+          filePath: input.path,
+          content: input.content,
+        },
+      };
+    case "edit":
+      return normalizeAmaEditToolCall(input);
+    case "grep":
+      return { name: ToolName.Grep, input };
+    case "find":
+      return {
+        name: ToolName.Glob,
+        input: {
+          pattern: input.glob ?? input.pattern,
+          path: input.path,
+        },
+      };
+    case "fetch":
+      return { name: ToolName.WebFetch, input };
+    case "web_search":
+      return { name: ToolName.WebSearch, input };
+    default:
+      return { name: toolName, input };
+  }
+}
+
+function normalizeAmaEditToolCall(input: Record<string, unknown>): NormalizedToolCall {
+  const edits = Array.isArray(input.edits) ? input.edits.map(objectValue).filter((edit): edit is Record<string, unknown> => edit !== null) : [];
+  if (edits.length === 1) {
+    return {
+      name: ToolName.Edit,
+      input: {
+        filePath: input.path,
+        oldString: edits[0].oldText,
+        newString: edits[0].newText,
+      },
+    };
+  }
+  return {
+    name: ToolName.MultiEdit,
+    input: {
+      filePath: input.path,
+      edits: edits.map((edit) => ({
+        oldString: edit.oldText,
+        newString: edit.newText,
+      })),
+    },
+  };
 }
 
 function canonicalToolResultText(result: Record<string, unknown> | null): string {

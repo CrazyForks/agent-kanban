@@ -20,7 +20,7 @@ import {
 } from "../packages/cli/src/output";
 
 function sessionEvent(sequence: number, type: string, payload: Record<string, unknown>) {
-  return { id: `event-${sequence}`, sessionId: "session-1", sequence, createdAt: "2026-07-01T00:00:00.000Z", event: { type, payload } };
+  return { id: `event-${sequence}`, sessionId: "session-1", sequence, createdAt: "2026-07-01T00:00:00.000Z", type, payload };
 }
 
 describe("formatTask", () => {

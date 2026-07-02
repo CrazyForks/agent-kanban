@@ -280,11 +280,18 @@ export const Markdown: FC<{ text: string }> = ({ text }) => (
 // ─── MCP tool name parser ────────────────────────────────────────────────────
 
 /**
- * Split a Claude Code MCP tool name into namespace + tool parts.
+ * Split an MCP tool name into namespace + tool parts.
+ * `mcp.chrome_devtools.click` → { ns: "chrome_devtools", name: "click" }
  * `mcp__chrome_devtools__click` → { ns: "chrome_devtools", name: "click" }
  * Returns null for non-MCP names.
  */
 export function parseMcpToolName(toolName: string): { ns: string; name: string } | null {
+  if (toolName.startsWith("mcp.")) {
+    const rest = toolName.slice(4);
+    const idx = rest.lastIndexOf(".");
+    if (idx === -1) return { ns: "mcp", name: rest };
+    return { ns: rest.slice(0, idx), name: rest.slice(idx + 1) };
+  }
   if (!toolName.startsWith("mcp__")) return null;
   const rest = toolName.slice(5);
   const idx = rest.indexOf("__");

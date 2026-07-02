@@ -828,12 +828,12 @@ function cloudTaskInitialPrompt(task: Task, resourceRefs: { owner: string; repo:
   const prompt = [
     `You are assigned AK task ${task.id}: ${task.title}`,
     "",
-    "You work inside a cloud sandbox. Run every shell command with the sandbox.exec tool. Environment variables (AK_*, GH_TOKEN, GIT_*) are already set for those commands.",
+    "You work inside a cloud sandbox. Run every shell command with the bash tool. Environment variables (AK_*, GH_TOKEN, GIT_*) are already set for those commands.",
     repo ? `The repository ${repo.owner}/${repo.repo} is already cloned at ${repoDir}; git push credentials are preconfigured.` : null,
     "Follow the Agent Kanban worker lifecycle. Use the agent-kanban workflow; do not use the ak-task leader workflow.",
     "The full task description is intentionally not included here. Get the authoritative task details, status, rejection history, logs, and messages with `ak describe task` after installing the AK CLI.",
     "",
-    "Follow these steps in order, one sandbox.exec command at a time:",
+    "Follow these steps in order, one bash command at a time:",
     // npm is unusable inside the sandbox (orphaned workers hang the exec
     // pipe), so the CLI ships as a single-file bundle served by this server.
     `1. Install the AK CLI: curl -fsS "$AK_API_URL/cli/install.sh" | sh`,

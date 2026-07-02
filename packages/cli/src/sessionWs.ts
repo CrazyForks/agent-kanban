@@ -21,11 +21,11 @@ function objectValue(value: unknown): Record<string, any> | null {
 }
 
 function runtimeEvent(event: SessionEvent): Record<string, any> | null {
-  return objectValue(event.event);
+  return objectValue(event);
 }
 
 function runtimePayload(event: SessionEvent): Record<string, any> {
-  return objectValue(runtimeEvent(event)?.payload) ?? {};
+  return objectValue(event.payload) ?? {};
 }
 
 function runtimeMessage(event: SessionEvent): Record<string, any> | null {

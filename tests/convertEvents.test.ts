@@ -354,16 +354,15 @@ describe("amaEventToRelayEvent — canonical AMA EventRecord mapping", () => {
   it("maps canonical turn.started records with user message payloads to user chat messages", () => {
     const relayEvent = amaEventToRelayEvent({
       id: "evt-turn-started",
+      sessionId: "session-1",
       sequence: 1,
       createdAt: "2026-04-08T10:00:00.000Z",
-      event: {
-        type: "turn.started",
-        payload: {
-          message: {
-            id: "msg-user-1",
-            role: "user",
-            content: [{ type: "text", text: "Run the smoke test again" }],
-          },
+      type: "turn.started",
+      payload: {
+        message: {
+          id: "msg-user-1",
+          role: "user",
+          content: [{ type: "text", text: "Run the smoke test again" }],
         },
       },
     });
@@ -379,38 +378,36 @@ describe("amaEventToRelayEvent — canonical AMA EventRecord mapping", () => {
     const events = [
       amaEventToRelayEvent({
         id: "evt-tool-call",
+        sessionId: "session-1",
         sequence: 2,
         createdAt: "2026-04-08T10:00:01.000Z",
-        event: {
-          type: "message.completed",
-          payload: {
-            message: {
-              id: "msg-assistant-1",
-              role: "assistant",
-              content: [{ type: "tool_call", toolCall: { id: "call-1", name: "sandbox.exec", input: { command: "echo ok" } } }],
-            },
+        type: "message.completed",
+        payload: {
+          message: {
+            id: "msg-assistant-1",
+            role: "assistant",
+            content: [{ type: "tool_call", toolCall: { id: "call-1", name: "bash", input: { command: "echo ok" } } }],
           },
         },
       }),
       amaEventToRelayEvent({
         id: "evt-tool-result",
+        sessionId: "session-1",
         sequence: 3,
         createdAt: "2026-04-08T10:00:02.000Z",
-        event: {
-          type: "message.completed",
-          payload: {
-            message: {
-              id: "msg-tool-1",
-              role: "tool",
-              parentToolCallId: "call-1",
-              content: [
-                {
-                  type: "tool_result",
-                  toolCallId: "call-1",
-                  result: { content: [{ type: "text", text: "ok" }], exitCode: 0 },
-                },
-              ],
-            },
+        type: "message.completed",
+        payload: {
+          message: {
+            id: "msg-tool-1",
+            role: "tool",
+            parentToolCallId: "call-1",
+            content: [
+              {
+                type: "tool_result",
+                toolCallId: "call-1",
+                result: { content: [{ type: "text", text: "ok" }], exitCode: 0 },
+              },
+            ],
           },
         },
       }),
@@ -432,16 +429,15 @@ describe("amaEventToRelayEvent — canonical AMA EventRecord mapping", () => {
     const events = [
       amaEventToRelayEvent({
         id: "evt-tool-call-bash",
+        sessionId: "session-1",
         sequence: 30,
         createdAt: "2026-04-08T10:00:01.000Z",
-        event: {
-          type: "message.completed",
-          payload: {
-            message: {
-              id: "msg-assistant-bash",
-              role: "assistant",
-              content: [{ type: "tool_call", toolCall: { id: "call-bash", name: "bash", input: { command: "pnpm test" } } }],
-            },
+        type: "message.completed",
+        payload: {
+          message: {
+            id: "msg-assistant-bash",
+            role: "assistant",
+            content: [{ type: "tool_call", toolCall: { id: "call-bash", name: "bash", input: { command: "pnpm test" } } }],
           },
         },
       }),
@@ -461,15 +457,14 @@ describe("amaEventToRelayEvent — canonical AMA EventRecord mapping", () => {
     expect(() =>
       amaEventToRelayEvent({
         id: "event-without-message-id",
+        sessionId: "session-1",
         sequence: 31,
         createdAt: "2026-04-08T10:00:01.000Z",
-        event: {
-          type: "message.completed",
-          payload: {
-            message: {
-              role: "assistant",
-              content: [{ type: "text", text: "no message id" }],
-            },
+        type: "message.completed",
+        payload: {
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "no message id" }],
           },
         },
       }),
@@ -480,16 +475,15 @@ describe("amaEventToRelayEvent — canonical AMA EventRecord mapping", () => {
     expect(() =>
       amaEventToRelayEvent({
         id: "evt-tool-call-invalid",
+        sessionId: "session-1",
         sequence: 32,
         createdAt: "2026-04-08T10:00:01.000Z",
-        event: {
-          type: "message.completed",
-          payload: {
-            message: {
-              id: "msg-assistant-invalid-tool",
-              role: "assistant",
-              content: [{ type: "tool_call", toolCall: { id: "call-invalid", name: "bash", input: "not-object" } }],
-            },
+        type: "message.completed",
+        payload: {
+          message: {
+            id: "msg-assistant-invalid-tool",
+            role: "assistant",
+            content: [{ type: "tool_call", toolCall: { id: "call-invalid", name: "bash", input: "not-object" } }],
           },
         },
       }),
@@ -500,30 +494,27 @@ describe("amaEventToRelayEvent — canonical AMA EventRecord mapping", () => {
     const events = [
       amaEventToRelayEvent({
         id: "evt-update-1",
+        sessionId: "session-1",
         sequence: 4,
         createdAt: "2026-04-08T10:00:03.000Z",
-        event: {
-          type: "message.updated",
-          payload: { message: { id: "msg-stream-1", role: "assistant", content: [{ type: "text", text: "hel" }] } },
-        },
+        type: "message.updated",
+        payload: { message: { id: "msg-stream-1", role: "assistant", content: [{ type: "text", text: "hel" }] } },
       }),
       amaEventToRelayEvent({
         id: "evt-update-2",
+        sessionId: "session-1",
         sequence: 5,
         createdAt: "2026-04-08T10:00:04.000Z",
-        event: {
-          type: "message.updated",
-          payload: { message: { id: "msg-stream-1", role: "assistant", content: [{ type: "text", text: "hello" }] } },
-        },
+        type: "message.updated",
+        payload: { message: { id: "msg-stream-1", role: "assistant", content: [{ type: "text", text: "hello" }] } },
       }),
       amaEventToRelayEvent({
         id: "evt-completed",
+        sessionId: "session-1",
         sequence: 6,
         createdAt: "2026-04-08T10:00:05.000Z",
-        event: {
-          type: "message.completed",
-          payload: { message: { id: "msg-stream-1", role: "assistant", content: [{ type: "text", text: "hello" }] } },
-        },
+        type: "message.completed",
+        payload: { message: { id: "msg-stream-1", role: "assistant", content: [{ type: "text", text: "hello" }] } },
       }),
     ];
 
@@ -537,21 +528,19 @@ describe("amaEventToRelayEvent — canonical AMA EventRecord mapping", () => {
     const events = [
       amaEventToRelayEvent({
         id: "evt-message",
+        sessionId: "session-1",
         sequence: 7,
         createdAt: "2026-04-08T10:00:06.000Z",
-        event: {
-          type: "message.completed",
-          payload: { message: { id: "msg-final-1", role: "assistant", content: [{ type: "text", text: "finished" }] } },
-        },
+        type: "message.completed",
+        payload: { message: { id: "msg-final-1", role: "assistant", content: [{ type: "text", text: "finished" }] } },
       }),
       amaEventToRelayEvent({
         id: "evt-turn-completed",
+        sessionId: "session-1",
         sequence: 8,
         createdAt: "2026-04-08T10:00:07.000Z",
-        event: {
-          type: "turn.completed",
-          payload: { status: "completed", reason: "stop" },
-        },
+        type: "turn.completed",
+        payload: { status: "completed", reason: "stop" },
       }),
     ];
 
@@ -559,6 +548,77 @@ describe("amaEventToRelayEvent — canonical AMA EventRecord mapping", () => {
 
     expect(messages).toHaveLength(1);
     expect((messages[0].content as any[])[0].text).toBe("finished");
+  });
+
+  it("rejects old AMA event wrapper records", () => {
+    expect(() =>
+      amaEventToRelayEvent({
+        id: "evt-old-wrapper",
+        sessionId: "session-1",
+        sequence: 9,
+        createdAt: "2026-04-08T10:00:08.000Z",
+        event: {
+          type: "message.completed",
+          payload: { message: { id: "msg-old-wrapper", role: "assistant", content: [{ type: "text", text: "old" }] } },
+        },
+      }),
+    ).toThrow("Invalid AMA SessionEvent: type and payload are required");
+  });
+
+  it("normalizes AMA sandbox tool inputs to AK tool UI shapes", () => {
+    const events = [
+      amaEventToRelayEvent({
+        id: "evt-read-tool",
+        sessionId: "session-1",
+        sequence: 10,
+        createdAt: "2026-04-08T10:00:09.000Z",
+        type: "message.completed",
+        payload: {
+          message: {
+            id: "msg-read-tool",
+            role: "assistant",
+            content: [{ type: "tool_call", toolCall: { id: "call-read", name: "read", input: { path: "src/app.ts", offset: 1, limit: 20 } } }],
+          },
+        },
+      }),
+      amaEventToRelayEvent({
+        id: "evt-edit-tool",
+        sessionId: "session-1",
+        sequence: 11,
+        createdAt: "2026-04-08T10:00:10.000Z",
+        type: "message.completed",
+        payload: {
+          message: {
+            id: "msg-edit-tool",
+            role: "assistant",
+            content: [
+              {
+                type: "tool_call",
+                toolCall: { id: "call-edit", name: "edit", input: { path: "src/app.ts", edits: [{ oldText: "old", newText: "new" }] } },
+              },
+            ],
+          },
+        },
+      }),
+    ];
+
+    const messages = convertEvents(events, "idle");
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0].content).toEqual([
+      expect.objectContaining({
+        toolCallId: "call-read",
+        toolName: "Read",
+        args: { filePath: "src/app.ts", offset: 1, limit: 20 },
+      }),
+    ]);
+    expect(messages[1].content).toEqual([
+      expect.objectContaining({
+        toolCallId: "call-edit",
+        toolName: "Edit",
+        args: { filePath: "src/app.ts", oldString: "old", newString: "new" },
+      }),
+    ]);
   });
 });
 

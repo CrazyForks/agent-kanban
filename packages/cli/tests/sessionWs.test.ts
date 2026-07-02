@@ -42,7 +42,7 @@ afterEach(() => {
 });
 
 function event(sequence: number, type = "message.completed", payload: Record<string, unknown> = {}) {
-  return { id: `event-${sequence}`, sessionId: "session-1", sequence, createdAt: "2026-07-01T00:00:00.000Z", event: { type, payload } };
+  return { id: `event-${sequence}`, sessionId: "session-1", sequence, createdAt: "2026-07-01T00:00:00.000Z", type, payload };
 }
 
 function assistantTextEvent(sequence: number, text: string) {
@@ -51,7 +51,7 @@ function assistantTextEvent(sequence: number, text: string) {
 
 function toolCallEvent(sequence: number) {
   return event(sequence, "message.completed", {
-    message: { role: "assistant", content: [{ type: "tool_call", toolCall: { id: "call-1", name: "bash" } }] },
+    message: { role: "assistant", content: [{ type: "tool_call", toolCall: { id: "call-1", name: "bash", input: { command: "echo ok" } } }] },
   });
 }
 
