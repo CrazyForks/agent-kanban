@@ -87,11 +87,11 @@ export async function readSessionEvents(url: string, options: ReadSessionEventsO
   const seen = new Set<number>();
   const events: SessionEvent[] = [];
   const limit = options.all ? 200 : (options.recentLimit ?? 20);
-  const order = options.all ? "asc" : "desc";
 
   return new Promise((resolve, reject) => {
     let settled = false;
     let initialBackfillComplete = false;
+    let backfillSeq = 0;
     const connection = connect(url);
     const { ws } = connection;
     let timeout: ReturnType<typeof setTimeout> | null = null;
@@ -113,11 +113,16 @@ export async function readSessionEvents(url: string, options: ReadSessionEventsO
       if (options.watch) return;
       if (timeout) clearTimeout(timeout);
       timeout = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        closeSocket();
-        reject(new Error("Session WebSocket backfill timed out"));
+        fail(new Error("Session WebSocket backfill timed out"));
       }, options.backfillTimeoutMs ?? 30_000);
+    };
+
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      closeSocket();
+      reject(error);
     };
 
     const finish = () => {
@@ -144,15 +149,20 @@ export async function readSessionEvents(url: string, options: ReadSessionEventsO
       if (options.watch) options.onEvent?.(event);
     };
 
+    const sendBackfill = (params: { cursor?: number } = {}) => {
+      const requestId = `backfill-${++backfillSeq}`;
+      ws.send(JSON.stringify({ id: requestId, type: "backfill", requestId, limit, ...params }));
+    };
+
     ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "backfill", order, limit }));
+      sendBackfill();
       armTimeout();
     };
 
     ws.onerror = (event: any) => {
       if (!settled) {
         const detail = typeof event?.message === "string" ? `: ${event.message}` : "";
-        reject(new Error(`Session WebSocket failed${detail}`));
+        fail(new Error(`Session WebSocket failed${detail}`));
       }
     };
 
@@ -166,15 +176,24 @@ export async function readSessionEvents(url: string, options: ReadSessionEventsO
       try {
         frame = raw ? JSON.parse(raw) : null;
       } catch (error) {
-        if (!settled) reject(error);
+        if (error instanceof Error) fail(error);
+        else fail(new Error(String(error)));
+        return;
+      }
+      if (frame?.type === "error" && typeof frame.message === "string") {
+        fail(new Error(frame.message));
+        return;
+      }
+      if (frame?.type === "runner_unavailable" && typeof frame.message === "string") {
+        fail(new Error(frame.message));
         return;
       }
       if (frame?.type === "backfill" && Array.isArray(frame.events)) {
         armTimeout();
         const page = options.all ? frame.events : [...frame.events].reverse();
         for (const event of page) accept(event);
-        if (options.all && frame.hasMore && frame.nextCursor !== undefined && frame.nextCursor !== null) {
-          ws.send(JSON.stringify({ type: "backfill", order: "asc", limit: 200, cursor: frame.nextCursor }));
+        if (options.all && frame.hasMore && typeof frame.nextCursor === "number") {
+          sendBackfill({ cursor: frame.nextCursor });
           return;
         }
         initialBackfillComplete = true;

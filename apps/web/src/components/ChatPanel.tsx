@@ -88,8 +88,14 @@ export function AmaSessionChat({
     let active = true;
     let ws: WebSocket | null = null;
     let reconnect: ReturnType<typeof setTimeout> | null = null;
+    let backfillSeq = 0;
     setPhase("loading");
     setEvents([]);
+
+    function sendBackfill(socket: WebSocket, cursor?: number) {
+      const requestId = `backfill-${++backfillSeq}`;
+      socket.send(JSON.stringify({ id: requestId, type: "backfill", requestId, limit: 200, ...(cursor !== undefined ? { cursor } : {}) }));
+    }
 
     const connect = async () => {
       try {
@@ -99,7 +105,7 @@ export function AmaSessionChat({
         ws.onopen = () => {
           // Request history explicitly; stopped sessions may not push a backfill
           // frame until the client asks for one.
-          ws?.send(JSON.stringify({ type: "backfill", order: "asc", limit: 200 }));
+          if (ws) sendBackfill(ws);
         };
         ws.onmessage = (event) => {
           try {
@@ -109,12 +115,14 @@ export function AmaSessionChat({
               setPhase("ready");
               // Pull older pages over the same socket until the history is whole.
               if (frame.hasMore && typeof frame.nextCursor === "number" && ws?.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "backfill", order: "asc", limit: 200, cursor: frame.nextCursor }));
+                sendBackfill(ws, frame.nextCursor);
               }
             } else if (frame?.type === "event") {
               if (!frame.record) return;
               setEvents((prev) => mergeUnique(prev, [frame.record as RuntimeEvent]));
               setPhase("ready");
+            } else if (frame?.type === "error" || frame?.type === "runner_unavailable") {
+              setPhase("error");
             }
           } catch {
             // ignore a malformed frame

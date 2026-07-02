@@ -241,6 +241,28 @@ describe("ChatPanel", () => {
       expect(await screen.findByText("Session history is not available for this task.")).toBeInTheDocument();
     });
 
+    it("shows error state when the AMA socket returns an error frame", async () => {
+      renderPanel({ amaSessionId: "session_x" });
+
+      const ws = await waitForWebSocket();
+      await act(async () => {
+        ws.emit({ type: "error", message: "Invalid session socket message" });
+      });
+
+      expect(screen.getByText("Session history is not available for this task.")).toBeInTheDocument();
+    });
+
+    it("shows error state when the AMA runner is unavailable", async () => {
+      renderPanel({ amaSessionId: "session_x" });
+
+      const ws = await waitForWebSocket();
+      await act(async () => {
+        ws.emit({ type: "runner_unavailable", message: "runner offline" });
+      });
+
+      expect(screen.getByText("Session history is not available for this task.")).toBeInTheDocument();
+    });
+
     it("renders the AMA provider when taskDone=true after a backfill frame", async () => {
       renderPanel({ amaSessionId: "session_x", taskDone: true });
 
@@ -289,8 +311,8 @@ describe("ChatPanel", () => {
       // The component should have sent a backfill request for the next page.
       expect(lastWebSocket!.sends.length).toBeGreaterThanOrEqual(2);
       const sentFrame = JSON.parse(lastWebSocket!.sends[1]);
-      expect(sentFrame.type).toBe("backfill");
-      expect(sentFrame.cursor).toBe(2);
+      expect(sentFrame).toMatchObject({ id: "backfill-2", type: "backfill", requestId: "backfill-2", limit: 200, cursor: 2 });
+      expect(sentFrame).not.toHaveProperty("order");
     });
 
     it("sends only the initial backfill request when hasMore=false", async () => {
@@ -299,7 +321,9 @@ describe("ChatPanel", () => {
       await deliverBackfill([makeEvent(1)], false, null);
 
       expect(lastWebSocket!.sends.length).toBe(1);
-      expect(JSON.parse(lastWebSocket!.sends[0])).toMatchObject({ type: "backfill", order: "asc", limit: 200 });
+      const sentFrame = JSON.parse(lastWebSocket!.sends[0]);
+      expect(sentFrame).toMatchObject({ id: "backfill-1", type: "backfill", requestId: "backfill-1", limit: 200 });
+      expect(sentFrame).not.toHaveProperty("order");
     });
 
     it("sends only the initial backfill request when nextCursor is not a number", async () => {
