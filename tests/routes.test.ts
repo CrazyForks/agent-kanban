@@ -521,15 +521,14 @@ describe("routes", () => {
             key: "value",
           },
         ]);
-        expect(spec.promptTemplate).toContain(`AK board ${maintainerBoard.id}`);
-        expect(spec.promptTemplate).toContain(`Discover the current repository scope with AK`);
-        expect(spec.promptTemplate).toContain(`Every repository currently attached to board ${maintainerBoard.id} is in your maintenance scope.`);
         expect(spec.promptTemplate).not.toContain("maintainer-org/maintainer-repo");
-        expect(spec.promptTemplate).toContain("saltbo/agent-kanban@ak-maintainer");
         expect(spec.promptTemplate).not.toContain("Maintainer instructions:");
         expect(spec.promptTemplate).not.toContain("Do not use pre-existing gh login state or human GitHub tokens");
         if (body.spec.source.type === "http") {
           expect(body.metadata.name).toMatch(new RegExp(`^${maintainerBoard.name} maintainer .+ GitHub events$`));
+          expect(spec.promptTemplate).toContain(`Received a new GitHub webhook event for AK board ${maintainerBoard.id}`);
+          expect(spec.promptTemplate).not.toContain("Discover the current repository scope with AK");
+          expect(spec.promptTemplate).not.toContain("Read or create HEARTBEAT.md");
           expect(spec.promptTemplate).toContain("{{ body.event }}.{{ body.action }}");
           expect(spec.promptTemplate).toContain("{{ body.repository.full_name }}");
           expect(spec.promptTemplate).toContain('{{#if eq body.subject.type "issue"}}');
@@ -550,6 +549,10 @@ describe("routes", () => {
           expect(spec.promptTemplate).not.toContain("event_context_json");
           return jsonResponse(amaTrigger("http_maintainer", body, { type: "http" }), 201);
         }
+        expect(spec.promptTemplate).toContain(`AK board ${maintainerBoard.id}`);
+        expect(spec.promptTemplate).toContain(`Discover the current repository scope with AK`);
+        expect(spec.promptTemplate).toContain(`Every repository currently attached to board ${maintainerBoard.id} is in your maintenance scope.`);
+        expect(spec.promptTemplate).toContain("saltbo/agent-kanban@ak-maintainer");
         expect(body.spec.source).toEqual({ type: "schedule", schedule: { type: "interval", intervalSeconds: 3600 } });
         return jsonResponse(amaTrigger("sched_maintainer", body, { type: "schedule", intervalSeconds: 3600 }), 201);
       }
@@ -924,9 +927,14 @@ describe("routes", () => {
       );
       expect(heartbeatOnRes.status).toBe(200);
       await expect(heartbeatOnRes.json()).resolves.toEqual(expect.objectContaining({ id: maintainer.id, status: "active", heartbeat_enabled: true }));
-      const heartbeatOnRequests = updateRequests.slice(-1);
-      expect(heartbeatOnRequests).toHaveLength(1);
-      expect(heartbeatOnRequests[0]).toMatchObject({ triggerId: "sched_maintainer", body: { spec: { suspend: false } } });
+      const heartbeatOnRequests = updateRequests.slice(-2);
+      expect(heartbeatOnRequests).toHaveLength(2);
+      expect(heartbeatOnRequests.find((request) => request.triggerId === "sched_maintainer")).toMatchObject({
+        body: { spec: { suspend: false } },
+      });
+      expect(heartbeatOnRequests.find((request) => request.triggerId === "http_maintainer")?.body.spec?.template?.spec?.promptTemplate).toContain(
+        "Received a new GitHub webhook event",
+      );
 
       const updateRes = await apiRequest(
         "PATCH",
@@ -949,7 +957,7 @@ describe("routes", () => {
       expect(
         updateRequests.find((request) => request.triggerId === "sched_maintainer" && request.body.spec?.source?.schedule?.intervalSeconds === 7200)
           ?.body.spec?.template?.spec?.promptTemplate,
-      ).toBeUndefined();
+      ).toContain(`AK board ${maintainerBoard.id}`);
       expect(
         updateRequests.find(
           (request) =>
@@ -967,7 +975,7 @@ describe("routes", () => {
           (request) =>
             request.triggerId === "http_maintainer" && request.body.spec?.template?.spec?.promptTemplate?.includes("{{ body.comment.id }}"),
         )?.body.spec?.template?.spec?.promptTemplate,
-      ).toBeUndefined();
+      ).toContain(`Received a new GitHub webhook event for AK board ${maintainerBoard.id}`);
 
       const runsRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/runs?limit=2`, undefined, userToken);
       expect(runsRes.status).toBe(200);
@@ -2472,6 +2480,8 @@ describe("routes", () => {
         ]);
         expect(body.prompt).toContain(`ak describe task`);
         expect(body.prompt).toContain("do not use the ak-task leader workflow");
+        expect(body.prompt).toContain("create a draft PR");
+        expect(body.prompt).toContain("mark it ready");
         expect(body.prompt.toLowerCase()).toContain("do not end the session without submitting review");
         expect(body.prompt).not.toContain(taskDetail);
         expect(body.prompt).not.toContain("Task detail:");
@@ -2776,6 +2786,8 @@ describe("routes", () => {
         expect(body.prompt).toContain("AK task");
         expect(body.prompt).toContain("ak describe task");
         expect(body.prompt).toContain("do not use the ak-task leader workflow");
+        expect(body.prompt).toContain("create a draft PR");
+        expect(body.prompt).toContain("mark it ready");
         sessionCreateCount += 1;
         return jsonResponse(
           amaSession(`session_release_${sessionCreateCount}`, {

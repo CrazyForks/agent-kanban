@@ -67,7 +67,7 @@ ${agent.soul ?? ""}
 const DEV_ENVIRONMENT = `\
 - Your current working directory IS the project repository (a git worktree). Do not \`cd\` elsewhere.
 - A branch has already been created for you. Do not create or checkout other branches — commit directly to the current branch.
-- Push the current branch and create a PR from it when ready.`;
+- Push the current branch and create a draft PR from it. Mark the PR ready only after the completion note is posted and the task is ready for review.`;
 
 const OPS_ENVIRONMENT = `\
 - Your current working directory is a temporary workspace. You may create files here as needed.

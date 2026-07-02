@@ -78,6 +78,7 @@ function makeProgram(): Command {
 
 let exitSpy: ReturnType<typeof vi.spyOn>;
 let errorSpy: ReturnType<typeof vi.spyOn>;
+let logSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -93,11 +94,13 @@ beforeEach(() => {
     throw new Error("process.exit called");
   }) as any);
   errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 });
 
 afterEach(() => {
   exitSpy.mockRestore();
   errorSpy.mockRestore();
+  logSpy.mockRestore();
 });
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -232,6 +235,27 @@ describe("get session", () => {
     await program.parseAsync(["get", "session", "session-42", "-o", "json"], { from: "user" });
     expect(mockOutput).toHaveBeenCalledWith(
       expect.objectContaining({ session_id: "session-1", events: [event] }),
+      "json",
+      undefined,
+      expect.objectContaining({ kind: "session" }),
+    );
+  });
+
+  it("keeps text output usable when session events are unavailable", async () => {
+    mockReadSessionEvents.mockRejectedValueOnce(new Error("Invalid session socket message"));
+    const program = makeProgram();
+    await program.parseAsync(["get", "session", "session-42"], { from: "user" });
+    expect(mockGetSession).toHaveBeenCalledWith("session-42");
+    expect(logSpy).toHaveBeenCalledWith("  unavailable: Invalid session socket message");
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it("includes events_error in json output when session events are unavailable", async () => {
+    mockReadSessionEvents.mockRejectedValueOnce(new Error("Invalid session socket message"));
+    const program = makeProgram();
+    await program.parseAsync(["get", "session", "session-42", "-o", "json"], { from: "user" });
+    expect(mockOutput).toHaveBeenCalledWith(
+      expect.objectContaining({ session_id: "session-1", events: [], events_error: "Invalid session socket message" }),
       "json",
       undefined,
       expect.objectContaining({ kind: "session" }),

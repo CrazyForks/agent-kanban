@@ -118,6 +118,59 @@ For feature requests, separate product direction from implementation. If the des
 
 For pull requests, act as a maintainer reviewer. Review against the linked issue or AK task, the repository's `AGENTS.md` or equivalent worker instructions, relevant `.feature` behavior specs, tests, CI, and project conventions. Fetch or check out the PR when code-level review is needed; do not assume the repository or PR branch is already present locally. Request changes when product behavior changed without a feature-spec update, tests do not verify the changed behavior, implementation contradicts the spec, verification fails, or the PR bypasses established architecture without an accepted decision.
 
+### Pull Request Review
+
+When a pull request event is the current trigger, fetch live PR state and locate
+the related AK task from the PR body, branch name, comments, task logs, or active
+board tasks.
+
+```bash
+gh pr view <pr-number> --repo <owner>/<repo> --json title,body,state,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,comments,reviews,commits,files
+gh pr diff <pr-number> --repo <owner>/<repo>
+ak get note --task <task-id>
+```
+
+Review gates:
+
+- CI: required checks are successful.
+- Code: the diff matches the task, repository conventions, security boundaries, and architecture.
+- Acceptance: the implementation is directly verifiable against the task acceptance criteria and linked issue or PR intent.
+- Tests: relevant tests, specs, fixtures, and docs are updated with the behavior change.
+- Notes: worker notes explain what changed, how it was verified, and any residual risk.
+
+Reject when a gate fails:
+
+```bash
+ak task reject <task-id> --reason "<specific actionable feedback>"
+```
+
+Request changes on the PR when the feedback belongs in the GitHub review thread.
+Keep the AK rejection reason specific enough for the worker to resume without
+guessing.
+
+Acceptance must be strict. Merge only when the PR can be verified. If acceptance
+is blocked by a small issue inside the PR scope, reject with feedback that asks
+the worker to add the missing verification, test, fixture, spec, command, or
+evidence. If acceptance is blocked by broader project infrastructure, create and
+assign a separate AK task to add the missing verification infrastructure before
+accepting dependent PRs.
+
+A PR is ready for a final decision when all review gates pass, required checks
+are green, the PR is mergeable, linked task context is understood, and maintainer
+comments or requested changes have been resolved.
+
+Before merging, decide whether maintainer review is sufficient or repository
+owner review is required. Request owner review when the PR changes API
+definitions, data structures, data models, architecture, product direction,
+security posture, compatibility, licensing, release policy, or other
+owner/architect decisions. Mention the repository owner in the PR with the
+specific decision needed. Merge directly when the change is within accepted
+project direction and the review gates pass.
+
+```bash
+gh pr merge <pr-number> --repo <owner>/<repo> --squash --delete-branch
+```
+
 For issue and pull request comments or reviews, continue in the same GitHub thread when a maintainer response is useful.
 
 Use subject numbers from the trigger for issue and PR commands. Do not use GitHub database ids with `gh issue view` or `gh pr view`.

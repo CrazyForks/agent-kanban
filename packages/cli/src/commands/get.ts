@@ -60,6 +60,10 @@ function isNotFound(error: unknown): boolean {
   return typeof error === "object" && error !== null && "status" in error && error.status === 404;
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function showSession(
   client: any,
   sessionId: string,
@@ -90,13 +94,17 @@ async function showSession(
   const session = source === "task" ? await client.getTaskSession(sessionId) : await client.getSession(sessionId);
 
   if (fmt !== "text") {
-    const events = await readSessionEvents(url, {
-      all: opts.all,
-      watch: false,
-      filter: mode,
-      recentLimit,
-    });
-    output({ ...session, events }, fmt, undefined, { kind: "session" });
+    try {
+      const events = await readSessionEvents(url, {
+        all: opts.all,
+        watch: false,
+        filter: mode,
+        recentLimit,
+      });
+      output({ ...session, events }, fmt, undefined, { kind: "session" });
+    } catch (error) {
+      output({ ...session, events: [], events_error: errorMessage(error) }, fmt, undefined, { kind: "session" });
+    }
     if (!process.env.VITEST_WORKER_ID) {
       process.exit(0);
     }
@@ -110,20 +118,27 @@ async function showSession(
   }
 
   let printed = false;
-  await readSessionEvents(url, {
-    all: opts.all,
-    watch: opts.watch,
-    filter: mode,
-    recentLimit,
-    onEvent: (event) => {
-      printed = true;
-      const line = formatSessionEvent(event, mode, { verbose: opts.verbose });
-      if (line) console.log(line);
-    },
-  });
+  let eventsError: string | null = null;
+  try {
+    await readSessionEvents(url, {
+      all: opts.all,
+      watch: opts.watch,
+      filter: mode,
+      recentLimit,
+      onEvent: (event) => {
+        printed = true;
+        const line = formatSessionEvent(event, mode, { verbose: opts.verbose });
+        if (line) console.log(line);
+      },
+    });
+  } catch (error) {
+    eventsError = errorMessage(error);
+  }
 
   if (!printed && !opts.tool && !opts.assistant) {
-    console.log("  none");
+    console.log(eventsError ? `  unavailable: ${eventsError}` : "  none");
+  } else if (eventsError) {
+    console.error(`Session events unavailable: ${eventsError}`);
   }
   if (!opts.watch && !process.env.VITEST_WORKER_ID) {
     process.exit(0);

@@ -2162,6 +2162,7 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   const schedule = await updateAmaScheduledAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_schedule_id, {
     agentId: amaAgent.id,
     runtime: amaRuntime,
+    promptTemplate: boardMaintainerScheduledPrompt(boardId),
     intervalSeconds: body.interval_seconds,
     status:
       body.status !== undefined || body.heartbeat_enabled !== undefined ? maintainerScheduledStatus(nextStatus, nextHeartbeatEnabled) : undefined,
@@ -2170,10 +2171,11 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
     runtimeSecretEnv,
     metadata: maintainerSessionMetadata,
   });
-  if (maintainer.ama_http_trigger_id && body.status !== undefined) {
+  if (maintainer.ama_http_trigger_id) {
     await updateAmaHttpAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_http_trigger_id, {
       agentId: amaAgent.id,
       runtime: amaRuntime,
+      promptTemplate: boardMaintainerHttpPrompt(boardId),
       status: body.status,
       resourceRefs,
       runtimeEnv,
@@ -2361,9 +2363,7 @@ function boardMaintainerScheduledPrompt(boardId: string) {
 
 function boardMaintainerHttpPrompt(boardId: string) {
   return [
-    ...boardMaintainerBasePrompt(boardId),
-    "",
-    "Run type: GitHub webhook event.",
+    `Received a new GitHub webhook event for AK board ${boardId}.`,
     "",
     "Event: {{ body.event }}.{{ body.action }}",
     "Delivery: {{ body.delivery_id }}",
