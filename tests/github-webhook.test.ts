@@ -412,6 +412,62 @@ describe("POST /api/webhooks/github-app route", () => {
     ]);
   });
 
+  it("does not dispatch maintainer events for non-allowlisted issue actions", async () => {
+    const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        throw new Error(`Unexpected fetch: ${reqUrl(input)}`);
+      }),
+    );
+
+    const result = await handleGithubMaintainerEvent(db, makeEnv(), {
+      event: "issues",
+      deliveryId: `delivery-edited-${randomUUID()}`,
+      payload: {
+        action: "edited",
+        installation: { id: 123 },
+        repository: { id: 123, full_name: "maintainer-org/maintainer-repo", html_url: "https://github.com/maintainer-org/maintainer-repo" },
+        issue: { id: 42, number: 42, state: "open", html_url: "https://github.com/maintainer-org/maintainer-repo/issues/42" },
+        sender: { login: "octocat" },
+      },
+    });
+
+    expect(result).toEqual({ handled: false, maintainers: [] });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not dispatch a draft pull request opened event to maintainers", async () => {
+    const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        throw new Error(`Unexpected fetch: ${reqUrl(input)}`);
+      }),
+    );
+
+    const result = await handleGithubMaintainerEvent(db, makeEnv(), {
+      event: "pull_request",
+      deliveryId: `delivery-draft-${randomUUID()}`,
+      payload: {
+        action: "opened",
+        installation: { id: 123 },
+        repository: { id: 123, full_name: "maintainer-org/maintainer-repo", html_url: "https://github.com/maintainer-org/maintainer-repo" },
+        pull_request: {
+          id: 77,
+          number: 77,
+          draft: true,
+          state: "open",
+          html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77",
+        },
+        sender: { login: "octocat" },
+      },
+    });
+
+    expect(result).toEqual({ handled: false, maintainers: [] });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("reopens a closed maintainer session before a closed issue comment, then closes it after dispatch", async () => {
     const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
     const ownerId = `webhook-maintainer-reopen-${randomUUID()}`;
@@ -511,6 +567,24 @@ describe("POST /api/webhooks/github-app route", () => {
         merged: false,
       },
       action: "opened",
+      subjectPath: "pull",
+      expectedKeyKind: "pull",
+      extraPayload: {},
+    },
+    {
+      event: "pull_request",
+      subjectKey: "pull_request",
+      subject: {
+        id: 7701,
+        node_id: "PR_ready",
+        number: 78,
+        title: "Webhook PR ready",
+        body: "PR ready body",
+        html_url: "https://github.com/maintainer-org/maintainer-repo/pull/78",
+        draft: false,
+        merged: false,
+      },
+      action: "ready_for_review",
       subjectPath: "pull",
       expectedKeyKind: "pull",
       extraPayload: {},

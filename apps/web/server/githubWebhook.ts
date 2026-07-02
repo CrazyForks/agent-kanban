@@ -131,8 +131,11 @@ export async function handleGithubMaintainerEvent(
   const installationId = input.payload.installation?.id;
   if (!fullName || !installationId) return { handled: false, maintainers: [] };
   const sessionKey = githubMaintainerSessionKey(input);
-  const body = githubMaintainerRunBody(input, sessionKey);
   const lifecycle = githubMaintainerSessionLifecycle(input);
+  if (!lifecycle.dispatchToAgent && !lifecycle.closeWithoutDispatch && !lifecycle.reopenWithoutDispatch) {
+    return { handled: false, maintainers: [] };
+  }
+  const body = githubMaintainerRunBody(input, sessionKey);
 
   const maintainers = await listActiveBoardMaintainersForRepository(db, installationId, fullName);
   if (maintainers.length === 0) return { handled: false, maintainers: [] };
@@ -196,11 +199,25 @@ function githubMaintainerSessionLifecycle(input: { event: string; payload: Maint
   const subjectCloseEvent = (input.event === "issues" || input.event === "pull_request") && action === "closed";
   const subjectReopenEvent = (input.event === "issues" || input.event === "pull_request") && action === "reopened";
   return {
+    dispatchToAgent: githubMaintainerShouldDispatch(input),
     closeWithoutDispatch: subjectCloseEvent,
     reopenWithoutDispatch: subjectReopenEvent,
     reopenBeforeDispatch: subjectReopenEvent || (subjectClosed && !subjectCloseEvent),
     closeAfterDispatch: subjectCloseEvent || (subjectClosed && !subjectReopenEvent),
   };
+}
+
+function githubMaintainerShouldDispatch(input: { event: string; payload: MaintainerWebhookPayload }): boolean {
+  const action = input.payload.action ?? "";
+  if (input.event === "issues") return action === "opened";
+  if (input.event === "pull_request") {
+    if (action === "ready_for_review") return true;
+    return action === "opened" && input.payload.pull_request?.draft !== true;
+  }
+  if (input.event === "issue_comment") return action === "created";
+  if (input.event === "pull_request_review") return action === "submitted";
+  if (input.event === "pull_request_review_comment") return action === "created";
+  return false;
 }
 
 async function findAmaMaintainerSessionByKey(
