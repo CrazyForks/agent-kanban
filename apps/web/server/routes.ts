@@ -2,6 +2,7 @@ import {
   AGENT_RUNTIMES,
   type AgentRuntime,
   type AgentTaint,
+  AMA_ANNOTATION_KEY_IDLE_TIMEOUT_SECONDS,
   AMA_BACKFILL_FAILED_TAINT_KEY,
   type CreateAgentInput,
   type CreateSubagentInput,
@@ -13,6 +14,7 @@ import {
   isValidUsername,
   MAINTAINER_HEARTBEAT_DEFAULT_INTERVAL_SECONDS,
   MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS,
+  MAINTAINER_SESSION_IDLE_TIMEOUT_SECONDS,
   MAINTAINER_TAINT_KEY,
   type MachineRuntime,
   parseScheduledAt,
@@ -1984,7 +1986,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
   });
   const maintainerId = newLongId();
   const triggerName = `${board.name} maintainer ${maintainerId}`;
-  const maintainerSessionMetadata = { labels: { maintainerId } };
+  const maintainerSessionMetadata = maintainerAmaSessionMetadata(maintainerId);
   const vaultId = await resolveAmaSessionSecretVaultId(c.env.DB, c.env, ownerId);
   const maintainerKey = await createMaintainerApiKeySecret({
     env: c.env,
@@ -2167,7 +2169,7 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   const resourceRefs = maintainer.ama_memory_store_id
     ? [{ type: "memory_store", storeId: maintainer.ama_memory_store_id, access: "read_write" }]
     : [];
-  const maintainerSessionMetadata = { labels: { maintainerId: maintainer.id } };
+  const maintainerSessionMetadata = maintainerAmaSessionMetadata(maintainer.id);
   const schedule = await updateAmaScheduledAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_schedule_id, {
     agentId: amaAgent.id,
     runtime: amaRuntime,
@@ -2452,6 +2454,15 @@ function maintainerRuntimeEnv(input: { agentId: string; boardId: string; maintai
     AK_BOARD_ID: input.boardId,
     AK_MAINTAINER_ID: input.maintainerId,
     AK_API_URL: input.apiUrl,
+  };
+}
+
+function maintainerAmaSessionMetadata(maintainerId: string) {
+  return {
+    labels: { maintainerId },
+    annotations: {
+      [AMA_ANNOTATION_KEY_IDLE_TIMEOUT_SECONDS]: String(MAINTAINER_SESSION_IDLE_TIMEOUT_SECONDS),
+    },
   };
 }
 

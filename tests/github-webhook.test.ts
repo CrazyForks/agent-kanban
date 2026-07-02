@@ -224,12 +224,15 @@ describe("POST /api/webhooks/github-app route", () => {
     return { repoFullName, installationId, maintainer };
   }
 
-  function amaSession(id: string, input: { projectId: string; key?: string; maintainerId?: string; phase?: string }) {
+  function amaSession(id: string, input: { projectId: string; key?: string; maintainerId?: string; phase?: string; updatedAt?: string }) {
+    const timestamp = input.updatedAt ?? "2026-01-01T00:00:00.000Z";
     return {
       metadata: {
         uid: id,
         projectId: input.projectId,
         name: id,
+        createdAt: timestamp,
+        updatedAt: timestamp,
         labels: {
           ...(input.maintainerId ? { maintainerId: input.maintainerId } : {}),
           ...(input.key ? { [AK_LABEL_KEY_GITHUB_SUBJECT]: input.key } : {}),
@@ -353,6 +356,53 @@ describe("POST /api/webhooks/github-app route", () => {
       ["PATCH", "closed"],
     ]);
     expect(sessionPatches).toEqual([{ state: "closed", metadata: { annotations: { closeReason: "user_requested" } } }]);
+  });
+
+  it("does not close a recently touched idle maintainer session on issue close", async () => {
+    const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
+    const ownerId = `webhook-maintainer-recent-close-${randomUUID()}`;
+    const projectId = `project_recent_close_${randomUUID()}`;
+    const httpTriggerId = `http_recent_close_${randomUUID()}`;
+    const sessionId = `session_recent_close_${randomUUID()}`;
+    const { repoFullName, installationId, maintainer } = await seedMaintainerWebhookTarget({
+      ownerId,
+      repoName: `maintainer-repo-recent-close-${randomUUID()}`,
+      projectId,
+      httpTriggerId,
+    });
+    const key = `github:${repoFullName.toLowerCase()}:issue:42`;
+
+    const calls: Array<{ method: string; url: string; body?: any }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = reqUrl(input);
+        const method = reqMethod(input, init);
+        if (url.startsWith("https://ama.test/api/v1/sessions?") && method === "GET") {
+          calls.push({ method, url });
+          return jsonResponse({
+            data: [amaSession(sessionId, { projectId, key, maintainerId: maintainer.id, phase: "idle", updatedAt: new Date().toISOString() })],
+            pagination: {},
+          });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    const result = await handleGithubMaintainerEvent(db, makeEnv(), {
+      event: "issues",
+      deliveryId: `delivery-recent-close-${randomUUID()}`,
+      payload: {
+        action: "closed",
+        installation: { id: installationId },
+        repository: { id: 123, full_name: repoFullName, html_url: `https://github.com/${repoFullName}` },
+        issue: { id: 42, number: 42, state: "closed", html_url: `https://github.com/${repoFullName}/issues/42` },
+        sender: { login: "octocat" },
+      },
+    });
+
+    expect(result).toEqual({ handled: true, maintainers: [maintainer.id] });
+    expect(calls.map((call) => [call.method, call.url.includes("/triggers/") ? "trigger" : (call.body?.state ?? "read")])).toEqual([["GET", "read"]]);
   });
 
   it("closes the maintainer session directly when a pull request is converted to draft", async () => {
@@ -522,7 +572,7 @@ describe("POST /api/webhooks/github-app route", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("reopens a closed maintainer session before a closed issue comment, then closes it after dispatch", async () => {
+  it("reopens a closed maintainer session before dispatching a closed issue comment", async () => {
     const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
     const ownerId = `webhook-maintainer-reopen-${randomUUID()}`;
     const projectId = `project_reopen_${randomUUID()}`;
@@ -553,10 +603,6 @@ describe("POST /api/webhooks/github-app route", () => {
           calls.push({ method, url, body: JSON.parse(await reqBody(input, init)) });
           return jsonResponse(amaTriggerRun("run_reopen", { projectId, triggerId: httpTriggerId, sessionId }), 201);
         }
-        if (url === `https://ama.test/api/v1/sessions/${sessionId}` && method === "GET") {
-          calls.push({ method, url });
-          return jsonResponse(amaSession(sessionId, { projectId, key, maintainerId: maintainer.id, phase: "idle" }));
-        }
         throw new Error(`Unexpected fetch: ${url}`);
       }),
     );
@@ -575,9 +621,9 @@ describe("POST /api/webhooks/github-app route", () => {
         sender: { login: "octocat" },
       },
     });
-    await Promise.all(waitUntil);
 
     expect(result).toEqual({ handled: true, maintainers: [maintainer.id] });
+    expect(waitUntil).toEqual([]);
     const lookupUrl = new URL(calls[0].url);
     expect(lookupUrl.searchParams.get("limit")).toBe("1");
     expect(lookupUrl.searchParams.get("labelSelector")).toBe(`maintainerId=${maintainer.id},${AK_LABEL_KEY_GITHUB_SUBJECT}=${key}`);
@@ -585,8 +631,6 @@ describe("POST /api/webhooks/github-app route", () => {
       ["GET", "read"],
       ["PATCH", "idle"],
       ["POST", "trigger"],
-      ["GET", "read"],
-      ["PATCH", "closed"],
     ]);
   });
 

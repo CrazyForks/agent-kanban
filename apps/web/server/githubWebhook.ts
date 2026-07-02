@@ -1,6 +1,12 @@
-import { AK_ANNOTATION_KEY_SOURCE_EVENT, AK_ANNOTATION_KEY_SOURCE_URL, AK_LABEL_KEY_GITHUB_SUBJECT } from "@agent-kanban/shared";
+import {
+  AK_ANNOTATION_KEY_SOURCE_EVENT,
+  AK_ANNOTATION_KEY_SOURCE_URL,
+  AK_LABEL_KEY_GITHUB_SUBJECT,
+  AMA_ANNOTATION_KEY_IDLE_TIMEOUT_SECONDS,
+  MAINTAINER_SESSION_IDLE_TIMEOUT_SECONDS,
+} from "@agent-kanban/shared";
 import { getAmaProjectId } from "./amaOwnerIntegrationRepo";
-import { closeAmaSession, dispatchAmaHttpTriggerRun, listAmaSessions, readAmaSession, reopenAmaSession } from "./amaRuntime";
+import { closeAmaSession, dispatchAmaHttpTriggerRun, listAmaSessions, reopenAmaSession } from "./amaRuntime";
 import { listActiveBoardMaintainersForRepository } from "./boardMaintainerRepo";
 import type { D1 } from "./db";
 import {
@@ -18,6 +24,7 @@ import { cancelTask, completeTask, getTask } from "./taskRepo";
 import type { Env } from "./types";
 
 const logger = createLogger("githubWebhook");
+const MAINTAINER_SAFE_CLOSE_GRACE_MS = 30_000;
 
 // PR state sync comes through a platform GitHub App: users install the app on
 // their repositories (one click, no secrets) and GitHub delivers all
@@ -149,7 +156,7 @@ export async function handleGithubMaintainerEvent(
     }
     if (sessionKey && lifecycle.closeWithoutDispatch) {
       const session = await findAmaMaintainerSessionByKey(env, maintainer.owner_id, projectId, maintainer.id, sessionKey);
-      if (session && session.state !== "closed" && session.state !== "error") {
+      if (session && canCloseMaintainerSession(session)) {
         await closeAmaSession(env, maintainer.owner_id, projectId, session.id, "user_requested");
       }
       processed.push(maintainer.id);
@@ -158,7 +165,7 @@ export async function handleGithubMaintainerEvent(
     if (sessionKey && lifecycle.reopenWithoutDispatch) {
       const session = await findAmaMaintainerSessionByKey(env, maintainer.owner_id, projectId, maintainer.id, sessionKey);
       if (session?.state === "closed") {
-        await reopenAmaSession(env, maintainer.owner_id, projectId, session.id);
+        await reopenAmaSession(env, maintainer.owner_id, projectId, session.id, maintainerSessionIdleTimeoutMetadata());
       }
       processed.push(maintainer.id);
       continue;
@@ -166,29 +173,18 @@ export async function handleGithubMaintainerEvent(
     if (sessionKey && lifecycle.reopenBeforeDispatch) {
       const session = await findAmaMaintainerSessionByKey(env, maintainer.owner_id, projectId, maintainer.id, sessionKey);
       if (session?.state === "closed") {
-        await reopenAmaSession(env, maintainer.owner_id, projectId, session.id);
+        await reopenAmaSession(env, maintainer.owner_id, projectId, session.id, maintainerSessionIdleTimeoutMetadata());
       }
     }
-    const run = await dispatchAmaHttpTriggerRun(env, maintainer.owner_id, {
+    await dispatchAmaHttpTriggerRun(env, maintainer.owner_id, {
       projectId,
       triggerId: maintainer.ama_http_trigger_id,
       idempotencyKey: input.deliveryId ?? `${input.event}:${input.payload.action ?? "unknown"}:${fullName}`,
       body,
     });
-    if (lifecycle.closeAfterDispatch && run.sessionId) {
-      const close = closeAmaSessionWhenIdle(env, maintainer.owner_id, projectId, run.sessionId).catch((error) =>
-        logger.warn(`close maintainer session ${run.sessionId} failed: ${safeMessage(error)}`),
-      );
-      if (input.waitUntil) input.waitUntil(close);
-      else void close;
-    }
     processed.push(maintainer.id);
   }
   return { handled: processed.length > 0, maintainers: processed };
-}
-
-function safeMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function githubMaintainerSessionLifecycle(input: { event: string; payload: MaintainerWebhookPayload }) {
@@ -204,7 +200,6 @@ function githubMaintainerSessionLifecycle(input: { event: string; payload: Maint
     closeWithoutDispatch: subjectCloseEvent || subjectDraftEvent,
     reopenWithoutDispatch: subjectReopenEvent,
     reopenBeforeDispatch: subjectReopenEvent || (subjectClosed && !subjectCloseEvent && !subjectDraftEvent),
-    closeAfterDispatch: subjectCloseEvent || (subjectClosed && !subjectReopenEvent),
   };
 }
 
@@ -228,7 +223,7 @@ async function findAmaMaintainerSessionByKey(
   projectId: string,
   maintainerId: string,
   key: string,
-): Promise<{ id: string; state: string | null } | null> {
+): Promise<{ id: string; state: string | null; updatedAt: string | null } | null> {
   const page = await listAmaSessions(env, ownerId, projectId, {
     limit: 1,
     archived: false,
@@ -236,7 +231,23 @@ async function findAmaMaintainerSessionByKey(
   });
   const session = page.data[0];
   const id = typeof session?.id === "string" ? session.id : null;
-  return id ? { id, state: sessionState(session) } : null;
+  return id ? { id, state: sessionState(session), updatedAt: typeof session.updatedAt === "string" ? session.updatedAt : null } : null;
+}
+
+function canCloseMaintainerSession(session: { state: string | null; updatedAt?: string | null }): boolean {
+  if (session.state !== "idle") return false;
+  if (!session.updatedAt) return true;
+  const updatedAt = Date.parse(session.updatedAt);
+  if (Number.isNaN(updatedAt)) return false;
+  return Date.now() - updatedAt >= MAINTAINER_SAFE_CLOSE_GRACE_MS;
+}
+
+function maintainerSessionIdleTimeoutMetadata() {
+  return {
+    annotations: {
+      [AMA_ANNOTATION_KEY_IDLE_TIMEOUT_SECONDS]: String(MAINTAINER_SESSION_IDLE_TIMEOUT_SECONDS),
+    },
+  };
 }
 
 function recordValue(value: unknown): Record<string, unknown> | null {
@@ -249,24 +260,6 @@ function sessionState(session: Record<string, unknown> | null): string | null {
   if (typeof session.status === "string") return session.status;
   const status = recordValue(session.status);
   return typeof status?.phase === "string" ? status.phase : null;
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function closeAmaSessionWhenIdle(env: Env, ownerId: string, projectId: string, sessionId: string): Promise<void> {
-  for (let attempt = 0; attempt < 36; attempt++) {
-    const session = await readAmaSession(env, ownerId, sessionId, projectId);
-    const state = sessionState(session);
-    if (!session || state === "closed" || state === "error") return;
-    if (state === "idle") {
-      await closeAmaSession(env, ownerId, projectId, sessionId, "user_requested");
-      return;
-    }
-    await delay(5_000);
-  }
-  logger.warn(`maintainer session ${sessionId} did not become idle before close timeout`);
 }
 
 function isOwnGithubAppBotEvent(env: Env, input: { payload: MaintainerWebhookPayload }): boolean {

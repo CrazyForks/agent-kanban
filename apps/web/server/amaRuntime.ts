@@ -962,9 +962,15 @@ export async function closeAmaSession(
   await client.sessions.update(sessionId, { state: "closed", metadata: { annotations: { closeReason: reason } } });
 }
 
-export async function reopenAmaSession(env: Env, ownerId: string, projectId: string, sessionId: string) {
+export async function reopenAmaSession(
+  env: Env,
+  ownerId: string,
+  projectId: string,
+  sessionId: string,
+  metadata?: { labels?: Record<string, string>; annotations?: Record<string, string> },
+) {
   const client = await createAmaClient(env, ownerId, projectId);
-  await client.sessions.update(sessionId, { state: "idle" });
+  await client.sessions.update(sessionId, { state: "idle", ...(metadata ? { metadata } : {}) });
 }
 
 export async function createAmaScheduledAgentTrigger(env: Env, ownerId: string, input: AmaScheduledTriggerInput): Promise<AmaScheduledTrigger> {

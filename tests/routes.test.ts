@@ -1,7 +1,12 @@
 // @vitest-environment node
 
 import { randomUUID } from "node:crypto";
-import { AK_ANNOTATION_KEY_SOURCE_EVENT, AK_LABEL_KEY_GITHUB_SUBJECT } from "@agent-kanban/shared";
+import {
+  AK_ANNOTATION_KEY_SOURCE_EVENT,
+  AK_LABEL_KEY_GITHUB_SUBJECT,
+  AMA_ANNOTATION_KEY_IDLE_TIMEOUT_SECONDS,
+  MAINTAINER_SESSION_IDLE_TIMEOUT_SECONDS,
+} from "@agent-kanban/shared";
 import { SignJWT } from "jose";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -498,6 +503,9 @@ describe("routes", () => {
         const labels = template.metadata.labels;
         expect(body.metadata.name).toMatch(new RegExp(`^${maintainerBoard.name} maintainer .+`));
         expect(labels).toEqual({ maintainerId: expect.any(String) });
+        expect(template.metadata.annotations).toEqual({
+          [AMA_ANNOTATION_KEY_IDLE_TIMEOUT_SECONDS]: String(MAINTAINER_SESSION_IDLE_TIMEOUT_SECONDS),
+        });
         expect(spec.agentId).toBe("ama_agent_maintainer");
         expect(spec.skills).toBeUndefined();
         expect(spec.environmentId).toBeUndefined();
@@ -579,7 +587,12 @@ describe("routes", () => {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         const triggerId = url.endsWith("/http_maintainer") ? "http_maintainer" : "sched_maintainer";
         updateRequests.push({ triggerId, body });
-        if (body.spec?.template?.metadata) expect(body.spec.template.metadata.labels).toEqual({ maintainerId: expect.any(String) });
+        if (body.spec?.template?.metadata) {
+          expect(body.spec.template.metadata.labels).toEqual({ maintainerId: expect.any(String) });
+          expect(body.spec.template.metadata.annotations).toEqual({
+            [AMA_ANNOTATION_KEY_IDLE_TIMEOUT_SECONDS]: String(MAINTAINER_SESSION_IDLE_TIMEOUT_SECONDS),
+          });
+        }
         return jsonResponse(
           amaTrigger(triggerId, body, {
             type: triggerId === "sched_maintainer" ? "schedule" : "http",
@@ -759,6 +772,10 @@ describe("routes", () => {
       expect(triggerRequests.map((request) => request.spec.source.type).sort()).toEqual(["http", "schedule"]);
       expect(triggerRequests[0].spec.template.metadata.labels).toEqual({ maintainerId: maintainer.id });
       expect(triggerRequests[1].spec.template.metadata.labels).toEqual(triggerRequests[0].spec.template.metadata.labels);
+      expect(triggerRequests[0].spec.template.metadata.annotations).toEqual({
+        [AMA_ANNOTATION_KEY_IDLE_TIMEOUT_SECONDS]: String(MAINTAINER_SESSION_IDLE_TIMEOUT_SECONDS),
+      });
+      expect(triggerRequests[1].spec.template.metadata.annotations).toEqual(triggerRequests[0].spec.template.metadata.annotations);
       expect(triggerRequests[0].spec.template.spec.env).toMatchObject({
         AK_AGENT_ID: maintainerAgent.id,
         AK_BOARD_ID: maintainerBoard.id,
