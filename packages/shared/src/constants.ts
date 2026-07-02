@@ -40,9 +40,7 @@ export const MAINTAINER_HEARTBEAT_DEFAULT_INTERVAL_SECONDS = 86400; // 24 hours
 
 export const MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS = 3600; // 1 hour
 
-export const AK_GITHUB_ACTION_ANNOTATION = "agent-kanban.dev/github-action";
-export const AK_GITHUB_DELIVERY_ID_ANNOTATION = "agent-kanban.dev/github-delivery-id";
-export const AK_GITHUB_EVENT_ANNOTATION = "agent-kanban.dev/github-event";
-export const AK_GITHUB_SUBJECT_KEY_LABEL = "agent-kanban.dev/session-key";
+export const AK_ANNOTATION_KEY_SOURCE_EVENT = "agent-kanban.dev/source-event";
+export const AK_LABEL_KEY_GITHUB_SUBJECT = "agent-kanban.dev/session-key";
 
 export const SENDER_TYPES = ["user", "agent"] as const;

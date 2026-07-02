@@ -8,12 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import {
-  AK_GITHUB_ACTION_ANNOTATION,
-  AK_GITHUB_DELIVERY_ID_ANNOTATION,
-  AK_GITHUB_EVENT_ANNOTATION,
-  AK_GITHUB_SUBJECT_KEY_LABEL,
-} from "@agent-kanban/shared";
+import { AK_ANNOTATION_KEY_SOURCE_EVENT, AK_LABEL_KEY_GITHUB_SUBJECT } from "@agent-kanban/shared";
 import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTestAgent, seedUser, setupMiniflare } from "./helpers/db";
@@ -237,7 +232,7 @@ describe("POST /api/webhooks/github-app route", () => {
         name: id,
         labels: {
           ...(input.maintainerId ? { maintainerId: input.maintainerId } : {}),
-          ...(input.key ? { [AK_GITHUB_SUBJECT_KEY_LABEL]: input.key } : {}),
+          ...(input.key ? { [AK_LABEL_KEY_GITHUB_SUBJECT]: input.key } : {}),
         },
         annotations: {},
       },
@@ -352,7 +347,7 @@ describe("POST /api/webhooks/github-app route", () => {
     expect(result).toEqual({ handled: true, maintainers: [maintainer.id] });
     expect(waitUntil).toEqual([]);
     const lookupUrl = new URL(calls[0].url);
-    expect(lookupUrl.searchParams.get("labelSelector")).toBe(`maintainerId=${maintainer.id},${AK_GITHUB_SUBJECT_KEY_LABEL}=${key}`);
+    expect(lookupUrl.searchParams.get("labelSelector")).toBe(`maintainerId=${maintainer.id},${AK_LABEL_KEY_GITHUB_SUBJECT}=${key}`);
     expect(calls.map((call) => [call.method, call.url.includes("/triggers/") ? "trigger" : (call.body?.state ?? "read")])).toEqual([
       ["GET", "read"],
       ["PATCH", "closed"],
@@ -418,7 +413,7 @@ describe("POST /api/webhooks/github-app route", () => {
     expect(result).toEqual({ handled: true, maintainers: [maintainer.id] });
     const lookupUrl = new URL(calls[0].url);
     expect(lookupUrl.searchParams.get("limit")).toBe("1");
-    expect(lookupUrl.searchParams.get("labelSelector")).toBe(`maintainerId=${maintainer.id},${AK_GITHUB_SUBJECT_KEY_LABEL}=${key}`);
+    expect(lookupUrl.searchParams.get("labelSelector")).toBe(`maintainerId=${maintainer.id},${AK_LABEL_KEY_GITHUB_SUBJECT}=${key}`);
     expect(calls.map((call) => [call.method, call.url.includes("/triggers/") ? "trigger" : (call.body?.state ?? "read")])).toEqual([
       ["GET", "read"],
       ["PATCH", "idle"],
@@ -656,12 +651,10 @@ describe("POST /api/webhooks/github-app route", () => {
       key: expectedKey,
       metadata: {
         labels: {
-          [AK_GITHUB_SUBJECT_KEY_LABEL]: expectedKey,
+          [AK_LABEL_KEY_GITHUB_SUBJECT]: expectedKey,
         },
         annotations: {
-          [AK_GITHUB_EVENT_ANNOTATION]: event,
-          [AK_GITHUB_ACTION_ANNOTATION]: action,
-          [AK_GITHUB_DELIVERY_ID_ANNOTATION]: deliveryId,
+          [AK_ANNOTATION_KEY_SOURCE_EVENT]: event,
         },
       },
       repository: payload.repository,

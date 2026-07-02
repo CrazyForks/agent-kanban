@@ -1,9 +1,4 @@
-import {
-  AK_GITHUB_ACTION_ANNOTATION,
-  AK_GITHUB_DELIVERY_ID_ANNOTATION,
-  AK_GITHUB_EVENT_ANNOTATION,
-  AK_GITHUB_SUBJECT_KEY_LABEL,
-} from "@agent-kanban/shared";
+import { AK_ANNOTATION_KEY_SOURCE_EVENT, AK_LABEL_KEY_GITHUB_SUBJECT } from "@agent-kanban/shared";
 import { getAmaProjectId } from "./amaOwnerIntegrationRepo";
 import { closeAmaSession, dispatchAmaHttpTriggerRun, listAmaSessions, readAmaSession, reopenAmaSession } from "./amaRuntime";
 import { listActiveBoardMaintainersForRepository } from "./boardMaintainerRepo";
@@ -209,7 +204,7 @@ async function findAmaMaintainerSessionByKey(
   const page = await listAmaSessions(env, ownerId, projectId, {
     limit: 1,
     archived: false,
-    labelSelector: `maintainerId=${maintainerId},${AK_GITHUB_SUBJECT_KEY_LABEL}=${key}`,
+    labelSelector: `maintainerId=${maintainerId},${AK_LABEL_KEY_GITHUB_SUBJECT}=${key}`,
   });
   const session = page.data[0];
   const id = typeof session?.id === "string" ? session.id : null;
@@ -276,11 +271,9 @@ function githubMaintainerSessionKey(input: { event: string; payload: MaintainerW
 
 function githubMaintainerMetadata(input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload }, key: string | null) {
   return {
-    ...(key ? { labels: { [AK_GITHUB_SUBJECT_KEY_LABEL]: key } } : {}),
+    ...(key ? { labels: { [AK_LABEL_KEY_GITHUB_SUBJECT]: key } } : {}),
     annotations: {
-      [AK_GITHUB_EVENT_ANNOTATION]: input.event,
-      [AK_GITHUB_ACTION_ANNOTATION]: input.payload.action ?? "",
-      ...(input.deliveryId ? { [AK_GITHUB_DELIVERY_ID_ANNOTATION]: input.deliveryId } : {}),
+      [AK_ANNOTATION_KEY_SOURCE_EVENT]: input.event,
     },
   };
 }

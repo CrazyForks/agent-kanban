@@ -1,4 +1,4 @@
-import { AK_GITHUB_ACTION_ANNOTATION, AK_GITHUB_EVENT_ANNOTATION, AK_GITHUB_SUBJECT_KEY_LABEL } from "@agent-kanban/shared";
+import { AK_ANNOTATION_KEY_SOURCE_EVENT, AK_LABEL_KEY_GITHUB_SUBJECT } from "@agent-kanban/shared";
 import { ArrowLeft, ExternalLink, FileText, MessageSquare, RefreshCw, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -471,13 +471,13 @@ function stringValue(value: unknown): string | null {
 function githubSubjectFromMetadata(metadata: Record<string, unknown> | undefined): GithubSubject | null {
   const metadataObject = objectValue(metadata);
   const sessionMetadata = objectValue(metadataObject?.sessionMetadata);
-  const sessionKey = metadataString(metadataObject, sessionMetadata, "label", AK_GITHUB_SUBJECT_KEY_LABEL);
+  const sessionKey = metadataString(metadataObject, sessionMetadata, "label", AK_LABEL_KEY_GITHUB_SUBJECT);
   const subject = sessionKey ? githubSubjectFromSessionKey(sessionKey) : null;
   if (!subject) return null;
   return {
     ...subject,
-    event: metadataString(metadataObject, sessionMetadata, "annotation", AK_GITHUB_EVENT_ANNOTATION),
-    action: metadataString(metadataObject, sessionMetadata, "annotation", AK_GITHUB_ACTION_ANNOTATION),
+    event: metadataString(metadataObject, sessionMetadata, "annotation", AK_ANNOTATION_KEY_SOURCE_EVENT),
+    action: null,
   };
 }
 

@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { AK_GITHUB_ACTION_ANNOTATION, AK_GITHUB_EVENT_ANNOTATION, AK_GITHUB_SUBJECT_KEY_LABEL } from "@agent-kanban/shared";
+import { AK_ANNOTATION_KEY_SOURCE_EVENT, AK_LABEL_KEY_GITHUB_SUBJECT } from "@agent-kanban/shared";
 import { fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -83,11 +83,10 @@ describe("MaintainerDetailPage", () => {
           metadata: {
             sessionMetadata: {
               labels: {
-                [AK_GITHUB_SUBJECT_KEY_LABEL]: "github:saltbo/slink:issue:42",
+                [AK_LABEL_KEY_GITHUB_SUBJECT]: "github:saltbo/slink:issue:42",
               },
               annotations: {
-                [AK_GITHUB_EVENT_ANNOTATION]: "issues",
-                [AK_GITHUB_ACTION_ANNOTATION]: "opened",
+                [AK_ANNOTATION_KEY_SOURCE_EVENT]: "issues",
               },
             },
           },
@@ -116,11 +115,10 @@ describe("MaintainerDetailPage", () => {
           metadata: {
             labels: {
               maintainerId: "maintainer-1",
-              [AK_GITHUB_SUBJECT_KEY_LABEL]: "github:saltbo/slink:issue:42",
+              [AK_LABEL_KEY_GITHUB_SUBJECT]: "github:saltbo/slink:issue:42",
             },
             annotations: {
-              [AK_GITHUB_EVENT_ANNOTATION]: "issues",
-              [AK_GITHUB_ACTION_ANNOTATION]: "opened",
+              [AK_ANNOTATION_KEY_SOURCE_EVENT]: "issues",
             },
           },
           createdAt: "2026-06-08T12:00:00.000Z",
@@ -164,7 +162,7 @@ describe("MaintainerDetailPage", () => {
     expect(screen.queryByText("run_failed_without_session")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: /Activity/ }));
-    expect(screen.getByText("issues.opened")).toBeInTheDocument();
+    expect(screen.getAllByText("issues").length).toBeGreaterThan(0);
     expect(screen.getByText("dispatched")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: /Memory/ }));
