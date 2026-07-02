@@ -1,6 +1,6 @@
 import type { TaskStatus } from "./types.js";
 
-export type IdentityType = "user" | "machine" | "agent:worker" | "agent:leader";
+export type IdentityType = "user" | "machine" | "agent:worker" | "agent:leader" | "agent:maintainer";
 
 export type TaskTransition =
   | "claim" // todo → in_progress
@@ -19,12 +19,12 @@ interface TransitionDef {
 const TRANSITIONS: Record<TaskTransition, TransitionDef> = {
   claim: { from: ["todo"], to: "in_progress", allow: ["agent:worker"] },
   review: { from: ["in_progress"], to: "in_review", allow: ["agent:worker"] },
-  reject: { from: ["in_review"], to: "in_progress", allow: ["user", "agent:leader"] },
-  complete: { from: ["in_review"], to: "done", allow: ["user", "machine", "agent:leader"] },
+  reject: { from: ["in_review"], to: "in_progress", allow: ["user", "agent:leader", "agent:maintainer"] },
+  complete: { from: ["in_review"], to: "done", allow: ["user", "machine", "agent:leader", "agent:maintainer"] },
   // todo is cancellable too: an assigned todo task keeps getting re-dispatched
   // by the sweep, so cancel must be able to stop it before any agent claims it.
-  cancel: { from: ["todo", "in_progress", "in_review"], to: "cancelled", allow: ["user", "machine", "agent:leader"] },
-  release: { from: ["in_progress"], to: "todo", allow: ["machine", "agent:leader"] },
+  cancel: { from: ["todo", "in_progress", "in_review"], to: "cancelled", allow: ["user", "machine", "agent:leader", "agent:maintainer"] },
+  release: { from: ["in_progress"], to: "todo", allow: ["machine", "agent:leader", "agent:maintainer"] },
 };
 
 export interface TransitionError {

@@ -168,6 +168,24 @@ export async function isActiveMaintainerForRepository(db: D1, ownerId: string, a
   return Boolean(row);
 }
 
+export async function isActiveMaintainerForBoard(db: D1, ownerId: string, agentId: string, boardId: string): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `
+      SELECT 1
+      FROM board_maintainers
+      WHERE owner_id = ?
+        AND agent_id = ?
+        AND board_id = ?
+        AND status = 'active'
+      LIMIT 1
+    `,
+    )
+    .bind(ownerId, agentId, boardId)
+    .first();
+  return Boolean(row);
+}
+
 export async function listActiveBoardMaintainersForRepository(db: D1, installationId: number, fullName: string): Promise<BoardMaintainer[]> {
   const canonicalFullName = fullName.toLowerCase();
   const result = await db

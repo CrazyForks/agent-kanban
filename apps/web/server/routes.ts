@@ -87,6 +87,7 @@ import {
   deleteBoardMaintainer,
   getBoardMaintainer,
   getOwnedBoard,
+  isActiveMaintainerForBoard,
   isActiveMaintainerForRepository,
   listBoardMaintainers,
   updateBoardMaintainer,
@@ -720,6 +721,39 @@ function resolveActor(c: { get: (key: string) => any }): { actorType: string; ac
 function taskIdentity(c: { get: (key: string) => any }): TaskIdentityType {
   const identity = c.get("identityType");
   if (identity === "maintainer:key") throw new HTTPException(403, { message: "Agent session required" });
+  return identity;
+}
+
+async function taskManagementIdentity(c: { env: Env; get: (key: string) => any }, task: Pick<Task, "board_id">): Promise<TaskIdentityType> {
+  const identity = taskIdentity(c);
+  if (identity !== "agent:worker") return identity;
+
+  const agentId = c.get("agentId");
+  if (agentId && (await isActiveMaintainerForBoard(c.env.DB, c.get("ownerId"), agentId, task.board_id))) {
+    return "agent:maintainer";
+  }
+
+  return identity;
+}
+
+async function requireTaskManager(c: { env: Env; get: (key: string) => any }, task: Pick<Task, "board_id">): Promise<TaskIdentityType> {
+  const identity = await taskManagementIdentity(c, task);
+  if (identity === "agent:worker") {
+    throw new HTTPException(403, { message: "Active board maintainer or leader identity required" });
+  }
+  return identity;
+}
+
+async function validateTaskManagementTransition(
+  c: { env: Env; get: (key: string) => any },
+  action: "complete" | "release" | "cancel" | "reject",
+  task: Pick<Task, "board_id" | "status">,
+): Promise<TaskIdentityType> {
+  const identity = await taskManagementIdentity(c, task);
+  const transitionError = validateTransition(action, task.status, identity);
+  if (transitionError) {
+    throw new HTTPException(transitionError.code === "FORBIDDEN" ? 403 : 409, { message: transitionError.message });
+  }
   return identity;
 }
 
@@ -1708,13 +1742,10 @@ api.post("/api/tasks/:id/complete", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
   const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) return c.json(task);
-  const transitionError = validateTransition("complete", task.status, taskIdentity(c));
-  if (transitionError) {
-    throw new HTTPException(transitionError.code === "FORBIDDEN" ? 403 : 409, { message: transitionError.message });
-  }
+  const identity = await validateTaskManagementTransition(c, "complete", task);
 
   await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
-  const completed = await completeTask(c.env.DB, task.id, actorType, actorId, taskIdentity(c), sessionId);
+  const completed = await completeTask(c.env.DB, task.id, actorType, actorId, identity, sessionId);
   return c.json(completed);
 });
 
@@ -1722,14 +1753,11 @@ api.post("/api/tasks/:id/release", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
   const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) return c.json(task);
-  const transitionError = validateTransition("release", task.status, taskIdentity(c));
-  if (transitionError) {
-    throw new HTTPException(transitionError.code === "FORBIDDEN" ? 403 : 409, { message: transitionError.message });
-  }
+  const identity = await validateTaskManagementTransition(c, "release", task);
 
   const unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
   await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), { ...unbound, status: "todo" }, { apiOrigin: new URL(c.req.url).origin });
-  const released = await releaseTask(c.env.DB, task.id, actorType, actorId, taskIdentity(c), "released", sessionId);
+  const released = await releaseTask(c.env.DB, task.id, actorType, actorId, identity, "released", sessionId);
   return c.json(released);
 });
 
@@ -1739,9 +1767,10 @@ api.post("/api/tasks/:id/assign", async (c) => {
   if (!targetAgentId) throw new HTTPException(400, { message: "agent_id is required" });
 
   const { actorType, actorId, sessionId } = resolveActor(c);
-  await requireAmaConnected(c.env.DB, c.env, c.get("ownerId"));
   const existing = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!existing) throw new HTTPException(404, { message: "Task not found" });
+  await requireTaskManager(c, existing);
+  await requireAmaConnected(c.env.DB, c.env, c.get("ownerId"));
   if (existing.status === "todo" && existing.assigned_to === targetAgentId) {
     const dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), existing, {
       apiOrigin: new URL(c.req.url).origin,
@@ -1787,13 +1816,10 @@ api.post("/api/tasks/:id/cancel", async (c) => {
   const { actorType, actorId, sessionId } = resolveActor(c);
   const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) throw new HTTPException(404, { message: "Task not found" });
-  const transitionError = validateTransition("cancel", task.status, taskIdentity(c));
-  if (transitionError) {
-    throw new HTTPException(transitionError.code === "FORBIDDEN" ? 403 : 409, { message: transitionError.message });
-  }
+  const identity = await validateTaskManagementTransition(c, "cancel", task);
 
   await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
-  const cancelled = await cancelTask(c.env.DB, task.id, actorType, actorId, taskIdentity(c), sessionId);
+  const cancelled = await cancelTask(c.env.DB, task.id, actorType, actorId, identity, sessionId);
   if (!cancelled) throw new HTTPException(404, { message: "Task not found" });
   return c.json(cancelled);
 });
@@ -1811,10 +1837,7 @@ api.post("/api/tasks/:id/reject", async (c) => {
   const body = await c.req.json<{ reason?: string }>().catch(() => ({}) as { reason?: string });
   const task = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!task) throw new HTTPException(404, { message: "Task not found" });
-  const transitionError = validateTransition("reject", task.status, taskIdentity(c));
-  if (transitionError) {
-    throw new HTTPException(transitionError.code === "FORBIDDEN" ? 403 : 409, { message: transitionError.message });
-  }
+  const identity = await validateTaskManagementTransition(c, "reject", task);
 
   try {
     await sendTaskRejectToAma(c.env.DB, c.env, c.get("ownerId"), task, body.reason);
@@ -1829,7 +1852,7 @@ api.post("/api/tasks/:id/reject", async (c) => {
     throw error;
   }
 
-  const rejected = await rejectTask(c.env.DB, task.id, actorType, actorId, taskIdentity(c), body.reason, sessionId);
+  const rejected = await rejectTask(c.env.DB, task.id, actorType, actorId, identity, body.reason, sessionId);
   if (!rejected) throw new HTTPException(404, { message: "Task not found" });
   return c.json(rejected);
 });

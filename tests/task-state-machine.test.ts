@@ -115,12 +115,24 @@ describe("validateTransition", () => {
     expect(validateTransition("reject", "in_review", "agent:leader")).toBeNull();
   });
 
+  it("allows reject: in_review → in_progress (agent:maintainer)", () => {
+    expect(validateTransition("reject", "in_review", "agent:maintainer")).toBeNull();
+  });
+
   it("allows complete: in_review → done (agent:leader)", () => {
     expect(validateTransition("complete", "in_review", "agent:leader")).toBeNull();
   });
 
+  it("allows complete: in_review → done (agent:maintainer)", () => {
+    expect(validateTransition("complete", "in_review", "agent:maintainer")).toBeNull();
+  });
+
   it("allows cancel: in_progress → cancelled (agent:leader)", () => {
     expect(validateTransition("cancel", "in_progress", "agent:leader")).toBeNull();
+  });
+
+  it("allows cancel: in_progress → cancelled (agent:maintainer)", () => {
+    expect(validateTransition("cancel", "in_progress", "agent:maintainer")).toBeNull();
   });
 
   it("allows cancel: in_review → cancelled (agent:leader)", () => {
@@ -654,7 +666,11 @@ describe("task lifecycle HTTP permissions", () => {
   let leaderAgentId: string;
   let leaderSessionId: string;
   let leaderSessionPrivateKey: CryptoKey;
+  let maintainerAgentId: string;
+  let maintainerSessionId: string;
+  let maintainerSessionPrivateKey: CryptoKey;
   let boardId: string;
+  let otherBoardId: string;
 
   async function apiRequest(method: string, path: string, body?: any, token?: string) {
     const { api } = await import("../apps/web/server/routes");
@@ -681,9 +697,17 @@ describe("task lifecycle HTTP permissions", () => {
       .sign(leaderSessionPrivateKey);
   }
 
-  async function createTestTask() {
+  async function signMaintainerSessionJWT(): Promise<string> {
+    return new SignJWT({ sub: maintainerSessionId, aid: maintainerAgentId, jti: randomUUID(), aud: BETTER_AUTH_URL })
+      .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
+      .setIssuedAt()
+      .setExpirationTime("60s")
+      .sign(maintainerSessionPrivateKey);
+  }
+
+  async function createTestTask(targetBoardId = boardId) {
     const { createTask } = await import("../apps/web/server/taskRepo");
-    return createTask(env.DB, userId, { title: `HTTP Task ${randomUUID().slice(0, 8)}`, board_id: boardId });
+    return createTask(env.DB, userId, { title: `HTTP Task ${randomUUID().slice(0, 8)}`, board_id: targetBoardId });
   }
 
   async function forceStatus(taskId: string, status: string) {
@@ -756,6 +780,39 @@ describe("task lifecycle HTTP permissions", () => {
     const { createBoard } = await import("../apps/web/server/boardRepo");
     const board = await createBoard(env.DB, userId, "sm-http-board", "ops");
     boardId = board.id;
+    const otherBoard = await createBoard(env.DB, userId, "sm-http-other-board", "ops");
+    otherBoardId = otherBoard.id;
+
+    const maintainerAgent = await createTestAgent(env.DB, userId, {
+      name: "SM HTTP Maintainer",
+      username: "sm-http-maintainer",
+      runtime: "claude",
+      role: "board-maintainer",
+    });
+    maintainerAgentId = maintainerAgent.id;
+
+    maintainerSessionId = randomUUID();
+    const maintainerKeypair = await crypto.subtle.generateKey({ name: "Ed25519" } as any, true, ["sign", "verify"]);
+    maintainerSessionPrivateKey = (maintainerKeypair as any).privateKey;
+    const maintainerPubJwk = await crypto.subtle.exportKey("jwk", (maintainerKeypair as any).publicKey);
+    await apiRequest(
+      "POST",
+      `/api/agents/${maintainerAgentId}/sessions`,
+      {
+        session_id: maintainerSessionId,
+        session_public_key: maintainerPubJwk.x!,
+      },
+      apiKey,
+    );
+
+    const now = new Date().toISOString();
+    await env.DB.prepare(
+      `INSERT INTO board_maintainers (
+        id, owner_id, board_id, agent_id, ama_schedule_id, prompt, interval_seconds, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, '', 86400, 'active', ?, ?)`,
+    )
+      .bind(`maintainer-${randomUUID()}`, userId, boardId, maintainerAgentId, `sched-${randomUUID()}`, now, now)
+      .run();
   });
 
   it("agent cannot complete a task (403)", async () => {
@@ -780,6 +837,48 @@ describe("task lifecycle HTTP permissions", () => {
     const jwt = await signSessionJWT();
     const res = await apiRequest("POST", `/api/tasks/${task.id}/reject`, {}, jwt);
     expect(res.status).toBe(403);
+  });
+
+  it("active board maintainer can complete a task on its board", async () => {
+    const task = await createTestTask();
+    await forceStatus(task.id, "in_review");
+    const jwt = await signMaintainerSessionJWT();
+    const res = await apiRequest("POST", `/api/tasks/${task.id}/complete`, {}, jwt);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.status).toBe("done");
+  });
+
+  it("active board maintainer can reject a task on its board", async () => {
+    const task = await createTestTask();
+    await forceStatus(task.id, "in_review");
+    const jwt = await signMaintainerSessionJWT();
+    const res = await apiRequest("POST", `/api/tasks/${task.id}/reject`, { reason: "needs work" }, jwt);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.status).toBe("in_progress");
+  });
+
+  it("active board maintainer cannot complete a task on another board", async () => {
+    const task = await createTestTask(otherBoardId);
+    await forceStatus(task.id, "in_review");
+    const jwt = await signMaintainerSessionJWT();
+    const res = await apiRequest("POST", `/api/tasks/${task.id}/complete`, {}, jwt);
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as any;
+    expect(body.error.message).toBe("agent:worker cannot perform complete");
+  });
+
+  it("paused board maintainer cannot complete a task on its board", async () => {
+    await env.DB.prepare("UPDATE board_maintainers SET status = 'paused' WHERE agent_id = ? AND board_id = ?").bind(maintainerAgentId, boardId).run();
+    const task = await createTestTask();
+    await forceStatus(task.id, "in_review");
+    const jwt = await signMaintainerSessionJWT();
+    const res = await apiRequest("POST", `/api/tasks/${task.id}/complete`, {}, jwt);
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as any;
+    expect(body.error.message).toBe("agent:worker cannot perform complete");
+    await env.DB.prepare("UPDATE board_maintainers SET status = 'active' WHERE agent_id = ? AND board_id = ?").bind(maintainerAgentId, boardId).run();
   });
 
   it("worker agent cannot release a task (403)", async () => {
