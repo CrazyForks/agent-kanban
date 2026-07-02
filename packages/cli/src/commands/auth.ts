@@ -156,7 +156,7 @@ export function registerAuthCommand(program: Command) {
           throw new Error("Refusing to modify global git credentials outside an AK worker. Use --print-token.");
         }
         const ghStatus = await configureGithubAuth(auth.token);
-        const ghMessage = ghStatus === "configured" ? "gh authenticated" : "gh not found; git credentials configured";
+        const ghMessage = ghStatus === "configured" ? "gh credentials configured" : "gh not found; git credentials configured";
         console.log(`Configured GitHub auth for ${auth.full_name}; ${ghMessage}; expires at ${auth.expires_at}`);
       }
     });

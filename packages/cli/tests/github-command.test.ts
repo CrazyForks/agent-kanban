@@ -60,7 +60,7 @@ afterEach(() => {
 });
 
 describe("configureGithubAuth", () => {
-  it("writes git credentials, replaces existing github credentials, and configures gh", async () => {
+  it("writes isolated git and gh credentials without invoking gh auth storage", async () => {
     const home = await mkdtemp(join(tmpdir(), "ak-gh-auth-"));
     try {
       await writeFile(join(home, ".git-credentials"), "https://old-token@github.com\nhttps://user:token@example.com\n");
@@ -76,11 +76,12 @@ describe("configureGithubAuth", () => {
       expect(await readFile(join(home, ".git-credentials"), "utf-8")).toBe(
         "https://user:token@example.com\nhttps://x-access-token:ghs_new_token@github.com\n",
       );
+      expect(await readFile(join(home, ".config", "gh", "hosts.yml"), "utf-8")).toBe(
+        "github.com:\n  git_protocol: https\n  oauth_token: ghs_new_token\n  user: x-access-token\n",
+      );
       expect(calls).toEqual([
         { file: "git", args: ["config", "--global", "credential.helper", "store"], input: undefined },
         { file: "gh", args: ["--version"], input: undefined },
-        { file: "gh", args: ["auth", "login", "--hostname", "github.com", "--with-token"], input: "ghs_new_token" },
-        { file: "gh", args: ["auth", "setup-git", "--hostname", "github.com"], input: undefined },
       ]);
     } finally {
       await rm(home, { recursive: true, force: true });
@@ -99,6 +100,9 @@ describe("configureGithubAuth", () => {
 
       expect(status).toBe("missing");
       expect(await readFile(join(home, ".git-credentials"), "utf-8")).toBe("https://x-access-token:ghs_git_only@github.com\n");
+      expect(await readFile(join(home, ".config", "gh", "hosts.yml"), "utf-8")).toBe(
+        "github.com:\n  git_protocol: https\n  oauth_token: ghs_git_only\n  user: x-access-token\n",
+      );
     } finally {
       await rm(home, { recursive: true, force: true });
     }

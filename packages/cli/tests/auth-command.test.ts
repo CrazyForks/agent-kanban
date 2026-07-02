@@ -92,7 +92,7 @@ describe("auth git command", () => {
 
     expect(mockCreateRepositoryGithubToken).toHaveBeenCalledWith("repo-1");
     expect(mockConfigureGithubAuth).toHaveBeenCalledWith("ghs_repo_token");
-    expect(consoleLogSpy).toHaveBeenCalledWith("Configured GitHub auth for org/repo; gh authenticated; expires at 2026-06-25T13:00:00Z");
+    expect(consoleLogSpy).toHaveBeenCalledWith("Configured GitHub auth for org/repo; gh credentials configured; expires at 2026-06-25T13:00:00Z");
   });
 
   it("refuses to modify credentials outside an AK worker", async () => {

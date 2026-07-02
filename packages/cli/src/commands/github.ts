@@ -46,6 +46,15 @@ async function configureGitCredential(token: string, options: GithubAuthOptions 
   await (options.run ?? runCommand)("git", ["config", "--global", "credential.helper", "store"]);
 }
 
+async function configureGhCredential(token: string, options: GithubAuthOptions = {}) {
+  const home = options.homeDir ?? homedir();
+  const configDir = join(home, ".config", "gh");
+  const hostsPath = join(configDir, "hosts.yml");
+  await mkdir(configDir, { recursive: true });
+  await writeFile(hostsPath, `github.com:\n  git_protocol: https\n  oauth_token: ${token}\n  user: x-access-token\n`, { mode: 0o600 });
+  await chmod(hostsPath, 0o600);
+}
+
 async function configureGhCli(token: string, options: GithubAuthOptions = {}): Promise<"configured" | "missing"> {
   const run = options.run ?? runCommand;
   try {
@@ -53,12 +62,11 @@ async function configureGhCli(token: string, options: GithubAuthOptions = {}): P
   } catch {
     return "missing";
   }
-  await run("gh", ["auth", "login", "--hostname", "github.com", "--with-token"], { input: token });
-  await run("gh", ["auth", "setup-git", "--hostname", "github.com"]);
   return "configured";
 }
 
 export async function configureGithubAuth(token: string, options: GithubAuthOptions = {}) {
   await configureGitCredential(token, options);
+  await configureGhCredential(token, options);
   return await configureGhCli(token, options);
 }

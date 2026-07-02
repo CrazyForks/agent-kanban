@@ -192,6 +192,7 @@ create_smoke_agent() {
     "${model_args[@]}" \
     --role "board-maintainer" \
     --bio "Worker agent used by maintainer smoke tests" \
+    --soul "I am a board maintainer smoke-test worker. Inspect board activity, react only to the maintainer smoke trigger, and record deterministic evidence without changing unrelated work." \
     -o json | json_query "data.id"
 }
 
