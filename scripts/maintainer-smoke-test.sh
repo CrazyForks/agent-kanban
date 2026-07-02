@@ -128,6 +128,7 @@ HTTP_ISSUE_REST_JSON=""
 HTTP_REPOSITORY_REST_JSON=""
 HTTP_COMMENT_REST_JSON=""
 TEMP_AMA_WORKSPACE=""
+TEMP_HOST_HOME=""
 
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
@@ -141,6 +142,7 @@ cleanup() {
   if [ -n "$BOARD_REPO_TASK_ID" ]; then ak task cancel "$BOARD_REPO_TASK_ID" >/dev/null 2>&1 || true; ak delete task "$BOARD_REPO_TASK_ID" >/dev/null 2>&1 || true; fi
   if [ "$KEEP_ARTIFACTS" != 1 ] && [ -n "$AGENT_ID" ]; then ak delete agent "$AGENT_ID" >/dev/null 2>&1 || true; fi
   if [ -n "$TEMP_AMA_WORKSPACE" ]; then rm -rf "$TEMP_AMA_WORKSPACE"; fi
+  if [ -n "$TEMP_HOST_HOME" ]; then rm -rf "$TEMP_HOST_HOME"; fi
 }
 trap cleanup EXIT
 
@@ -886,6 +888,7 @@ fi
 rm -f /tmp/maintainer-smoke-git.out
 
 TEMP_AMA_WORKSPACE="$(mktemp -d)"
+TEMP_HOST_HOME="$(mktemp -d)"
 mkdir -p "$TEMP_AMA_WORKSPACE/.ak/config" "$TEMP_AMA_WORKSPACE/.home"
 cp "$ORIGINAL_HOME/.config/agent-kanban/config.json" "$TEMP_AMA_WORKSPACE/.ak/config/config.json"
 LEADER_SESSION_JSON="$(leader_session_json 2>/dev/null || true)"
@@ -902,7 +905,8 @@ fi
 if [ -n "$LEADER_SESSION_JSON" ] \
   && AK_WORKER=1 \
     AMA_WORKSPACE="$TEMP_AMA_WORKSPACE" \
-    HOME="$TEMP_AMA_WORKSPACE/.home" \
+    AMA_WORKSPACE_HOME="$TEMP_AMA_WORKSPACE/.home" \
+    HOME="$TEMP_HOST_HOME" \
     AK_API_URL="$LEADER_API_URL" \
     AK_AGENT_ID="$LEADER_AGENT_ID" \
     AK_SESSION_ID="$LEADER_SESSION_ID" \
@@ -916,7 +920,8 @@ fi
 if [ -n "$LEADER_SESSION_JSON" ] \
   && AK_WORKER=1 \
     AMA_WORKSPACE="$TEMP_AMA_WORKSPACE" \
-    HOME="$TEMP_AMA_WORKSPACE/.home" \
+    AMA_WORKSPACE_HOME="$TEMP_AMA_WORKSPACE/.home" \
+    HOME="$TEMP_HOST_HOME" \
     AK_API_URL="$LEADER_API_URL" \
     AK_AGENT_ID="$LEADER_AGENT_ID" \
     AK_SESSION_ID="$LEADER_SESSION_ID" \
@@ -925,7 +930,10 @@ if [ -n "$LEADER_SESSION_JSON" ] \
   if [ -f "$TEMP_AMA_WORKSPACE/.home/.git-credentials" ] \
     && grep -q "x-access-token:" "$TEMP_AMA_WORKSPACE/.home/.git-credentials" \
     && [ -f "$TEMP_AMA_WORKSPACE/.home/.gitconfig" ] \
-    && grep -q "helper = store" "$TEMP_AMA_WORKSPACE/.home/.gitconfig"; then
+    && grep -q "helper = store --file=$TEMP_AMA_WORKSPACE/.home/.git-credentials" "$TEMP_AMA_WORKSPACE/.home/.gitconfig" \
+    && [ ! -f "$TEMP_HOST_HOME/.git-credentials" ] \
+    && [ ! -f "$TEMP_HOST_HOME/.gitconfig" ] \
+    && [ ! -f "$TEMP_HOST_HOME/.config/gh/hosts.yml" ]; then
     pass "ak auth git configures credentials inside isolated worker HOME"
   else
     fail "AMA workspace git credential files were not written as expected"

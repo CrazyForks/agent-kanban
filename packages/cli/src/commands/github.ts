@@ -6,12 +6,12 @@ import { dirname, join } from "node:path";
 
 type GithubAuthOptions = {
   homeDir?: string;
-  run?: (file: string, args: string[], options?: { input?: string }) => Promise<unknown>;
+  run?: (file: string, args: string[], options?: { input?: string; env?: NodeJS.ProcessEnv }) => Promise<unknown>;
 };
 
-async function runCommand(file: string, args: string[], options: { input?: string } = {}) {
+async function runCommand(file: string, args: string[], options: { input?: string; env?: NodeJS.ProcessEnv } = {}) {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(file, args, { stdio: ["pipe", "ignore", "pipe"] });
+    const child = spawn(file, args, { stdio: ["pipe", "ignore", "pipe"], env: options.env });
     let stderr = "";
     child.stderr.on("data", (chunk) => {
       stderr += String(chunk);
@@ -33,6 +33,16 @@ function githubCredentialLine(token: string): string {
   return `https://x-access-token:${token}@github.com`;
 }
 
+function isolatedGithubEnv(home: string): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    HOME: home,
+    GH_CONFIG_DIR: join(home, ".config", "gh"),
+    GIT_CONFIG_GLOBAL: join(home, ".gitconfig"),
+    GIT_CONFIG_NOSYSTEM: "1",
+  };
+}
+
 async function configureGitCredential(token: string, options: GithubAuthOptions = {}) {
   const home = options.homeDir ?? homedir();
   const credentialsPath = join(home, ".git-credentials");
@@ -43,7 +53,9 @@ async function configureGitCredential(token: string, options: GithubAuthOptions 
   kept.push(line);
   await writeFile(credentialsPath, `${kept.join("\n")}\n`, { mode: 0o600 });
   await chmod(credentialsPath, 0o600);
-  await (options.run ?? runCommand)("git", ["config", "--global", "credential.helper", "store"]);
+  await (options.run ?? runCommand)("git", ["config", "--global", "credential.helper", `store --file=${credentialsPath}`], {
+    env: isolatedGithubEnv(home),
+  });
 }
 
 async function configureGhCredential(token: string, options: GithubAuthOptions = {}) {

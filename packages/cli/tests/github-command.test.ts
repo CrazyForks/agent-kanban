@@ -64,11 +64,11 @@ describe("configureGithubAuth", () => {
     const home = await mkdtemp(join(tmpdir(), "ak-gh-auth-"));
     try {
       await writeFile(join(home, ".git-credentials"), "https://old-token@github.com\nhttps://user:token@example.com\n");
-      const calls: Array<{ file: string; args: string[]; input?: string }> = [];
+      const calls: Array<{ file: string; args: string[]; input?: string; env?: NodeJS.ProcessEnv }> = [];
       const status = await configureGithubAuth("ghs_new_token", {
         homeDir: home,
         run: async (file, args, options) => {
-          calls.push({ file, args, input: options?.input });
+          calls.push({ file, args, input: options?.input, env: options?.env });
         },
       });
 
@@ -79,10 +79,18 @@ describe("configureGithubAuth", () => {
       expect(await readFile(join(home, ".config", "gh", "hosts.yml"), "utf-8")).toBe(
         "github.com:\n  git_protocol: https\n  oauth_token: ghs_new_token\n  user: x-access-token\n",
       );
-      expect(calls).toEqual([
-        { file: "git", args: ["config", "--global", "credential.helper", "store"], input: undefined },
-        { file: "gh", args: ["--version"], input: undefined },
-      ]);
+      expect(calls).toHaveLength(2);
+      expect(calls[0]).toMatchObject({
+        file: "git",
+        args: ["config", "--global", "credential.helper", `store --file=${join(home, ".git-credentials")}`],
+      });
+      expect(calls[0]?.env).toMatchObject({
+        HOME: home,
+        GH_CONFIG_DIR: join(home, ".config", "gh"),
+        GIT_CONFIG_GLOBAL: join(home, ".gitconfig"),
+        GIT_CONFIG_NOSYSTEM: "1",
+      });
+      expect(calls[1]).toMatchObject({ file: "gh", args: ["--version"], input: undefined });
     } finally {
       await rm(home, { recursive: true, force: true });
     }
