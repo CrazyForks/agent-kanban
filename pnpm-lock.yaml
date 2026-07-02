@@ -113,7 +113,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/shared
       '@any-managed-agents/sdk':
-        specifier: github:saltbo/any-managed-agents#ama-sdk-v0.1.0&path:sdk/typescript
+        specifier: github:saltbo/any-managed-agents#9496667c8a25777bae8f624a48b44568ca2cf65c&path:sdk/typescript
         version: https://codeload.github.com/saltbo/any-managed-agents/tar.gz/9496667c8a25777bae8f624a48b44568ca2cf65c#path:sdk/typescript
       '@assistant-ui/react':
         specifier: ^0.12.24
