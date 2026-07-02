@@ -152,6 +152,14 @@ export async function handleGithubMaintainerEvent(
       processed.push(maintainer.id);
       continue;
     }
+    if (sessionKey && lifecycle.reopenWithoutDispatch) {
+      const session = await findAmaMaintainerSessionByKey(env, maintainer.owner_id, projectId, maintainer.id, sessionKey);
+      if (session?.state === "closed") {
+        await reopenAmaSession(env, maintainer.owner_id, projectId, session.id);
+      }
+      processed.push(maintainer.id);
+      continue;
+    }
     if (sessionKey && lifecycle.reopenBeforeDispatch) {
       const session = await findAmaMaintainerSessionByKey(env, maintainer.owner_id, projectId, maintainer.id, sessionKey);
       if (session?.state === "closed") {
@@ -189,6 +197,7 @@ function githubMaintainerSessionLifecycle(input: { event: string; payload: Maint
   const subjectReopenEvent = (input.event === "issues" || input.event === "pull_request") && action === "reopened";
   return {
     closeWithoutDispatch: subjectCloseEvent,
+    reopenWithoutDispatch: subjectReopenEvent,
     reopenBeforeDispatch: subjectReopenEvent || (subjectClosed && !subjectCloseEvent),
     closeAfterDispatch: subjectCloseEvent || (subjectClosed && !subjectReopenEvent),
   };

@@ -355,6 +355,63 @@ describe("POST /api/webhooks/github-app route", () => {
     expect(sessionPatches).toEqual([{ state: "closed", metadata: { annotations: { closeReason: "user_requested" } } }]);
   });
 
+  it("reopens the maintainer session directly when an issue is reopened", async () => {
+    const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
+    const ownerId = `webhook-maintainer-open-${randomUUID()}`;
+    const projectId = `project_open_${randomUUID()}`;
+    const httpTriggerId = `http_open_${randomUUID()}`;
+    const sessionId = `session_open_${randomUUID()}`;
+    const { repoFullName, installationId, maintainer } = await seedMaintainerWebhookTarget({
+      ownerId,
+      repoName: `maintainer-repo-open-${randomUUID()}`,
+      projectId,
+      httpTriggerId,
+    });
+    const key = `github:${repoFullName.toLowerCase()}:issue:42`;
+
+    const calls: Array<{ method: string; url: string; body?: any }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = reqUrl(input);
+        const method = reqMethod(input, init);
+        if (url.startsWith("https://ama.test/api/v1/sessions?") && method === "GET") {
+          calls.push({ method, url });
+          return jsonResponse({ data: [amaSession(sessionId, { projectId, key, maintainerId: maintainer.id, phase: "closed" })], pagination: {} });
+        }
+        if (url === `https://ama.test/api/v1/sessions/${sessionId}` && method === "PATCH") {
+          const body = JSON.parse(await reqBody(input, init));
+          calls.push({ method, url, body });
+          return jsonResponse(amaSession(sessionId, { projectId, key, maintainerId: maintainer.id, phase: "idle" }));
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    const waitUntil: Promise<void>[] = [];
+    const result = await handleGithubMaintainerEvent(db, makeEnv(), {
+      event: "issues",
+      deliveryId: `delivery-open-${randomUUID()}`,
+      waitUntil: (promise) => waitUntil.push(promise),
+      payload: {
+        action: "reopened",
+        installation: { id: installationId },
+        repository: { id: 123, full_name: repoFullName, html_url: `https://github.com/${repoFullName}` },
+        issue: { id: 42, number: 42, state: "open", html_url: `https://github.com/${repoFullName}/issues/42` },
+        sender: { login: "octocat" },
+      },
+    });
+
+    expect(result).toEqual({ handled: true, maintainers: [maintainer.id] });
+    expect(waitUntil).toEqual([]);
+    const lookupUrl = new URL(calls[0].url);
+    expect(lookupUrl.searchParams.get("labelSelector")).toBe(`maintainerId=${maintainer.id},${AK_LABEL_KEY_GITHUB_SUBJECT}=${key}`);
+    expect(calls.map((call) => [call.method, call.url.includes("/triggers/") ? "trigger" : (call.body?.state ?? "read")])).toEqual([
+      ["GET", "read"],
+      ["PATCH", "idle"],
+    ]);
+  });
+
   it("reopens a closed maintainer session before a closed issue comment, then closes it after dispatch", async () => {
     const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
     const ownerId = `webhook-maintainer-reopen-${randomUUID()}`;
