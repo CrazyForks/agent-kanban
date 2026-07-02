@@ -311,7 +311,8 @@ describe("ChatPanel", () => {
       // The component should have sent a backfill request for the next page.
       expect(lastWebSocket!.sends.length).toBeGreaterThanOrEqual(2);
       const sentFrame = JSON.parse(lastWebSocket!.sends[1]);
-      expect(sentFrame).toMatchObject({ id: "backfill-2", type: "backfill", requestId: "backfill-2", limit: 200, cursor: 2 });
+      expect(sentFrame).toMatchObject({ type: "backfill", requestId: "backfill-2", limit: 200, cursor: 2 });
+      expect(sentFrame).not.toHaveProperty("id");
       expect(sentFrame).not.toHaveProperty("order");
     });
 
@@ -322,7 +323,8 @@ describe("ChatPanel", () => {
 
       expect(lastWebSocket!.sends.length).toBe(1);
       const sentFrame = JSON.parse(lastWebSocket!.sends[0]);
-      expect(sentFrame).toMatchObject({ id: "backfill-1", type: "backfill", requestId: "backfill-1", limit: 200 });
+      expect(sentFrame).toMatchObject({ type: "backfill", requestId: "backfill-1", limit: 200 });
+      expect(sentFrame).not.toHaveProperty("id");
       expect(sentFrame).not.toHaveProperty("order");
     });
 

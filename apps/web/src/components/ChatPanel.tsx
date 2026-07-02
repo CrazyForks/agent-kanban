@@ -94,7 +94,7 @@ export function AmaSessionChat({
 
     function sendBackfill(socket: WebSocket, cursor?: number) {
       const requestId = `backfill-${++backfillSeq}`;
-      socket.send(JSON.stringify({ id: requestId, type: "backfill", requestId, limit: 200, ...(cursor !== undefined ? { cursor } : {}) }));
+      socket.send(JSON.stringify({ type: "backfill", requestId, limit: 200, ...(cursor !== undefined ? { cursor } : {}) }));
     }
 
     const connect = async () => {

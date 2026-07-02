@@ -151,7 +151,7 @@ export async function readSessionEvents(url: string, options: ReadSessionEventsO
 
     const sendBackfill = (params: { cursor?: number } = {}) => {
       const requestId = `backfill-${++backfillSeq}`;
-      ws.send(JSON.stringify({ id: requestId, type: "backfill", requestId, limit, ...params }));
+      ws.send(JSON.stringify({ type: "backfill", requestId, limit, ...params }));
     };
 
     ws.onopen = () => {
