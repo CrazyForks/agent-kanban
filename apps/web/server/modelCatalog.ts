@@ -12,11 +12,10 @@ export interface RuntimeModel {
 }
 
 // AK's preferred cloud models, most-preferred first; the rest follow in catalog
-// order. kimi-k2.7-code is the primary (healthy moonshot Workers AI backend);
-// gpt-oss-120b is a cross-vendor fallback that survives a moonshot-side outage.
-// AMA serves an unordered global catalog, so AK imposes its own default order
-// (the picker and smoke both take the first entry). See AK commit 34d9908.
-const PREFERRED_CLOUD_MODELS = ["@cf/moonshotai/kimi-k2.7-code", "@cf/openai/gpt-oss-120b"];
+// order. gpt-oss-120b is first because smoke and default cloud agents require
+// executable tool calls; kimi-k2.7-code currently emits raw tool-call marker
+// text for bash in AMA cloud sessions.
+const PREFERRED_CLOUD_MODELS = ["@cf/openai/gpt-oss-120b", "@cf/moonshotai/kimi-k2.7-code"];
 
 // Models a runtime can run for this owner. The cloud catalog is owned by AMA
 // (the authority — fetched, never hardcoded here); self-hosted runtimes get the

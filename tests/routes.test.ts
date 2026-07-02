@@ -1721,8 +1721,8 @@ describe("routes", () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       // Preferred models come first in the declared order
-      expect(body[0]).toEqual({ id: "@cf/moonshotai/kimi-k2.7-code", name: "Kimi K2.7 Code (Workers AI)" });
-      expect(body[1]).toEqual({ id: "@cf/openai/gpt-oss-120b", name: "GPT-OSS 120B (Workers AI)" });
+      expect(body[0]).toEqual({ id: "@cf/openai/gpt-oss-120b", name: "GPT-OSS 120B (Workers AI)" });
+      expect(body[1]).toEqual({ id: "@cf/moonshotai/kimi-k2.7-code", name: "Kimi K2.7 Code (Workers AI)" });
       // Non-preferred available model follows
       expect(body[2]).toEqual({ id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", name: "Llama 3.3 70B (Workers AI)" });
       // Unavailable model excluded
