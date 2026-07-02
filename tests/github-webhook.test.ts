@@ -686,6 +686,7 @@ describe("POST /api/webhooks/github-app route", () => {
       subjectPath: "pull",
       expectedKeyKind: "pull",
       extraPayload: {},
+      sender: { login: "agent-kanban-local[bot]", type: "Bot" },
     },
     {
       event: "pull_request",
@@ -1011,12 +1012,10 @@ describe("POST /api/webhooks/github-app route", () => {
   });
 
   it.each([
-    "issues",
-    "pull_request",
     "issue_comment",
     "pull_request_review",
     "pull_request_review_comment",
-  ])("does not dispatch maintainer events emitted by the configured GitHub App bot for %s", async (event) => {
+  ])("does not dispatch maintainer conversational events emitted by the configured GitHub App bot for %s", async (event) => {
     const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       throw new Error(`Unexpected fetch: ${reqUrl(input)}`);

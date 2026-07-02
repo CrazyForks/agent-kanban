@@ -262,10 +262,11 @@ function sessionState(session: Record<string, unknown> | null): string | null {
   return typeof status?.phase === "string" ? status.phase : null;
 }
 
-function isOwnGithubAppBotEvent(env: Env, input: { payload: MaintainerWebhookPayload }): boolean {
+function isOwnGithubAppBotEvent(env: Env, input: { event: string; payload: MaintainerWebhookPayload }): boolean {
   const slug = env.GITHUB_APP_SLUG;
   if (!slug) return false;
-  return input.payload.sender?.type === "Bot" && input.payload.sender?.login === `${slug}[bot]`;
+  if (input.payload.sender?.type !== "Bot" || input.payload.sender?.login !== `${slug}[bot]`) return false;
+  return input.event === "issue_comment" || input.event === "pull_request_review" || input.event === "pull_request_review_comment";
 }
 
 function subjectNumber(subject: Record<string, unknown> | undefined): number | null {
