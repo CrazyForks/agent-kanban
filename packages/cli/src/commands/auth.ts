@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import type { Command } from "commander";
 import { createClient, createIdentity } from "../agent/leader.js";
 import { detectRuntime } from "../agent/runtime.js";
@@ -75,6 +76,12 @@ function repositoryProvider(repo: any): "github" {
   const url = String(repo?.url ?? "");
   if (url.includes("github.com:") || url.includes("github.com/")) return "github";
   throw new Error(`Unsupported git provider for repository URL: ${url}`);
+}
+
+function workerGithubAuthHome(): string {
+  if (process.env.AMA_WORKSPACE_HOME) return process.env.AMA_WORKSPACE_HOME;
+  if (process.env.AMA_WORKSPACE) return join(process.env.AMA_WORKSPACE, ".home");
+  throw new Error("Refusing to modify GitHub credentials without an isolated worker HOME.");
 }
 
 export function registerAuthCommand(program: Command) {
@@ -155,7 +162,7 @@ export function registerAuthCommand(program: Command) {
         if (process.env.AK_WORKER !== "1") {
           throw new Error("Refusing to modify global git credentials outside an AK worker. Use --print-token.");
         }
-        const ghStatus = await configureGithubAuth(auth.token);
+        const ghStatus = await configureGithubAuth(auth.token, { homeDir: workerGithubAuthHome() });
         const ghMessage = ghStatus === "configured" ? "gh credentials configured" : "gh not found; git credentials configured";
         console.log(`Configured GitHub auth for ${auth.full_name}; ${ghMessage}; expires at ${auth.expires_at}`);
       }
