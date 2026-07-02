@@ -17,7 +17,7 @@ You are an agent. Use the `ak` CLI to work on tasks. Your identity is initialize
 5. **Check CI** → `gh pr checks <pr-number> --watch` — fix failures, push, and re-check. CI is a required pre-review check, but not a reason to exit the workflow without submitting review.
 6. **Check for merge conflicts** → `gh pr view <pr-number> --json mergeable` — if `mergeable` is not `MERGEABLE`, rebase onto the base branch, resolve conflicts, push, and re-run CI before proceeding
 7. **Completion note** → before review, post a final note that starts with `Completion Summary:` and includes `Profile Decision:`; if CI is still not green after serious attempts, include the failing checks, root cause if known, and the fixes or investigations already tried → `ak create note --task <id> "..."`
-8. **Ready PR** → mark the PR ready for review → `gh pr ready <pr-number>`
+8. **Ready PR** → immediately before submitting task review, mark the PR ready for review → `gh pr ready <pr-number>`
 9. **Submit for review** after CI passes, or after documenting why CI still cannot pass despite repeated attempts; the PR must be conflict-free and the completion note must be posted → `ak task review <id> --pr-url <url>`
 
 ## Agent Profile Change Candidates
@@ -167,7 +167,7 @@ ak create task --board <id> --title "Title" \
 - **Test before pushing** — run the project's test suite and type check locally. All tests must pass before `git push`. Skip only if tests cannot run locally. Do not rely on CI to catch failures you could have caught locally.
 - **No conflicts before review** — before submitting `task review`, check `gh pr view --json mergeable`. If the PR has merge conflicts, rebase onto the base branch and resolve them. Never submit a conflicted PR for review.
 - **Always reach review before exiting** — CI is a required check before `task review`, and you must try to fix failing or pending checks. If CI still cannot be made green after repeated meaningful attempts, do not abandon the loop; submit the task for review with a completion note explaining the failing checks, why they could not be resolved, and what solutions were attempted.
-- Always create a draft PR for code changes. Mark it ready with `gh pr ready <pr-number>` immediately before `task review --pr-url`.
+- Always create a draft PR for code changes. Keep it draft until the completion note exists and the next action is `task review --pr-url`; then mark it ready with `gh pr ready <pr-number>` immediately before submitting task review.
 - Log progress frequently — humans monitor the board.
 - **Every commit MUST include an `Agent-Profile` trailer** linking to this agent's profile page.
 

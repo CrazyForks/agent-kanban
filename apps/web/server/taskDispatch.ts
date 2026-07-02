@@ -812,7 +812,7 @@ function taskInitialPrompt(task: Task) {
     "- If the task is already in_review, done, or cancelled, do not modify files; report the current state.",
     "- Log meaningful progress with `ak create note --task` while working.",
     "- Before submitting review, post a final note that starts with `Completion Summary:` and includes `Profile Decision:`.",
-    "- If you changed code, create a draft PR, mark it ready when the work is reviewable, then submit review with `ak task review` using `--pr-url <PR URL>`. Never submit review without a PR URL after code changes.",
+    "- If you changed code, create a draft PR and keep it draft while work, checks, and the completion note are still pending. After the completion note exists and the PR is otherwise reviewable, mark it ready immediately before submitting review with `ak task review --pr-url <PR URL>`. Never submit review without a PR URL after code changes.",
     `- Before you stop working on this task for any reason, including blockers or partial completion, you must submit it for review with \`ak task review ${task.id}\` after documenting the result. Do not end the session without submitting review.`,
   ].filter(Boolean);
   return prompt.join("\n");
@@ -848,7 +848,7 @@ function cloudTaskInitialPrompt(task: Task, resourceRefs: { owner: string; repo:
           `8. Commit and push: git -C ${repoDir} add -A && git -C ${repoDir} commit -m "<summary>" && git -C ${repoDir} push -u origin ${branch}`,
           `9. Create a draft pull request (replace <base> with the default branch from step 4): gh pr create --draft --repo ${repo.owner}/${repo.repo} --head ${branch} --base <base> --title "${task.title.replaceAll('"', "'")}" --body "AK task ${task.id}" - the command prints the PR URL.`,
           "10. Post a final note that starts with `Completion Summary:` and includes `Profile Decision:`.",
-          `11. Mark the PR ready for review: gh pr ready <pr-number> --repo ${repo.owner}/${repo.repo}`,
+          `11. Mark the PR ready for review immediately before task review: gh pr ready <pr-number> --repo ${repo.owner}/${repo.repo}`,
           `12. Submit for review before stopping: ak task review ${task.id} --pr-url <PR URL>`,
         ]
       : [
