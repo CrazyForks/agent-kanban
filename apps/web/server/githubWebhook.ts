@@ -12,6 +12,7 @@ import {
   upsertInstallation,
 } from "./githubInstallations";
 import { createLogger } from "./logger";
+import { AK_GITHUB_SUBJECT_KEY_LABEL } from "./metadataKeys";
 import { releaseTaskRuntimeBinding } from "./taskDispatch";
 import { cancelTask, completeTask, getTask } from "./taskRepo";
 import type { Env } from "./types";
@@ -129,8 +130,8 @@ export async function handleGithubMaintainerEvent(
   const fullName = input.payload.repository?.full_name?.toLowerCase();
   const installationId = input.payload.installation?.id;
   if (!fullName || !installationId) return { handled: false, maintainers: [] };
-  const body = githubMaintainerRunBody(input);
-  const sessionKey = typeof body.key === "string" ? body.key : null;
+  const sessionKey = githubMaintainerSessionKey(input);
+  const body = githubMaintainerRunBody(input, sessionKey);
   const lifecycle = githubMaintainerSessionLifecycle(input);
 
   const maintainers = await listActiveBoardMaintainersForRepository(db, installationId, fullName);
@@ -194,7 +195,7 @@ async function findAmaMaintainerSessionByKey(
   const page = await listAmaSessions(env, ownerId, projectId, {
     limit: 1,
     archived: false,
-    labelSelector: `maintainerId=${maintainerId},key=${key}`,
+    labelSelector: `maintainerId=${maintainerId},${AK_GITHUB_SUBJECT_KEY_LABEL}=${key}`,
   });
   const session = page.data[0];
   const id = typeof session?.id === "string" ? session.id : null;
@@ -267,11 +268,15 @@ function githubSubjectUrl(repository: MaintainerWebhookPayload["repository"], su
   return typeof subject?.html_url === "string" ? subject.html_url : null;
 }
 
-function githubMaintainerMetadata(input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload }): Record<string, unknown> {
+function githubMaintainerMetadata(
+  input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload },
+  key: string | null,
+): Record<string, unknown> {
   const { subject, type } = githubMaintainerSubject(input);
   const repository = input.payload.repository;
   const number = subjectNumber(subject);
   return {
+    ...(key ? { labels: { [AK_GITHUB_SUBJECT_KEY_LABEL]: key } } : {}),
     github: {
       event: input.event,
       action: input.payload.action ?? "",
@@ -343,9 +348,11 @@ function compactReview(review: Record<string, unknown> | undefined) {
   };
 }
 
-function githubMaintainerRunBody(input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload }): Record<string, unknown> {
+function githubMaintainerRunBody(
+  input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload },
+  key: string | null,
+): Record<string, unknown> {
   const { subject, type } = githubMaintainerSubject(input);
-  const key = githubMaintainerSessionKey(input);
   const body = {
     event: input.event,
     action: input.payload.action ?? "",
@@ -356,7 +363,7 @@ function githubMaintainerRunBody(input: { event: string; deliveryId?: string | n
     comment: compactComment(input.payload.comment),
     review: compactReview(input.payload.review),
     sender: compactActor(input.payload.sender),
-    metadata: githubMaintainerMetadata(input),
+    metadata: githubMaintainerMetadata(input, key),
   };
   return body;
 }

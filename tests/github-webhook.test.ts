@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { AK_GITHUB_SUBJECT_KEY_LABEL } from "../apps/web/server/metadataKeys";
 import { createTestAgent, seedUser, setupMiniflare } from "./helpers/db";
 
 const WEBHOOK_SECRET = "test-webhook-secret-xyz";
@@ -229,7 +230,10 @@ describe("POST /api/webhooks/github-app route", () => {
         uid: id,
         projectId: input.projectId,
         name: id,
-        labels: { ...(input.maintainerId ? { maintainerId: input.maintainerId } : {}), ...(input.key ? { key: input.key } : {}) },
+        labels: {
+          ...(input.maintainerId ? { maintainerId: input.maintainerId } : {}),
+          ...(input.key ? { [AK_GITHUB_SUBJECT_KEY_LABEL]: input.key } : {}),
+        },
         annotations: {},
       },
       spec: { agentId: "agent_1", environmentId: null, runtime: "ama", env: {}, envFrom: [], volumes: [], volumeMounts: [] },
@@ -400,7 +404,7 @@ describe("POST /api/webhooks/github-app route", () => {
     expect(result).toEqual({ handled: true, maintainers: [maintainer.id] });
     const lookupUrl = new URL(calls[0].url);
     expect(lookupUrl.searchParams.get("limit")).toBe("1");
-    expect(lookupUrl.searchParams.get("labelSelector")).toBe(`maintainerId=${maintainer.id},key=${key}`);
+    expect(lookupUrl.searchParams.get("labelSelector")).toBe(`maintainerId=${maintainer.id},${AK_GITHUB_SUBJECT_KEY_LABEL}=${key}`);
     expect(calls.map((call) => [call.method, call.url.includes("/triggers/") ? "trigger" : (call.body?.state ?? "read")])).toEqual([
       ["GET", "read"],
       ["PATCH", "idle"],
@@ -617,6 +621,7 @@ describe("POST /api/webhooks/github-app route", () => {
     const body = JSON.stringify(payload);
     const sig = await signWebhookBody(body);
     const deliveryId = `delivery-${event}-${randomUUID()}`;
+    const expectedKey = `github:${repoFullName.toLowerCase()}:${expectedKeyKind}:${subject.number}`;
     const res = await apiRequest("POST", "/api/webhooks/github-app", body, {
       "x-hub-signature-256": sig,
       "x-github-event": event,
@@ -634,8 +639,11 @@ describe("POST /api/webhooks/github-app route", () => {
       event,
       action,
       delivery_id: deliveryId,
-      key: `github:${repoFullName.toLowerCase()}:${expectedKeyKind}:${subject.number}`,
+      key: expectedKey,
       metadata: {
+        labels: {
+          [AK_GITHUB_SUBJECT_KEY_LABEL]: expectedKey,
+        },
         github: {
           event,
           action,
