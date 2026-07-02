@@ -1,4 +1,4 @@
-import { AK_ANNOTATION_KEY_SOURCE_EVENT, AK_LABEL_KEY_GITHUB_SUBJECT } from "@agent-kanban/shared";
+import { AK_ANNOTATION_KEY_SOURCE_EVENT, AK_ANNOTATION_KEY_SOURCE_URL, AK_LABEL_KEY_GITHUB_SUBJECT } from "@agent-kanban/shared";
 import { ArrowLeft, ExternalLink, FileText, MessageSquare, RefreshCw, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -163,7 +163,7 @@ export function MaintainerDetailPage() {
           </TabsContent>
 
           <TabsContent value="activity">
-            <ActivityPanel runs={runs as MaintainerRun[]} loading={runsLoading} />
+            <ActivityPanel runs={runs as MaintainerRun[]} loading={runsLoading} onOpenSession={setSelectedSession} />
           </TabsContent>
         </Tabs>
       </main>
@@ -294,7 +294,15 @@ function MaintainerSessionDrawer({
   );
 }
 
-function ActivityPanel({ runs, loading }: { runs: MaintainerRun[]; loading: boolean }) {
+function ActivityPanel({
+  runs,
+  loading,
+  onOpenSession,
+}: {
+  runs: MaintainerRun[];
+  loading: boolean;
+  onOpenSession: (session: MaintainerSession) => void;
+}) {
   if (loading) {
     return (
       <div className="space-y-2">
@@ -326,15 +334,31 @@ function ActivityPanel({ runs, loading }: { runs: MaintainerRun[]; loading: bool
         <TableBody>
           {runs.map((run) => {
             const github = githubSubjectFromMetadata(run.metadata);
+            const session = run.session_id ? ({ id: run.session_id, metadata: run.metadata } satisfies MaintainerSession) : null;
             return (
               <TableRow key={run.id} className="border-border hover:bg-surface-tertiary">
                 <TableCell className="max-w-[360px] px-3 py-2" title={run.id}>
                   <GithubSubjectLink subject={github} fallback={run.id} />
                 </TableCell>
-                <TableCell className="px-3 py-2 font-mono text-xs text-content-secondary">{runEvent(run, github)}</TableCell>
+                <TableCell className="px-3 py-2">
+                  <RunEventLink run={run} github={github} />
+                </TableCell>
                 <TableCell className="px-3 py-2 font-mono text-xs text-content-secondary">{run.status}</TableCell>
-                <TableCell className="max-w-[180px] truncate px-3 py-2 font-mono text-xs text-content-secondary" title={run.session_id ?? ""}>
-                  {run.session_id ?? "none"}
+                <TableCell className="max-w-[180px] truncate px-3 py-2" title={run.session_id ?? ""}>
+                  {session ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 min-w-0 justify-start gap-2 px-1 font-mono text-xs text-accent hover:text-accent"
+                      onClick={() => onOpenSession(session)}
+                    >
+                      <MessageSquare className="size-3.5 shrink-0" />
+                      <span className="truncate">{session.id}</span>
+                    </Button>
+                  ) : (
+                    <span className="font-mono text-xs text-content-secondary">none</span>
+                  )}
                 </TableCell>
                 <TableCell className="px-3 py-2 font-mono text-xs text-content-secondary">
                   {runTimestamp(run) ? formatRelative(runTimestamp(run)!) : "unknown"}
@@ -458,6 +482,30 @@ function runEvent(run: MaintainerRun, github: GithubSubject | null) {
   if (run.scheduled_for || run.heartbeat_at) return "scheduled";
   const event = run.metadata?.event;
   return typeof event === "string" ? event : "event";
+}
+
+function RunEventLink({ run, github }: { run: MaintainerRun; github: GithubSubject | null }) {
+  const label = runEvent(run, github);
+  const url = runSourceUrl(run);
+  if (!url) return <span className="font-mono text-xs text-content-secondary">{label}</span>;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex min-w-0 max-w-full items-center gap-1 font-mono text-xs text-accent hover:underline"
+      title={url}
+    >
+      <span className="truncate">{label}</span>
+      <ExternalLink className="size-3 shrink-0 text-content-tertiary" />
+    </a>
+  );
+}
+
+function runSourceUrl(run: MaintainerRun): string | null {
+  const metadataObject = objectValue(run.metadata);
+  const sessionMetadata = objectValue(metadataObject?.sessionMetadata);
+  return metadataString(metadataObject, sessionMetadata, "annotation", AK_ANNOTATION_KEY_SOURCE_URL);
 }
 
 function objectValue(value: unknown): Record<string, unknown> | null {

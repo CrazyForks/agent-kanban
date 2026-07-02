@@ -1,4 +1,4 @@
-import { AK_ANNOTATION_KEY_SOURCE_EVENT, AK_LABEL_KEY_GITHUB_SUBJECT } from "@agent-kanban/shared";
+import { AK_ANNOTATION_KEY_SOURCE_EVENT, AK_ANNOTATION_KEY_SOURCE_URL, AK_LABEL_KEY_GITHUB_SUBJECT } from "@agent-kanban/shared";
 import { getAmaProjectId } from "./amaOwnerIntegrationRepo";
 import { closeAmaSession, dispatchAmaHttpTriggerRun, listAmaSessions, readAmaSession, reopenAmaSession } from "./amaRuntime";
 import { listActiveBoardMaintainersForRepository } from "./boardMaintainerRepo";
@@ -297,13 +297,25 @@ function githubMaintainerSessionKey(input: { event: string; payload: MaintainerW
   return fullName && number !== null ? `github:${fullName}:${type}:${number}` : null;
 }
 
+function githubMaintainerSourceUrl(input: { event: string; payload: MaintainerWebhookPayload }): string | null {
+  if (input.event === "issue_comment" || input.event === "pull_request_review_comment") {
+    return typeof input.payload.comment?.html_url === "string" ? input.payload.comment.html_url : null;
+  }
+  if (input.event === "pull_request_review") {
+    return typeof input.payload.review?.html_url === "string" ? input.payload.review.html_url : null;
+  }
+  return null;
+}
+
 function githubMaintainerMetadata(input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload }, key: string | null) {
   const action = input.payload.action;
   const sourceEvent = typeof action === "string" && action.length > 0 ? `${input.event}.${action}` : input.event;
+  const sourceUrl = githubMaintainerSourceUrl(input);
   return {
     ...(key ? { labels: { [AK_LABEL_KEY_GITHUB_SUBJECT]: key } } : {}),
     annotations: {
       [AK_ANNOTATION_KEY_SOURCE_EVENT]: sourceEvent,
+      ...(sourceUrl ? { [AK_ANNOTATION_KEY_SOURCE_URL]: sourceUrl } : {}),
     },
   };
 }

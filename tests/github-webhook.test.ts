@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { AK_ANNOTATION_KEY_SOURCE_EVENT, AK_LABEL_KEY_GITHUB_SUBJECT } from "@agent-kanban/shared";
+import { AK_ANNOTATION_KEY_SOURCE_EVENT, AK_ANNOTATION_KEY_SOURCE_URL, AK_LABEL_KEY_GITHUB_SUBJECT } from "@agent-kanban/shared";
 import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTestAgent, seedUser, setupMiniflare } from "./helpers/db";
@@ -905,6 +905,12 @@ describe("POST /api/webhooks/github-app route", () => {
 
     const json = (await res.json()) as any;
     const maintainerDispatch = event === "pull_request" ? json.maintainer_dispatch : json;
+    const expectedSourceUrl =
+      "comment" in extraPayload && typeof extraPayload.comment.html_url === "string"
+        ? extraPayload.comment.html_url
+        : "review" in extraPayload && typeof extraPayload.review.html_url === "string"
+          ? extraPayload.review.html_url
+          : null;
     expect(maintainerDispatch).toMatchObject({ handled: true, maintainers: [maintainer.id] });
     expect(dispatched).toHaveLength(1);
     expect(dispatched[0].headers["idempotency-key"]).toBe(deliveryId);
@@ -920,6 +926,7 @@ describe("POST /api/webhooks/github-app route", () => {
         },
         annotations: {
           [AK_ANNOTATION_KEY_SOURCE_EVENT]: `${event}.${action}`,
+          ...(expectedSourceUrl ? { [AK_ANNOTATION_KEY_SOURCE_URL]: expectedSourceUrl } : {}),
         },
       },
       repository: payload.repository,

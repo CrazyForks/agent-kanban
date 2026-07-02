@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
-import { AK_ANNOTATION_KEY_SOURCE_EVENT, AK_LABEL_KEY_GITHUB_SUBJECT } from "@agent-kanban/shared";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { AK_ANNOTATION_KEY_SOURCE_EVENT, AK_ANNOTATION_KEY_SOURCE_URL, AK_LABEL_KEY_GITHUB_SUBJECT } from "@agent-kanban/shared";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -85,7 +85,8 @@ describe("MaintainerDetailPage", () => {
               [AK_LABEL_KEY_GITHUB_SUBJECT]: "github:saltbo/slink:issue:42",
             },
             annotations: {
-              [AK_ANNOTATION_KEY_SOURCE_EVENT]: "issues.opened",
+              [AK_ANNOTATION_KEY_SOURCE_EVENT]: "issue_comment.created",
+              [AK_ANNOTATION_KEY_SOURCE_URL]: "https://github.com/saltbo/slink/issues/42#issuecomment-12345",
             },
           },
         },
@@ -160,7 +161,10 @@ describe("MaintainerDetailPage", () => {
     expect(screen.queryByText("run_failed_without_session")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: /Activity/ }));
-    expect(screen.getAllByText("issues.opened").length).toBeGreaterThan(0);
+    expect(screen.getByRole("link", { name: /issue_comment.created/ })).toHaveAttribute(
+      "href",
+      "https://github.com/saltbo/slink/issues/42#issuecomment-12345",
+    );
     expect(screen.getByText("dispatched")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: /Memory/ }));
@@ -177,6 +181,17 @@ describe("MaintainerDetailPage", () => {
     renderMaintainerDetail();
 
     fireEvent.click(screen.getByRole("button", { name: /session_1/ }));
+
+    expect(screen.getByTestId("maintainer-session-chat")).toHaveTextContent("session_1");
+  });
+
+  it("opens a maintainer session chat drawer from the activity table", () => {
+    renderMaintainerDetail();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Activity/ }));
+    const activityRow = screen.getByRole("link", { name: /issue_comment.created/ }).closest("tr");
+    expect(activityRow).not.toBeNull();
+    fireEvent.click(within(activityRow!).getByRole("button", { name: /session_1/ }));
 
     expect(screen.getByTestId("maintainer-session-chat")).toHaveTextContent("session_1");
   });
