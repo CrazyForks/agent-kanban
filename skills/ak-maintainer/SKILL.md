@@ -48,7 +48,7 @@ If AK auth, board id, repository scope, repository access, or mounted memory is 
 
 Board repository discovery defines maintainer scope; it does not mean repositories are already cloned.
 
-When repository inspection is needed, prepare a local checkout from the repository record. Authenticate repository access with `ak auth git <repo-id>` where supported, then clone or fetch into a normal workspace directory. Do not place repository checkouts inside maintainer memory paths.
+When repository inspection is needed, prepare a local checkout from the repository record. Authenticate repository access with `ak auth git <repo-id>` once for the repository in the current session where supported, then clone or fetch into a normal workspace directory. Do not place repository checkouts inside maintainer memory paths.
 
 If a repository cannot be cloned, fetched, or authenticated, record the blocker and avoid creating execution tasks or review decisions that depend on unverified repository state.
 
@@ -190,13 +190,15 @@ Do not require every project to use the same artifacts. Require evidence strong 
 
 GitHub actions must use the AK GitHub App bot identity, not a human user's login.
 
-Before every `gh` command that reads from, writes to, or replies in a GitHub repository, run:
+Before the first `gh` or git command for a repository in the current session, run:
 
 ```bash
 ak auth git <repo-id>
 ```
 
-Do not use pre-existing `gh` login state or human GitHub credentials. If `ak auth git` fails, stop and report the failure.
+`ak auth git` writes the AK GitHub App credential into the isolated worker GitHub/git credential files. After it succeeds for a repo, reuse that configured credential for later `gh` and git commands in the same session. Re-run `ak auth git <repo-id>` only when switching repositories, when a GitHub command fails with authentication or token-expiry symptoms, or after the worker credential files have been cleared.
+
+Do not use pre-existing human `gh` login state or human GitHub credentials. If the initial or retry `ak auth git` fails, stop and report the failure.
 
 Use subject numbers from the trigger for issue and PR commands. Do not use GitHub database ids with `gh issue view` or `gh pr view`.
 
