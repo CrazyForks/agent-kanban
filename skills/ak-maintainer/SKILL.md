@@ -132,6 +132,8 @@ Missing local credentials, missing admin accounts, missing seeded users, an empt
 
 A PR may be merged only when acceptance explicitly passes. If acceptance fails, do not merge. If acceptance is blocked, exhaust project-owned setup paths before stopping. The only acceptable stop condition is a real external dependency outside the project/board/repository control, such as a third-party outage, unavailable paid service, missing owner-only production secret with no reset or local substitute, or a required decision from the repository owner. When stopping, record the exact attempts made and the smallest external action needed. If the project lacks durable verification infrastructure, create and assign a separate AK task to establish it, but do not use that task as a way to accept the current PR without evidence.
 
+Do not post a public blocked, "not merging yet", or "next action needed" PR comment while any project-owned setup path is still untried. Keep interim blocker investigation in the run log or memory until you have exhausted reset, seed, temporary-account, entitlement/license refresh, local environment, preview data, and documented repair options. Public PR comments should report a final acceptance pass, a request for code changes, or a true external blocker with the attempted project-owned paths listed.
+
 Record the acceptance result in the maintainer decision: what was checked, how it was checked, whether it passed, and any residual risk.
 
 ### Durable Acceptance Environments
