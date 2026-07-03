@@ -121,9 +121,31 @@ Acceptance has two required dimensions:
 
 Choose the acceptance path from project standards and the risk of the change. Good acceptance may include unit tests, integration tests, contract tests, regression tests, CI, local reproduction, browser automation, preview deployments, screenshots, logs, database checks, or a project-specific harness. The standard is the smallest meaningful proof that would catch the problem if the PR were wrong.
 
-A PR may be merged only when acceptance explicitly passes. If acceptance fails, cannot be performed, or the project lacks the needed harness, do not merge. Request changes with the specific missing evidence, or create and assign a separate AK task to establish the missing verification infrastructure when the gap is broader than the PR.
+The maintainer owns acceptance. Workers may provide implementation evidence, test output, screenshots, or reproduction notes, but worker evidence is input to the maintainer decision, not a substitute for maintainer acceptance. Do not hand real-environment acceptance back to the worker, to "someone with credentials", or to an unspecified human reviewer. If the PR needs browser, preview, local app, database, account, or seeded-data verification, the maintainer must attempt to establish that environment and perform the check before approving or merging.
+
+Missing local credentials, missing admin accounts, missing seeded users, an empty preview database, stale preview data, missing `.dev.vars`, or lack of a convenient password is a project environment problem to solve, not a reason to skip acceptance. Treat these as first-class maintainer work:
+
+- Read repository instructions, `.env.example`, seed scripts, migrations, dev commands, preview comments, deployment docs, CI artifacts, and existing memory for an accepted setup path.
+- Prefer a resettable environment over a one-off credential: create a fresh local database, run migrations/seeds, register a new temporary user, promote/reset an admin account through documented CLI/API/database paths, or reset preview data when the project supports it.
+- If a secret cannot be stored, store the repeatable non-secret procedure instead: where to reset, which command creates the admin, what seed data is required, and which URL or local command proves the flow.
+- Capture durable environment gaps as repository guidance, maintainer memory, or an assigned follow-up task only after you have established whether they block the current PR.
+
+A PR may be merged only when acceptance explicitly passes. If acceptance fails, do not merge. If acceptance is blocked, exhaust project-owned setup paths before stopping. The only acceptable stop condition is a real external dependency outside the project/board/repository control, such as a third-party outage, unavailable paid service, missing owner-only production secret with no reset or local substitute, or a required decision from the repository owner. When stopping, record the exact attempts made and the smallest external action needed. If the project lacks durable verification infrastructure, create and assign a separate AK task to establish it, but do not use that task as a way to accept the current PR without evidence.
 
 Record the acceptance result in the maintainer decision: what was checked, how it was checked, whether it passed, and any residual risk.
+
+### Durable Acceptance Environments
+
+Acceptance environments are long-lived project assets. Do not solve preview or local verification as an improvised one-time workaround and leave the next maintainer session to rediscover the same blocker.
+
+For each repository you maintain, prefer a documented, repeatable path for real-environment acceptance:
+
+- Local verification path: clone/fetch, install, configure from examples, reset data, run migrations/seeds, create or promote an admin user, start the app, and run the relevant browser or API checks.
+- Preview verification path: find the preview URL, reset or seed preview data when supported, create/register a temporary account when credentials are unavailable, verify the user role/entitlement needed for the PR, and capture screenshots or logs as evidence.
+- Data setup path: deterministic fixtures or scripts that create enough rows for pagination, empty states, permission checks, and role-specific views.
+- Evidence path: where screenshots, command output, or PR comments should be posted, and what minimum verdict text is required.
+
+When you discover the repeatable path is missing or broken, repair it in the smallest durable way available: update maintainer memory, open or update repository guidance, or create an assigned AK task for the missing script/docs/harness. Still continue current PR acceptance if you can establish a temporary equivalent safely.
 
 ## Merge Standard
 
@@ -274,6 +296,7 @@ Before finishing a run, confirm the outcome is clear:
 - Any uncertain work is tracked as an issue proposal, not an unassigned execution task or memory-only proposal.
 - Any PR decision includes code review and acceptance results.
 - A PR was not merged without explicit passing acceptance.
+- Any blocked PR acceptance records the project-owned environment setup attempts already made, and does not treat missing local accounts, admin passwords, seed data, or resettable preview state as a reason to skip maintainer acceptance.
 - A concise run log was written under `runs/`.
 - Scheduled heartbeat runs updated `HEARTBEAT.md`.
 - Blockers or permission failures were recorded concisely when possible.
