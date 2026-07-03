@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { readSessionEvents } from "../src/sessionWs.js";
+import { filterSessionEventsBySubagent, findMatchingSessionSubagents, findSessionSubagents, readSessionEvents } from "../src/sessionWs.js";
 
 let sockets: FakeWebSocket[] = [];
 
@@ -29,6 +29,16 @@ class FakeWebSocket {
 
   emit(frame: unknown) {
     this.onmessage?.({ data: JSON.stringify(frame) });
+  }
+}
+
+class TerminatingFakeWebSocket extends FakeWebSocket {
+  terminated = false;
+  terminateCalls = 0;
+
+  terminate() {
+    this.terminated = true;
+    this.terminateCalls += 1;
   }
 }
 
@@ -88,12 +98,174 @@ function toolCallEvent(sequence: number) {
   });
 }
 
+function agentToolCallEvent(
+  sequence: number,
+  toolCallId: string,
+  name: string,
+  nameField: "subagentName" | "subagent_type" | "subagentType" = "subagentName",
+) {
+  return event(sequence, "message.completed", {
+    message: {
+      role: "assistant",
+      content: [{ type: "tool_call", toolCall: { id: toolCallId, name: "agent", input: { [nameField]: name } } }],
+    },
+  });
+}
+
+function childTextEvent(sequence: number, parentToolCallId: string, text: string) {
+  return event(sequence, "message.completed", {
+    message: {
+      role: "assistant",
+      parentToolCallId,
+      content: [{ type: "text", text }],
+    },
+  });
+}
+
+function childToolCallEvent(sequence: number, parentToolCallId: string, toolCallId: string) {
+  return event(sequence, "message.completed", {
+    message: {
+      role: "assistant",
+      parentToolCallId,
+      content: [{ type: "tool_call", toolCall: { id: toolCallId, name: "bash", input: { command: "npm test" } } }],
+    },
+  });
+}
+
+function childToolResultEvent(sequence: number, parentToolCallId: string, toolCallId: string, output: string) {
+  return event(sequence, "message.completed", {
+    message: {
+      role: "tool",
+      parentToolCallId,
+      content: [{ type: "tool_result", toolCallId, result: { stdout: output } }],
+    },
+  });
+}
+
+it("finds agent tool calls and filters descendant events by subagent name or tool call id", () => {
+  const reviewerCall = agentToolCallEvent(1, "call-reviewer", "reviewer");
+  const writerCall = agentToolCallEvent(2, "call-writer", "test-writer", "subagent_type");
+  const reviewerText = childTextEvent(3, "call-reviewer", "reviewer started");
+  const reviewerNestedTool = childToolCallEvent(4, "call-reviewer", "call-nested-tool");
+  const reviewerNestedText = childTextEvent(5, "call-nested-tool", "nested tool output");
+  const reviewerResult = childToolResultEvent(6, "call-reviewer", "call-reviewer", "review complete");
+  const writerText = childTextEvent(7, "call-writer", "writer started");
+  const mainText = assistantTextEvent(8, "main session output");
+  const events = [reviewerCall, writerCall, reviewerText, reviewerNestedTool, reviewerNestedText, reviewerResult, writerText, mainText];
+
+  expect(findSessionSubagents(events)).toEqual([
+    { toolCallId: "call-reviewer", name: "reviewer" },
+    { toolCallId: "call-writer", name: "test-writer" },
+  ]);
+  expect(findMatchingSessionSubagents(events, "reviewer")).toEqual([{ toolCallId: "call-reviewer", name: "reviewer" }]);
+  expect(findMatchingSessionSubagents(events, "call-reviewer")).toEqual([{ toolCallId: "call-reviewer", name: "reviewer" }]);
+  expect(filterSessionEventsBySubagent(events, "reviewer")).toEqual([reviewerText, reviewerNestedTool, reviewerNestedText, reviewerResult]);
+  expect(filterSessionEventsBySubagent(events, "call-reviewer")).toEqual([reviewerText, reviewerNestedTool, reviewerNestedText, reviewerResult]);
+});
+
+it("hides subagent child events from the main stream while keeping the agent call and final result", async () => {
+  const mainBefore = assistantTextEvent(1, "main before");
+  const reviewerCall = agentToolCallEvent(2, "call-reviewer", "reviewer");
+  const reviewerText = childTextEvent(3, "call-reviewer", "reviewer started");
+  const reviewerNestedTool = childToolCallEvent(4, "call-reviewer", "call-nested-tool");
+  const reviewerNestedText = childTextEvent(5, "call-nested-tool", "nested tool output");
+  const reviewerResult = childToolResultEvent(6, "call-reviewer", "call-reviewer", "review complete");
+  const mainAfter = assistantTextEvent(7, "main after");
+  const events = [mainBefore, reviewerCall, reviewerText, reviewerNestedTool, reviewerNestedText, reviewerResult, mainAfter];
+
+  const promise = readSessionEvents("wss://session.test", { mainStream: true });
+  await vi.waitFor(() => expect(sockets[0]?.sent[0]).toMatchObject({ type: "backfill", requestId: "backfill-1", limit: 200 }));
+  sockets[0].emit({ type: "backfill", events: [...events].reverse(), hasMore: false });
+
+  await expect(promise).resolves.toEqual([mainBefore, reviewerCall, reviewerResult, mainAfter]);
+});
+
+it("continues backfilling main stream pages when hidden child events leave too few recent main events", async () => {
+  const mainBefore = assistantTextEvent(1, "main before");
+  const reviewerCall = agentToolCallEvent(2, "call-reviewer", "reviewer");
+  const reviewerText = childTextEvent(3, "call-reviewer", "reviewer started");
+  const reviewerNestedTool = childToolCallEvent(4, "call-reviewer", "call-nested-tool");
+
+  const promise = readSessionEvents("wss://session.test", { mainStream: true, recentLimit: 3 });
+  await vi.waitFor(() => expect(sockets[0]?.sent[0]).toMatchObject({ type: "backfill", requestId: "backfill-1", limit: 200 }));
+  sockets[0].emit({ type: "backfill", events: [reviewerNestedTool, reviewerText], hasMore: true, nextCursor: 2 });
+
+  await vi.waitFor(() => expect(sockets[0]?.sent[1]).toMatchObject({ type: "backfill", requestId: "backfill-2", limit: 200, cursor: 2 }));
+  sockets[0].emit({ type: "backfill", events: [reviewerCall, mainBefore], hasMore: false });
+
+  await expect(promise).resolves.toEqual([mainBefore, reviewerCall]);
+});
+
+it("continues backfilling main stream pages when recent child events have unresolved ancestry", async () => {
+  const mainBefore = assistantTextEvent(1, "main before");
+  const reviewerCall = agentToolCallEvent(2, "call-reviewer", "reviewer");
+  const reviewerText = childTextEvent(3, "call-reviewer", "reviewer started");
+  const reviewerTool = childToolCallEvent(4, "call-reviewer", "call-reviewer-tool");
+  const reviewerResult = childToolResultEvent(5, "call-reviewer", "call-reviewer", "review complete");
+
+  const promise = readSessionEvents("wss://session.test", { mainStream: true, recentLimit: 3 });
+  await vi.waitFor(() => expect(sockets[0]?.sent[0]).toMatchObject({ type: "backfill", requestId: "backfill-1", limit: 200 }));
+  sockets[0].emit({ type: "backfill", events: [reviewerResult, reviewerTool, reviewerText], hasMore: true, nextCursor: 3 });
+
+  await vi.waitFor(() => expect(sockets[0]?.sent[1]).toMatchObject({ type: "backfill", requestId: "backfill-2", limit: 200, cursor: 3 }));
+  sockets[0].emit({ type: "backfill", events: [reviewerCall, mainBefore], hasMore: false });
+
+  await expect(promise).resolves.toEqual([mainBefore, reviewerCall, reviewerResult]);
+});
+
+it("does not emit unresolved child events from watched main stream backfill pages", async () => {
+  const mainBefore = assistantTextEvent(1, "main before");
+  const reviewerCall = agentToolCallEvent(2, "call-reviewer", "reviewer");
+  const reviewerText = childTextEvent(3, "call-reviewer", "reviewer started");
+  const reviewerTool = childToolCallEvent(4, "call-reviewer", "call-reviewer-tool");
+  const reviewerResult = childToolResultEvent(5, "call-reviewer", "call-reviewer", "review complete");
+  const seen: string[] = [];
+
+  const promise = readSessionEvents("wss://session.test", {
+    mainStream: true,
+    watch: true,
+    recentLimit: 3,
+    onEvent: (item) =>
+      seen.push(
+        item.payload.message.content[0]?.text ?? item.payload.message.content[0]?.toolCall?.id ?? item.payload.message.content[0]?.result?.stdout,
+      ),
+  });
+  await vi.waitFor(() => expect(sockets[0]?.sent[0]).toMatchObject({ type: "backfill", requestId: "backfill-1", limit: 200 }));
+  sockets[0].emit({ type: "backfill", events: [reviewerResult, reviewerTool, reviewerText], hasMore: true, nextCursor: 3 });
+
+  await vi.waitFor(() => expect(sockets[0]?.sent[1]).toMatchObject({ type: "backfill", requestId: "backfill-2", limit: 200, cursor: 3 }));
+  expect(seen).toEqual([]);
+
+  sockets[0].emit({ type: "backfill", events: [reviewerCall, mainBefore], hasMore: false });
+  await vi.waitFor(() => expect(seen).toEqual(["main before", "call-reviewer", "review complete"]));
+  expect(seen).not.toContain("reviewer started");
+  expect(seen).not.toContain("call-reviewer-tool");
+
+  sockets[0].onclose?.();
+  await expect(promise).resolves.toEqual([mainBefore, reviewerCall, reviewerResult]);
+});
+
 it("requests recent events over WebSocket by default", async () => {
   const promise = readSessionEvents("wss://session.test");
   await vi.waitFor(() => expect(sockets[0]?.sent[0]).toMatchObject({ type: "backfill", requestId: "backfill-1", limit: 20 }));
   expect(sockets[0]?.sent[0]).not.toHaveProperty("id");
   sockets[0].emit({ type: "backfill", events: [event(3), event(2)], hasMore: false });
   await expect(promise).resolves.toEqual([expect.objectContaining({ sequence: 2 }), expect.objectContaining({ sequence: 3 })]);
+});
+
+it("terminates the WebSocket when available after non-watch backfill finishes", async () => {
+  vi.stubGlobal("WebSocket", TerminatingFakeWebSocket);
+
+  const promise = readSessionEvents("wss://session.test");
+  await vi.waitFor(() => expect(sockets[0]?.sent[0]).toMatchObject({ type: "backfill", requestId: "backfill-1", limit: 20 }));
+  const socket = sockets[0] as TerminatingFakeWebSocket;
+
+  socket.emit({ type: "backfill", events: [event(1)], hasMore: false });
+
+  await expect(promise).resolves.toEqual([expect.objectContaining({ sequence: 1 })]);
+  expect(socket.terminateCalls).toBe(1);
+  expect(socket.terminated).toBe(true);
+  expect(socket.closed).toBe(false);
 });
 
 it("trims recent events locally when the server returns too many", async () => {

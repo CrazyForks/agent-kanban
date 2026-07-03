@@ -23,7 +23,16 @@ import {
   getOutputFormat,
   output,
 } from "../output.js";
-import { readSessionEvents, type SessionEventFilter } from "../sessionWs.js";
+import {
+  filterSessionEventsBySubagent,
+  findMatchingSessionSubagents,
+  findSessionSubagents,
+  matchesSessionEventFilter,
+  readSessionEvents,
+  type SessionEvent,
+  type SessionEventFilter,
+  type SessionSubagentRef,
+} from "../sessionWs.js";
 
 type AgentRef = {
   id: string;
@@ -67,11 +76,24 @@ function errorMessage(error: unknown): string {
 async function showSession(
   client: any,
   sessionId: string,
-  opts: { watch?: boolean; all?: boolean; tool?: boolean; assistant?: boolean; verbose?: boolean; limit?: string; output?: string },
+  opts: {
+    watch?: boolean;
+    all?: boolean;
+    tool?: boolean;
+    assistant?: boolean;
+    subagent?: string;
+    verbose?: boolean;
+    limit?: string;
+    output?: string;
+  },
   source: "session" | "task" = "session",
 ) {
   if (opts.tool && opts.assistant) {
     console.error("--tool and --assistant cannot be used together");
+    process.exit(1);
+  }
+  if (opts.subagent && opts.watch) {
+    console.error("--subagent does not support --watch");
     process.exit(1);
   }
   const fmt = getOutputFormat(opts.output);
@@ -82,7 +104,7 @@ async function showSession(
 
   const mode: SessionEventFilter = opts.tool ? "tool" : opts.assistant ? "assistant" : "all";
   const { url } = source === "task" ? await client.getTaskSessionWs(sessionId) : await client.getSessionWs(sessionId);
-  let recentLimit: number | undefined;
+  let recentLimit = 20;
   if (opts.limit !== undefined) {
     const parsedLimit = Number.parseInt(opts.limit, 10);
     if (!Number.isFinite(parsedLimit) || parsedLimit <= 0) {
@@ -93,15 +115,28 @@ async function showSession(
   }
   const session = source === "task" ? await client.getTaskSession(sessionId) : await client.getSession(sessionId);
 
+  const applySubagentFilter = (events: SessionEvent[]): SessionEvent[] => {
+    if (!opts.subagent) return events;
+    const matches = findMatchingSessionSubagents(events, opts.subagent);
+    if (matches.length === 0) {
+      throw new Error(formatSubagentNotFound(opts.subagent, findSessionSubagents(events)));
+    }
+    const subagentEvents = filterSessionEventsBySubagent(events, opts.subagent);
+    const filtered = subagentEvents.filter((event) => matchesSessionEventFilter(event, mode));
+    if (!opts.all && filtered.length > recentLimit) return filtered.slice(filtered.length - recentLimit);
+    return filtered;
+  };
+
   if (fmt !== "text") {
     try {
       const events = await readSessionEvents(url, {
-        all: opts.all,
+        all: opts.all || Boolean(opts.subagent),
         watch: false,
-        filter: mode,
+        filter: opts.subagent ? "all" : mode,
+        mainStream: !opts.subagent,
         recentLimit,
       });
-      output({ ...session, events }, fmt, undefined, { kind: "session" });
+      output({ ...session, events: applySubagentFilter(events) }, fmt, undefined, { kind: "session" });
     } catch (error) {
       output({ ...session, events: [], events_error: errorMessage(error) }, fmt, undefined, { kind: "session" });
     }
@@ -110,24 +145,45 @@ async function showSession(
 
   if (!opts.tool && !opts.assistant) {
     console.log(formatTaskSession(session));
-    const eventLabel = opts.all ? "Events" : `Recent events${recentLimit ? ` (last ${recentLimit})` : ""}`;
+    const eventLabel = opts.subagent
+      ? opts.all
+        ? `Subagent ${opts.subagent} events`
+        : `Recent subagent ${opts.subagent} events${recentLimit ? ` (last ${recentLimit})` : ""}`
+      : opts.all
+        ? "Events"
+        : `Recent events${recentLimit ? ` (last ${recentLimit})` : ""}`;
     console.log(`\n${eventLabel}:`);
   }
 
   let printed = false;
   let eventsError: string | null = null;
   try {
-    await readSessionEvents(url, {
-      all: opts.all,
-      watch: opts.watch,
-      filter: mode,
-      recentLimit,
-      onEvent: (event) => {
+    if (opts.subagent) {
+      const events = await readSessionEvents(url, {
+        all: true,
+        watch: false,
+        filter: "all",
+        recentLimit,
+      });
+      for (const event of applySubagentFilter(events)) {
         printed = true;
         const line = formatSessionEvent(event, mode, { verbose: opts.verbose });
         if (line) console.log(line);
-      },
-    });
+      }
+    } else {
+      await readSessionEvents(url, {
+        all: opts.all,
+        watch: opts.watch,
+        filter: mode,
+        mainStream: true,
+        recentLimit,
+        onEvent: (event) => {
+          printed = true;
+          const line = formatSessionEvent(event, mode, { verbose: opts.verbose });
+          if (line) console.log(line);
+        },
+      });
+    }
   } catch (error) {
     eventsError = errorMessage(error);
   }
@@ -137,6 +193,12 @@ async function showSession(
   } else if (eventsError) {
     console.error(`Session events unavailable: ${eventsError}`);
   }
+}
+
+function formatSubagentNotFound(selector: string, subagents: SessionSubagentRef[]): string {
+  if (subagents.length === 0) return `Subagent not found: ${selector}. This session has no agent tool calls.`;
+  const available = subagents.map((subagent) => (subagent.name ? `${subagent.name} (${subagent.toolCallId})` : subagent.toolCallId)).join(", ");
+  return `Subagent not found: ${selector}. Available subagents: ${available}`;
 }
 
 async function getAgentOrVersions(client: any, id: string): Promise<{ value: any; formatter: (value: any) => string }> {
@@ -195,9 +257,14 @@ export function registerGetCommand(program: Command) {
     .option("--label <label>", "Filter by label")
     .option("--repo <id>", "Filter by repository ID")
     .option("--session", "Show task session state and events")
+    .option("--subagent <name-or-tool-call-id>", "Only show events under a subagent call when used with --session")
     .action(async (id: string | undefined, opts) => {
       const client = await createClient();
       const fmt = getOutputFormat(opts.output);
+      if (opts.subagent && !opts.session) {
+        console.error("--subagent requires --session");
+        process.exit(1);
+      }
       if (id) {
         if (opts.session) {
           await showSession(client, id, opts, "task");
@@ -231,6 +298,7 @@ export function registerGetCommand(program: Command) {
     .option("--limit <n>", "Number of recent events to show without --all", "20")
     .option("--tool", "Only show tool calls")
     .option("--assistant", "Only show agent text output")
+    .option("--subagent <name-or-tool-call-id>", "Only show events under a subagent call")
     .option("--verbose", "Show longer event summaries")
     .option("-o, --output <format>", "Output format (json, yaml, text)")
     .action(async (sessionId: string, opts) => {

@@ -1,11 +1,19 @@
+import WsWebSocket from "ws";
+
 export type SessionEvent = Record<string, any>;
 
 export type SessionEventFilter = "all" | "tool" | "assistant";
+
+export interface SessionSubagentRef {
+  toolCallId: string;
+  name: string | null;
+}
 
 export interface ReadSessionEventsOptions {
   all?: boolean;
   watch?: boolean;
   filter?: SessionEventFilter;
+  mainStream?: boolean;
   recentLimit?: number;
   onEvent?: (event: SessionEvent) => void;
   backfillTimeoutMs?: number;
@@ -53,11 +61,110 @@ function runtimeMessage(event: SessionEvent): Record<string, any> | null {
   return objectValue(runtimePayload(event).message);
 }
 
+function messageContent(event: SessionEvent): any[] {
+  const content = runtimeMessage(event)?.content;
+  return Array.isArray(content) ? content : [];
+}
+
+function toolCallInputName(input: unknown): string | null {
+  const value = objectValue(input);
+  if (!value) return null;
+  const name = value.subagentName ?? value.subagent_type ?? value.subagentType;
+  return typeof name === "string" && name.trim().length > 0 ? name.trim() : null;
+}
+
+export function sessionEventParentToolCallId(event: SessionEvent): string | null {
+  const value = runtimeMessage(event)?.parentToolCallId;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+export function findSessionSubagents(events: SessionEvent[]): SessionSubagentRef[] {
+  return events.flatMap((event) =>
+    messageContent(event)
+      .filter((part: any) => part?.type === "tool_call" && part.toolCall?.name === "agent")
+      .map((part: any) => {
+        const toolCall = objectValue(part.toolCall) ?? {};
+        const toolCallId = typeof toolCall.id === "string" ? toolCall.id : "";
+        if (!toolCallId) return null;
+        return { toolCallId, name: toolCallInputName(toolCall.input) };
+      })
+      .filter((item: SessionSubagentRef | null): item is SessionSubagentRef => item !== null),
+  );
+}
+
+export function findMatchingSessionSubagents(events: SessionEvent[], selector: string): SessionSubagentRef[] {
+  const normalizedSelector = selector.trim();
+  if (!normalizedSelector) return [];
+  return findSessionSubagents(events).filter((subagent) => subagent.toolCallId === normalizedSelector || subagent.name === normalizedSelector);
+}
+
+function sessionEventToolCallIds(event: SessionEvent): string[] {
+  return messageContent(event)
+    .filter((part: any) => part?.type === "tool_call")
+    .map((part: any) => part.toolCall?.id)
+    .filter((value: unknown): value is string => typeof value === "string" && value.length > 0);
+}
+
+function sessionEventAgentToolCallIds(event: SessionEvent): string[] {
+  return messageContent(event)
+    .filter((part: any) => part?.type === "tool_call" && part.toolCall?.name === "agent")
+    .map((part: any) => part.toolCall?.id)
+    .filter((value: unknown): value is string => typeof value === "string" && value.length > 0);
+}
+
+function hasUnresolvedParentToolCall(events: SessionEvent[]): boolean {
+  const toolCallIds = new Set(events.flatMap(sessionEventToolCallIds));
+  return events.some((event) => {
+    const parentToolCallId = sessionEventParentToolCallId(event);
+    return parentToolCallId !== null && !toolCallIds.has(parentToolCallId);
+  });
+}
+
+function hasRootAgentToolResult(event: SessionEvent, parentToolCallId: string, rootAgentToolCallIds: Set<string>): boolean {
+  if (!rootAgentToolCallIds.has(parentToolCallId)) return false;
+  return messageContent(event).some((part: any) => part?.type === "tool_result" && part.toolCallId === parentToolCallId);
+}
+
+export function createMainSessionEventFilter(): (event: SessionEvent) => boolean {
+  const rootAgentToolCallIds = new Set<string>();
+  const descendantToolCallIds = new Set<string>();
+
+  return (event: SessionEvent): boolean => {
+    const parentToolCallId = sessionEventParentToolCallId(event);
+    const isSubagentChild = parentToolCallId !== null && descendantToolCallIds.has(parentToolCallId);
+
+    for (const toolCallId of sessionEventToolCallIds(event)) {
+      if (isSubagentChild) descendantToolCallIds.add(toolCallId);
+    }
+
+    for (const toolCallId of sessionEventAgentToolCallIds(event)) {
+      descendantToolCallIds.add(toolCallId);
+      if (!isSubagentChild) rootAgentToolCallIds.add(toolCallId);
+    }
+
+    if (!isSubagentChild) return true;
+    return parentToolCallId !== null && hasRootAgentToolResult(event, parentToolCallId, rootAgentToolCallIds);
+  };
+}
+
+export function filterSessionEventsBySubagent(events: SessionEvent[], selector: string): SessionEvent[] {
+  const normalizedSelector = selector.trim();
+  if (!normalizedSelector) return [];
+
+  const matches = findMatchingSessionSubagents(events, normalizedSelector);
+  const descendantToolCallIds = new Set(matches.map((subagent) => subagent.toolCallId));
+  return events.filter((event) => {
+    const parentToolCallId = sessionEventParentToolCallId(event);
+    if (parentToolCallId === null || !descendantToolCallIds.has(parentToolCallId)) return false;
+    for (const toolCallId of sessionEventToolCallIds(event)) descendantToolCallIds.add(toolCallId);
+    return true;
+  });
+}
+
 function isToolEvent(event: SessionEvent): boolean {
   const type = String(runtimeEvent(event)?.type ?? "");
   if (type !== "message.started" && type !== "message.updated" && type !== "message.completed") return false;
-  const content = runtimeMessage(event)?.content;
-  return Array.isArray(content) && content.some((part) => part?.type === "tool_call" || part?.type === "tool_result");
+  return messageContent(event).some((part) => part?.type === "tool_call" || part?.type === "tool_result");
 }
 
 function eventText(event: SessionEvent): string {
@@ -89,8 +196,14 @@ export function matchesSessionEventFilter(event: SessionEvent, filter: SessionEv
   return true;
 }
 
+function websocketConstructor(): any {
+  const globalWebSocket = (globalThis as any).WebSocket;
+  if (typeof globalWebSocket === "function" && globalWebSocket.name !== "WebSocket") return globalWebSocket;
+  return WsWebSocket;
+}
+
 function connect(url: string): { ws: any; abort: () => void } {
-  const WebSocketCtor = (globalThis as any).WebSocket;
+  const WebSocketCtor = websocketConstructor();
   if (!WebSocketCtor) throw new Error("WebSocket is not available in this Node runtime");
   const controller = typeof AbortController === "undefined" ? null : new AbortController();
   try {
@@ -107,7 +220,14 @@ export async function readSessionEvents(url: string, options: ReadSessionEventsO
   const filter = options.filter ?? "all";
   const seen = new Set<string>();
   const events: SessionEvent[] = [];
-  const limit = options.all ? 200 : (options.recentLimit ?? 20);
+  const recentLimit = options.recentLimit ?? 20;
+  const backfillLimit = options.all || options.mainStream ? 200 : recentLimit;
+  let includeMainEvent = options.mainStream ? createMainSessionEventFilter() : null;
+
+  const mainStreamEvents = (rawEvents: SessionEvent[]): SessionEvent[] => {
+    const include = createMainSessionEventFilter();
+    return [...rawEvents].sort(compareEvents).filter((event) => include(event) && matchesSessionEventFilter(event, filter));
+  };
 
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -123,8 +243,9 @@ export async function readSessionEvents(url: string, options: ReadSessionEventsO
       ws.onerror = null;
       ws.onclose = null;
       try {
+        if (typeof ws.terminate === "function") ws.terminate();
+        else ws.close();
         connection.abort();
-        ws.close();
       } catch {
         // The promise has already settled; there is nothing useful to report.
       }
@@ -151,28 +272,37 @@ export async function readSessionEvents(url: string, options: ReadSessionEventsO
       settled = true;
       if (timeout) clearTimeout(timeout);
       closeSocket();
-      events.sort(compareEvents);
-      if (!options.all && events.length > limit) {
-        events.splice(0, events.length - limit);
+      const result = options.mainStream ? mainStreamEvents(events) : events.sort(compareEvents);
+      if (!options.all && result.length > recentLimit) {
+        result.splice(0, result.length - recentLimit);
       }
       if (!options.watch) {
-        for (const event of events) options.onEvent?.(event);
+        for (const event of result) options.onEvent?.(event);
       }
-      resolve(events);
+      resolve(result);
+    };
+
+    const acceptFiltered = (event: SessionEvent) => {
+      if (includeMainEvent && !includeMainEvent(event)) return;
+      if (!matchesSessionEventFilter(event, filter)) return;
+      events.push(event);
+      if (options.watch) options.onEvent?.(event);
     };
 
     const accept = (event: SessionEvent) => {
       const key = eventKey(event);
       if (seen.has(key)) return;
       seen.add(key);
-      if (!matchesSessionEventFilter(event, filter)) return;
-      events.push(event);
-      if (options.watch) options.onEvent?.(event);
+      if (options.mainStream && !initialBackfillComplete) {
+        events.push(event);
+        return;
+      }
+      acceptFiltered(event);
     };
 
     const sendBackfill = (params: { cursor?: number } = {}) => {
       const requestId = `backfill-${++backfillSeq}`;
-      ws.send(JSON.stringify({ type: "backfill", requestId, limit, ...params }));
+      ws.send(JSON.stringify({ type: "backfill", requestId, limit: backfillLimit, ...params }));
     };
 
     ws.onopen = () => {
@@ -213,11 +343,18 @@ export async function readSessionEvents(url: string, options: ReadSessionEventsO
         armTimeout();
         const page = options.all ? frame.events : [...frame.events].reverse();
         for (const event of page) accept(event);
-        if (options.all && frame.hasMore && typeof frame.nextCursor === "number") {
+        const needsMoreMainEvents =
+          options.mainStream && !options.all && (mainStreamEvents(events).length < recentLimit || hasUnresolvedParentToolCall(events));
+        if ((options.all || needsMoreMainEvents) && frame.hasMore && typeof frame.nextCursor === "number") {
           sendBackfill({ cursor: frame.nextCursor });
           return;
         }
         initialBackfillComplete = true;
+        if (options.mainStream && options.watch) {
+          const rawEvents = events.splice(0, events.length);
+          includeMainEvent = createMainSessionEventFilter();
+          for (const event of rawEvents.sort(compareEvents)) acceptFiltered(event);
+        }
         if (!options.watch) finish();
         return;
       }
