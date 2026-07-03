@@ -33,6 +33,7 @@ const DEFAULT_MAX_CONCURRENT = 5;
 // standalone ama-runner install that may target a different origin.
 const AMA_RUNNER_CREDENTIALS_FILE = join(STATE_DIR, "ama-runner-credentials.json");
 const LEGACY_AMA_RUNNER_LOGIN_FILE = join(STATE_DIR, "ama-runner-login.json");
+const RUNNER_TOKEN_REFRESH_SKEW_MS = 2 * 60 * 1000;
 
 interface DaemonState {
   providers: string[];
@@ -211,14 +212,14 @@ function migrateLegacyRunnerLogin(): void {
 // targets this origin and can still produce a token (refreshable, or an
 // unexpired access token). Anything else means the runner would exit demanding a
 // fresh login, so AK re-runs the device flow instead.
-function hasValidRunnerLogin(origin: string): boolean {
+function runnerLoginStatus(origin: string): "missing" | "valid" | "refresh" {
   migrateLegacyRunnerLogin();
-  if (!existsSync(AMA_RUNNER_CREDENTIALS_FILE)) return false;
+  if (!existsSync(AMA_RUNNER_CREDENTIALS_FILE)) return "missing";
   let saved: SavedRunnerCredentialStore;
   try {
     saved = JSON.parse(readFileSync(AMA_RUNNER_CREDENTIALS_FILE, "utf-8"));
   } catch {
-    return false;
+    return "missing";
   }
   const stripTrailingSlash = (value: string) => value.replace(/\/$/, "");
   const profiles = Array.isArray(saved.profiles) ? saved.profiles : [];
@@ -226,21 +227,35 @@ function hasValidRunnerLogin(origin: string): boolean {
   const matches = profiles.filter((profile) => stripTrailingSlash(profile.apiServer ?? "") === stripTrailingSlash(origin));
   const profile =
     active && stripTrailingSlash(active.apiServer ?? "") === stripTrailingSlash(origin) ? active : matches.length === 1 ? matches[0] : null;
-  if (!profile) return false;
-  if (profile.refreshToken) return true;
-  if (!profile.accessToken) return false;
+  if (!profile) return "missing";
+  if (profile.refreshToken) {
+    if (!profile.accessToken || !profile.expiresAt) return "refresh";
+    const expiresAt = Date.parse(profile.expiresAt);
+    if (Number.isNaN(expiresAt)) return "refresh";
+    return expiresAt > Date.now() + RUNNER_TOKEN_REFRESH_SKEW_MS ? "valid" : "refresh";
+  }
+  if (!profile.accessToken) return "missing";
   if (profile.expiresAt) {
     const expiresAt = Date.parse(profile.expiresAt);
-    if (Number.isNaN(expiresAt) || expiresAt <= Date.now()) return false;
+    if (Number.isNaN(expiresAt) || expiresAt <= Date.now()) return "missing";
   }
-  return true;
+  return "valid";
 }
 
 // ama-runner authenticates with AMA via its own OAuth device login, a separate
 // interactive step from the polling run mode. AK drives it once, foreground, so
 // the user can authorize; the saved refresh token keeps later starts silent.
 function ensureRunnerLogin(runnerBin: string, origin: string, env: NodeJS.ProcessEnv): void {
-  if (hasValidRunnerLogin(origin)) return;
+  const status = runnerLoginStatus(origin);
+  if (status === "valid") return;
+  if (status === "refresh") {
+    const refreshed = spawnSync(runnerBin, ["auth", "refresh"], { stdio: "inherit", env });
+    if (refreshed.error) throw new Error(`Failed to refresh ama-runner login: ${refreshed.error.message}`);
+    if (refreshed.status === 0) return;
+    console.error("Saved ama-runner login could not be refreshed; re-authenticating.");
+    const logout = spawnSync(runnerBin, ["auth", "logout", origin], { stdio: "ignore", env });
+    if (logout.error) throw new Error(`Failed to clear stale ama-runner login: ${logout.error.message}`);
+  }
   mkdirSync(STATE_DIR, { recursive: true });
   console.log(`Authenticating ama-runner with AMA (${maskApiUrl(origin)})…`);
   const result = spawnSync(runnerBin, ["auth", "login", "--api-server", origin], { stdio: "inherit", env });

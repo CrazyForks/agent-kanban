@@ -322,6 +322,72 @@ describe("start runtime command", () => {
     );
   });
 
+  it("refreshes a saved runner login before start when the access token is expired but refreshable", async () => {
+    writeCredentialStore({
+      apiServer: "https://runner-control.test",
+      refreshToken: "refresh-token",
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    });
+    const program = new Command();
+    registerStartCommand(program);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    mockMachineRunnerFetch("https://runner-control.test");
+
+    await program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
+
+    expect(spawnSyncMock).toHaveBeenCalledOnce();
+    expect(spawnSyncMock).toHaveBeenCalledWith(
+      testRunnerBin,
+      ["auth", "refresh"],
+      expect.objectContaining({
+        stdio: "inherit",
+        env: expect.objectContaining({
+          AMA_RUNNER_CREDENTIALS: credentialsFilePath,
+        }),
+      }),
+    );
+    expect(spawnMock).toHaveBeenCalledWith(
+      testRunnerBin,
+      expect.arrayContaining(["--api-server", "https://runner-control.test"]),
+      expect.objectContaining({ detached: true }),
+    );
+  });
+
+  it("clears a stale refreshable runner login and re-runs device login when refresh fails", async () => {
+    writeCredentialStore({
+      apiServer: "https://runner-control.test",
+      refreshToken: "stale-refresh-token",
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    });
+    spawnSyncMock.mockReturnValueOnce({ status: 1 }).mockReturnValueOnce({ status: 0 }).mockReturnValueOnce({ status: 0 });
+    const program = new Command();
+    registerStartCommand(program);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mockMachineRunnerFetch("https://runner-control.test");
+
+    await program.parseAsync(["start", "--api-url", "https://ak.test", "--api-key", "ak_test_key"], { from: "user" });
+
+    expect(spawnSyncMock).toHaveBeenNthCalledWith(1, testRunnerBin, ["auth", "refresh"], expect.objectContaining({ stdio: "inherit" }));
+    expect(spawnSyncMock).toHaveBeenNthCalledWith(
+      2,
+      testRunnerBin,
+      ["auth", "logout", "https://runner-control.test"],
+      expect.objectContaining({ stdio: "ignore" }),
+    );
+    expect(spawnSyncMock).toHaveBeenNthCalledWith(
+      3,
+      testRunnerBin,
+      ["auth", "login", "--api-server", "https://runner-control.test"],
+      expect.objectContaining({ stdio: "inherit" }),
+    );
+    expect(spawnMock).toHaveBeenCalledWith(
+      testRunnerBin,
+      expect.arrayContaining(["--api-server", "https://runner-control.test"]),
+      expect.objectContaining({ detached: true }),
+    );
+  });
+
   it("starts using only --api-url when credentials are already saved", async () => {
     mkdirSync(testSessionsDir, { recursive: true });
     const host = "ak.test";
