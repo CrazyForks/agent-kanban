@@ -211,9 +211,23 @@ function githubMaintainerShouldDispatch(input: { event: string; payload: Maintai
     if (action === "opened" || action === "synchronize") return input.payload.pull_request?.draft !== true;
     return false;
   }
-  if (input.event === "issue_comment") return action === "created" || action === "edited";
-  if (input.event === "pull_request_review") return action === "submitted" || action === "edited";
-  if (input.event === "pull_request_review_comment") return action === "created" || action === "edited";
+  if (input.event === "issue_comment") return (action === "created" || action === "edited") && !githubMaintainerIsDraftPullRequest(input);
+  if (input.event === "pull_request_review") {
+    return (action === "submitted" || action === "edited") && !githubMaintainerIsDraftPullRequest(input);
+  }
+  if (input.event === "pull_request_review_comment") {
+    return (action === "created" || action === "edited") && !githubMaintainerIsDraftPullRequest(input);
+  }
+  return false;
+}
+
+function githubMaintainerIsDraftPullRequest(input: { event: string; payload: MaintainerWebhookPayload }): boolean {
+  const { subject, type } = githubMaintainerSubject(input);
+  if (type !== "pull_request") return false;
+
+  const pullRequest = input.payload.pull_request;
+  if (typeof pullRequest?.draft === "boolean") return pullRequest.draft;
+  if (typeof subject?.draft === "boolean") return subject.draft;
   return false;
 }
 

@@ -572,6 +572,90 @@ describe("POST /api/webhooks/github-app route", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("drops pull request issue comments while the pull request is draft", async () => {
+    const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
+    const repoFullName = `maintainer-org/maintainer-repo-draft-comment-${randomUUID()}`;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      throw new Error(`Unexpected fetch: ${reqUrl(input)}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await handleGithubMaintainerEvent(db, makeEnv(), {
+      event: "issue_comment",
+      deliveryId: `delivery-draft-comment-${randomUUID()}`,
+      payload: {
+        action: "created",
+        installation: { id: 123 },
+        repository: { id: 123, full_name: repoFullName, html_url: `https://github.com/${repoFullName}` },
+        issue: {
+          id: 77,
+          number: 77,
+          draft: true,
+          state: "open",
+          html_url: `https://github.com/${repoFullName}/pull/77`,
+          pull_request: { url: `https://api.github.com/repos/${repoFullName}/pulls/77` },
+        },
+        comment: { id: 12345, html_url: `https://github.com/${repoFullName}/pull/77#issuecomment-12345` },
+        sender: { login: "octocat" },
+      },
+    });
+
+    expect(result).toEqual({ handled: false, maintainers: [] });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("dispatches pull request issue comments after the pull request is ready", async () => {
+    const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
+    const ownerId = `webhook-maintainer-ready-comment-${randomUUID()}`;
+    const projectId = `project_ready_comment_${randomUUID()}`;
+    const httpTriggerId = `http_ready_comment_${randomUUID()}`;
+    const repoName = `maintainer-repo-ready-comment-${randomUUID()}`;
+    const { repoFullName, installationId, maintainer } = await seedMaintainerWebhookTarget({ ownerId, repoName, projectId, httpTriggerId });
+    const dispatched: Array<{ url: string; body: any }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = reqUrl(input);
+        const method = reqMethod(input, init);
+        if (url === `https://ama.test/api/v1/triggers/${httpTriggerId}/runs` && method === "POST") {
+          const body = JSON.parse(await reqBody(input, init));
+          dispatched.push({ url, body });
+          return jsonResponse(amaTriggerRun("run_ready_comment", { projectId, triggerId: httpTriggerId }), 201);
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    const result = await handleGithubMaintainerEvent(db, makeEnv(), {
+      event: "issue_comment",
+      deliveryId: `delivery-ready-comment-${randomUUID()}`,
+      payload: {
+        action: "created",
+        installation: { id: installationId },
+        repository: { id: 123, full_name: repoFullName, html_url: `https://github.com/${repoFullName}` },
+        issue: {
+          id: 77,
+          number: 77,
+          draft: false,
+          state: "open",
+          html_url: `https://github.com/${repoFullName}/pull/77`,
+          pull_request: { url: `https://api.github.com/repos/${repoFullName}/pulls/77` },
+        },
+        comment: { id: 12345, html_url: `https://github.com/${repoFullName}/pull/77#issuecomment-12345` },
+        sender: { login: "octocat" },
+      },
+    });
+
+    expect(result).toEqual({ handled: true, maintainers: [maintainer.id] });
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0].body).toMatchObject({
+      event: "issue_comment",
+      action: "created",
+      routing_key: `github:${repoFullName.toLowerCase()}:pull:77`,
+      subject: { type: "pull_request", number: 77 },
+    });
+  });
+
   it("reopens a closed maintainer session before dispatching a closed issue comment", async () => {
     const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
     const ownerId = `webhook-maintainer-reopen-${randomUUID()}`;
@@ -662,6 +746,7 @@ describe("POST /api/webhooks/github-app route", () => {
         title: "Webhook PR",
         body: "PR creation body",
         html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77",
+        draft: false,
         merged: false,
       },
       action: "opened",
@@ -752,6 +837,7 @@ describe("POST /api/webhooks/github-app route", () => {
         title: "Webhook PR",
         body: "PR issue-comment subject body",
         html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77",
+        draft: false,
         pull_request: {},
       },
       action: "created",
@@ -771,6 +857,7 @@ describe("POST /api/webhooks/github-app route", () => {
         title: "Webhook PR",
         body: "PR creation body",
         html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77",
+        draft: false,
         merged: false,
       },
       action: "submitted",
@@ -790,6 +877,7 @@ describe("POST /api/webhooks/github-app route", () => {
         title: "Webhook PR review edited",
         body: "PR edited-review body",
         html_url: "https://github.com/maintainer-org/maintainer-repo/pull/78",
+        draft: false,
         merged: false,
       },
       action: "edited",
@@ -815,6 +903,7 @@ describe("POST /api/webhooks/github-app route", () => {
         title: "Webhook PR",
         body: "PR creation body",
         html_url: "https://github.com/maintainer-org/maintainer-repo/pull/77",
+        draft: false,
         merged: false,
       },
       action: "created",
@@ -832,6 +921,7 @@ describe("POST /api/webhooks/github-app route", () => {
         title: "Webhook PR inline edited",
         body: "PR edited-inline subject body",
         html_url: "https://github.com/maintainer-org/maintainer-repo/pull/78",
+        draft: false,
         merged: false,
       },
       action: "edited",
