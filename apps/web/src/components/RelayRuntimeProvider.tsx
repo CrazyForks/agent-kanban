@@ -187,6 +187,13 @@ export function convertEvents(events: RelayEvent[], agentStatus: AgentStatus): T
         } else {
           tc.result = block.error ? { error: block.output ?? "Unknown error" } : (block.output ?? "Done");
         }
+      } else if (subtaskRoot.has(block.tool_use_id)) {
+        appendSubtaskChild(block.tool_use_id, {
+          kind: "tool_result",
+          tool_use_id: block.tool_use_id,
+          output: block.output,
+          error: block.error,
+        });
       }
       return;
     }
@@ -497,7 +504,8 @@ function canonicalMessageEvent(message: Record<string, unknown> | null): AgentEv
   }
   if (role === "user") return { type: "message.user", text: textFromCanonicalMessage(message) };
 
-  const blocks = canonicalContentBlocks(Array.isArray(message.content) ? message.content : []);
+  const parentToolCallId = stringValue(message.parentToolCallId);
+  const blocks = canonicalContentBlocks(Array.isArray(message.content) ? message.content : [], parentToolCallId);
   return {
     type: "message",
     blocks,
@@ -505,15 +513,15 @@ function canonicalMessageEvent(message: Record<string, unknown> | null): AgentEv
   } as AgentEvent;
 }
 
-function canonicalContentBlocks(content: unknown[]): ContentBlock[] {
+function canonicalContentBlocks(content: unknown[], parentToolCallId?: string | null): ContentBlock[] {
   return content
     .map((part): ContentBlock | null => {
       const block = objectValue(part);
       switch (block?.type) {
         case "text":
-          return { type: "text", text: stringValue(block.text) ?? "" };
+          return withAmaParent({ type: "text", text: stringValue(block.text) ?? "" }, parentToolCallId);
         case "reasoning":
-          return { type: "thinking", text: stringValue(block.text) ?? "" };
+          return withAmaParent({ type: "thinking", text: stringValue(block.text) ?? "" }, parentToolCallId);
         case "tool_call": {
           const toolCall = objectValue(block.toolCall);
           const toolCallId = stringValue(toolCall?.id);
@@ -523,12 +531,15 @@ function canonicalContentBlocks(content: unknown[]): ContentBlock[] {
             throw new Error("Invalid AMA EventRecord: tool_call requires toolCall.id, toolCall.name, and object toolCall.input");
           }
           const normalized = normalizeAmaToolCall(toolName, input);
-          return {
-            type: "tool_use",
-            id: toolCallId,
-            name: normalized.name,
-            input: normalized.input,
-          };
+          return withAmaParent(
+            {
+              type: "tool_use",
+              id: toolCallId,
+              name: normalized.name,
+              input: normalized.input,
+            },
+            parentToolCallId,
+          );
         }
         case "tool_result": {
           const error = objectValue(block.error);
@@ -542,6 +553,7 @@ function canonicalContentBlocks(content: unknown[]): ContentBlock[] {
             tool_use_id: toolCallId,
             output: canonicalToolResultText(result),
             error: Boolean(error),
+            ...(parentToolCallId && parentToolCallId !== toolCallId ? { parent_id: parentToolCallId } : {}),
           };
         }
         case "image":
@@ -553,6 +565,10 @@ function canonicalContentBlocks(content: unknown[]): ContentBlock[] {
       }
     })
     .filter((block): block is ContentBlock => block !== null);
+}
+
+function withAmaParent<TBlock extends ContentBlock>(block: TBlock, parentToolCallId?: string | null): TBlock {
+  return parentToolCallId ? ({ ...block, parent_id: parentToolCallId } as TBlock) : block;
 }
 
 function textFromCanonicalMessage(message: Record<string, unknown>): string {
@@ -605,6 +621,15 @@ function normalizeAmaToolCall(toolName: string, input: Record<string, unknown>):
       return { name: ToolName.WebFetch, input };
     case "web_search":
       return { name: ToolName.WebSearch, input };
+    case "agent":
+      return {
+        name: ToolName.Agent,
+        input: {
+          description: input.description ?? "",
+          prompt: input.prompt ?? "",
+          subagentType: input.subagentName,
+        },
+      };
     default:
       return { name: toolName, input };
   }

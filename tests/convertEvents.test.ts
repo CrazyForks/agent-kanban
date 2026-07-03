@@ -620,6 +620,112 @@ describe("amaEventToRelayEvent — canonical AMA EventRecord mapping", () => {
       }),
     ]);
   });
+
+  it("renders canonical AMA agent tool calls with parentToolCallId child events inside the Agent card", () => {
+    const events = [
+      amaEventToRelayEvent({
+        id: "evt-agent-call",
+        sessionId: "session-1",
+        sequence: 40,
+        createdAt: "2026-04-08T10:00:01.000Z",
+        type: "message.completed",
+        payload: {
+          message: {
+            id: "msg-agent-call",
+            role: "assistant",
+            content: [
+              {
+                type: "tool_call",
+                toolCall: {
+                  id: "call-agent",
+                  name: "agent",
+                  input: { prompt: "Check this change", description: "Review pull request", subagentName: "reviewer" },
+                },
+              },
+            ],
+          },
+        },
+      }),
+      amaEventToRelayEvent({
+        id: "evt-child-text",
+        sessionId: "session-1",
+        sequence: 41,
+        createdAt: "2026-04-08T10:00:02.000Z",
+        type: "message.completed",
+        payload: {
+          message: {
+            id: "msg-child-text",
+            role: "assistant",
+            parentToolCallId: "call-agent",
+            content: [{ type: "text", text: "Inspecting files." }],
+          },
+        },
+      }),
+      amaEventToRelayEvent({
+        id: "evt-child-tool-call",
+        sessionId: "session-1",
+        sequence: 42,
+        createdAt: "2026-04-08T10:00:03.000Z",
+        type: "message.completed",
+        payload: {
+          message: {
+            id: "msg-child-tool-call",
+            role: "assistant",
+            parentToolCallId: "call-agent",
+            content: [{ type: "tool_call", toolCall: { id: "call-inner", name: "bash", input: { command: "pnpm test" } } }],
+          },
+        },
+      }),
+      amaEventToRelayEvent({
+        id: "evt-child-tool-result",
+        sessionId: "session-1",
+        sequence: 43,
+        createdAt: "2026-04-08T10:00:04.000Z",
+        type: "message.completed",
+        payload: {
+          message: {
+            id: "msg-child-tool-result",
+            role: "tool",
+            parentToolCallId: "call-inner",
+            content: [{ type: "tool_result", toolCallId: "call-inner", result: { content: [{ type: "text", text: "tests passed" }] } }],
+          },
+        },
+      }),
+      amaEventToRelayEvent({
+        id: "evt-agent-result",
+        sessionId: "session-1",
+        sequence: 44,
+        createdAt: "2026-04-08T10:00:05.000Z",
+        type: "message.completed",
+        payload: {
+          message: {
+            id: "msg-agent-result",
+            role: "tool",
+            parentToolCallId: "call-agent",
+            content: [{ type: "tool_result", toolCallId: "call-agent", result: { content: [{ type: "text", text: "Review passed." }] } }],
+          },
+        },
+      }),
+    ];
+
+    const messages = convertEvents(events, "idle");
+
+    expect(messages).toHaveLength(1);
+    const toolCall = (messages[0].content as any[]).find((part) => part.type === "tool-call");
+    expect(toolCall).toMatchObject({
+      toolCallId: "call-agent",
+      toolName: "Agent",
+      args: { prompt: "Check this change", description: "Review pull request", subagentType: "reviewer" },
+      result: {
+        text: "Review passed.",
+        children: [
+          { kind: "text", text: "Inspecting files." },
+          { kind: "tool_use", id: "call-inner", name: "Bash", input: { command: "pnpm test" } },
+          { kind: "tool_result", tool_use_id: "call-inner", output: "tests passed", error: false },
+        ],
+      },
+    });
+  });
 });
 
 // ── Streaming event types ───────────────────────────────────────────────────
