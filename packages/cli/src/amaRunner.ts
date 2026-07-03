@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { BIN_DIR, DATA_DIR } from "./paths.js";
 
 const AMA_RUNNER_REPOSITORY = "saltbo/any-managed-agents";
-export const AMA_RUNNER_VERSION = "0.5.7";
+export const AMA_RUNNER_VERSION = "0.5.9";
 const AMA_RUNNER_PATH = join(BIN_DIR, "ama-runner");
 const LEGACY_RUNNER_INSTALL_DIR = join(DATA_DIR, "runners", "ama-runner");
 
