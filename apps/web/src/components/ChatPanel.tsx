@@ -12,12 +12,47 @@ function sequenceOf(event: RuntimeEvent): number {
   return Number.isFinite(seq) ? seq : 0;
 }
 
+function timestampOf(event: RuntimeEvent): string {
+  const value = typeof event.createdAt === "string" ? event.createdAt : typeof event.timestamp === "string" ? event.timestamp : "";
+  return Number.isFinite(Date.parse(value)) ? value : "";
+}
+
+function messageIdOf(event: RuntimeEvent): string | null {
+  const payload = event.payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const message = (payload as Record<string, unknown>).message;
+  if (!message || typeof message !== "object" || Array.isArray(message)) return null;
+  const id = (message as Record<string, unknown>).id;
+  return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+function eventKey(event: RuntimeEvent): string {
+  if (typeof event.id === "string" && event.id.length > 0) return `id:${event.id}`;
+  const messageId = messageIdOf(event);
+  if (messageId) return `message:${messageId}`;
+  return `fallback:${sequenceOf(event)}:${timestampOf(event)}:${String(event.type ?? "")}`;
+}
+
+function compareEvents(a: RuntimeEvent, b: RuntimeEvent): number {
+  const aTime = timestampOf(a);
+  const bTime = timestampOf(b);
+  if (aTime && bTime && aTime !== bTime) return aTime.localeCompare(bTime);
+  const sequence = sequenceOf(a) - sequenceOf(b);
+  if (sequence !== 0) return sequence;
+  return eventKey(a).localeCompare(eventKey(b));
+}
+
 function mergeUnique(base: RuntimeEvent[], incoming: RuntimeEvent[]): RuntimeEvent[] {
-  const seen = new Set(base.map(sequenceOf));
-  const added = incoming.filter((event) => !seen.has(sequenceOf(event)));
+  const seen = new Set(base.map(eventKey));
+  const added = incoming.filter((event) => {
+    const key = eventKey(event);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   if (added.length === 0) return base;
-  // Backfill pages and live events can interleave; keep the thread sequence-ordered.
-  return [...base, ...added].sort((a, b) => sequenceOf(a) - sequenceOf(b));
+  // Backfill pages and live events can interleave; keep the thread in event time order.
+  return [...base, ...added].sort(compareEvents);
 }
 
 interface ChatPanelProps {

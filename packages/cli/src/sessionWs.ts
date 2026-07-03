@@ -16,6 +16,27 @@ function eventSequence(event: SessionEvent): number {
   return Number.isFinite(sequence) ? sequence : 0;
 }
 
+function eventTimestamp(event: SessionEvent): string {
+  const value = typeof event.createdAt === "string" ? event.createdAt : typeof event.timestamp === "string" ? event.timestamp : "";
+  return Number.isFinite(Date.parse(value)) ? value : "";
+}
+
+function eventKey(event: SessionEvent): string {
+  if (typeof event.id === "string" && event.id.length > 0) return `id:${event.id}`;
+  const message = runtimeMessage(event);
+  if (typeof message?.id === "string" && message.id.length > 0) return `message:${message.id}`;
+  return `fallback:${eventSequence(event)}:${eventTimestamp(event)}:${String(event.type ?? "")}`;
+}
+
+function compareEvents(a: SessionEvent, b: SessionEvent): number {
+  const aTime = eventTimestamp(a);
+  const bTime = eventTimestamp(b);
+  if (aTime && bTime && aTime !== bTime) return aTime.localeCompare(bTime);
+  const sequence = eventSequence(a) - eventSequence(b);
+  if (sequence !== 0) return sequence;
+  return eventKey(a).localeCompare(eventKey(b));
+}
+
 function objectValue(value: unknown): Record<string, any> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, any>) : null;
 }
@@ -84,7 +105,7 @@ function connect(url: string): { ws: any; abort: () => void } {
 
 export async function readSessionEvents(url: string, options: ReadSessionEventsOptions = {}): Promise<SessionEvent[]> {
   const filter = options.filter ?? "all";
-  const seen = new Set<number>();
+  const seen = new Set<string>();
   const events: SessionEvent[] = [];
   const limit = options.all ? 200 : (options.recentLimit ?? 20);
 
@@ -130,7 +151,7 @@ export async function readSessionEvents(url: string, options: ReadSessionEventsO
       settled = true;
       if (timeout) clearTimeout(timeout);
       closeSocket();
-      events.sort((a, b) => eventSequence(a) - eventSequence(b));
+      events.sort(compareEvents);
       if (!options.all && events.length > limit) {
         events.splice(0, events.length - limit);
       }
@@ -141,9 +162,9 @@ export async function readSessionEvents(url: string, options: ReadSessionEventsO
     };
 
     const accept = (event: SessionEvent) => {
-      const sequence = eventSequence(event);
-      if (seen.has(sequence)) return;
-      seen.add(sequence);
+      const key = eventKey(event);
+      if (seen.has(key)) return;
+      seen.add(key);
       if (!matchesSessionEventFilter(event, filter)) return;
       events.push(event);
       if (options.watch) options.onEvent?.(event);

@@ -105,9 +105,6 @@ async function showSession(
     } catch (error) {
       output({ ...session, events: [], events_error: errorMessage(error) }, fmt, undefined, { kind: "session" });
     }
-    if (!process.env.VITEST_WORKER_ID) {
-      process.exit(0);
-    }
     return;
   }
 
@@ -139,9 +136,6 @@ async function showSession(
     console.log(eventsError ? `  unavailable: ${eventsError}` : "  none");
   } else if (eventsError) {
     console.error(`Session events unavailable: ${eventsError}`);
-  }
-  if (!opts.watch && !process.env.VITEST_WORKER_ID) {
-    process.exit(0);
   }
 }
 

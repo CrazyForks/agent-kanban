@@ -85,6 +85,10 @@ function makeEvent(sequence: number): Record<string, unknown> {
   return { sequence, type: "text", content: `event-${sequence}` };
 }
 
+function makeAmaEvent(overrides: Record<string, unknown>): Record<string, unknown> {
+  return { type: "text", ...overrides };
+}
+
 const TASK_ID = "task-123";
 const AGENT_ID = "agent-456";
 
@@ -364,6 +368,78 @@ describe("ChatPanel", () => {
 
       expect(screen.getByTestId("ama-runtime-provider")).toBeInTheDocument();
       expect(lastAmaRuntimeEvents.map((event) => event.sequence)).toEqual([1]);
+    });
+
+    it("preserves distinct AMA events with the same numeric sequence when ids differ", async () => {
+      renderPanel({ amaSessionId: "session_x" });
+
+      await deliverBackfill([
+        makeAmaEvent({ id: "evt_same_seq_a", sequence: 7, createdAt: "2026-07-03T10:00:00.000Z", content: "first" }),
+        makeAmaEvent({ id: "evt_same_seq_b", sequence: 7, createdAt: "2026-07-03T10:00:01.000Z", content: "second" }),
+      ]);
+
+      expect(screen.getByTestId("ama-runtime-provider")).toHaveAttribute("data-event-count", "2");
+      expect(lastAmaRuntimeEvents.map((event) => event.id)).toEqual(["evt_same_seq_a", "evt_same_seq_b"]);
+    });
+
+    it("deduplicates AMA events with the same id across backfill and live frames", async () => {
+      renderPanel({ amaSessionId: "session_x" });
+
+      await deliverBackfill([makeAmaEvent({ id: "evt_duplicate", sequence: 1, createdAt: "2026-07-03T10:00:00.000Z", content: "from-backfill" })]);
+
+      await act(async () => {
+        lastWebSocket!.emit({
+          type: "event",
+          record: makeAmaEvent({ id: "evt_duplicate", sequence: 2, createdAt: "2026-07-03T10:00:01.000Z", content: "from-live" }),
+        });
+      });
+
+      expect(screen.getByTestId("ama-runtime-provider")).toHaveAttribute("data-event-count", "1");
+      expect(lastAmaRuntimeEvents).toMatchObject([{ id: "evt_duplicate", content: "from-backfill" }]);
+    });
+
+    it("orders AMA events by createdAt or timestamp before sequence", async () => {
+      renderPanel({ amaSessionId: "session_x" });
+
+      await deliverBackfill([
+        makeAmaEvent({ id: "evt_later_low_seq", sequence: 1, createdAt: "2026-07-03T10:00:03.000Z" }),
+        makeAmaEvent({ id: "evt_earlier_high_seq", sequence: 99, timestamp: "2026-07-03T10:00:01.000Z" }),
+      ]);
+
+      await act(async () => {
+        lastWebSocket!.emit({
+          type: "event",
+          record: makeAmaEvent({ id: "evt_middle_seq", sequence: 50, createdAt: "2026-07-03T10:00:02.000Z" }),
+        });
+      });
+
+      expect(lastAmaRuntimeEvents.map((event) => event.id)).toEqual(["evt_earlier_high_seq", "evt_middle_seq", "evt_later_low_seq"]);
+    });
+
+    it("deduplicates id-less AMA events by payload message id", async () => {
+      renderPanel({ amaSessionId: "session_x" });
+
+      await deliverBackfill([
+        makeAmaEvent({
+          sequence: 1,
+          createdAt: "2026-07-03T10:00:00.000Z",
+          payload: { message: { id: "msg_duplicate", content: "from-backfill" } },
+        }),
+      ]);
+
+      await act(async () => {
+        lastWebSocket!.emit({
+          type: "event",
+          record: makeAmaEvent({
+            sequence: 2,
+            createdAt: "2026-07-03T10:00:01.000Z",
+            payload: { message: { id: "msg_duplicate", content: "from-live" } },
+          }),
+        });
+      });
+
+      expect(screen.getByTestId("ama-runtime-provider")).toHaveAttribute("data-event-count", "1");
+      expect(lastAmaRuntimeEvents).toMatchObject([{ payload: { message: { id: "msg_duplicate", content: "from-backfill" } } }]);
     });
 
     // ── WebSocket construction ────────────────────────────────────────────────

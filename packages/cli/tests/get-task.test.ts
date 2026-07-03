@@ -241,6 +241,19 @@ describe("get session", () => {
     );
   });
 
+  it("does not force-exit after json output so large stdout can flush", async () => {
+    const previousWorkerId = process.env.VITEST_WORKER_ID;
+    delete process.env.VITEST_WORKER_ID;
+    try {
+      const program = makeProgram();
+      await program.parseAsync(["get", "session", "session-42", "-o", "json"], { from: "user" });
+      expect(exitSpy).not.toHaveBeenCalled();
+    } finally {
+      if (previousWorkerId === undefined) delete process.env.VITEST_WORKER_ID;
+      else process.env.VITEST_WORKER_ID = previousWorkerId;
+    }
+  });
+
   it("keeps text output usable when session events are unavailable", async () => {
     mockReadSessionEvents.mockRejectedValueOnce(new Error("Invalid session socket message"));
     const program = makeProgram();
