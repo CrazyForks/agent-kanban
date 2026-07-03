@@ -1,7 +1,5 @@
-import type { AgentRuntime } from "@agent-kanban/shared";
 import { Command } from "commander";
-import { createClient, createIdentity, getIdentity } from "./agent/leader.js";
-import { detectRuntime } from "./agent/runtime.js";
+import { createClient } from "./agent/leader.js";
 import { registerAgentCommand } from "./commands/agent.js";
 import { registerApplyCommand } from "./commands/apply.js";
 import { registerAuthCommand } from "./commands/auth.js";
@@ -220,64 +218,6 @@ registerUpdateCommand(program);
 registerDeleteCommand(program);
 registerApplyCommand(program);
 registerWaitCommand(program);
-
-// ─── Identity ───
-
-const identityCmd = program.command("identity").description("Manage leader identity for the current runtime");
-
-identityCmd
-  .command("create")
-  .description("Create and save a leader identity for the current runtime")
-  .requiredOption("--username <username>", "User-like handle chosen by the agent")
-  .option("--name <name>", "Optional full name shown in the UI")
-  .action(async (opts) => {
-    const runtime = detectRuntime();
-    if (!runtime) {
-      console.error("No supported agent runtime found. Run this command from inside an agent runtime.");
-      process.exit(1);
-    }
-
-    const identity = await createIdentity({
-      runtime: runtime as AgentRuntime,
-      username: opts.username,
-      name: opts.name,
-    });
-    console.log(`Created identity for ${runtime}`);
-    console.log(`Agent ID:    ${identity.agent_id}`);
-    console.log(`Name:        ${identity.name}`);
-    console.log(`Fingerprint: ${identity.fingerprint}`);
-  });
-
-program
-  .command("whoami")
-  .description("Show agent identity for the current runtime")
-  .action(async () => {
-    const runtime = detectRuntime();
-    if (!runtime) {
-      console.error("No supported agent runtime found. Run this command from inside an agent runtime.");
-      process.exit(1);
-    }
-    const identity = await getIdentity(runtime as AgentRuntime);
-    if (!identity) {
-      console.error(
-        [
-          `No identity found for runtime "${runtime}".`,
-          "",
-          "Create one explicitly with:",
-          "  ak identity create --username <username> [--name <name>]",
-          "",
-          "Choose the identity values yourself:",
-          "  --username  required, user-like handle chosen by the agent",
-          "  --name      optional full name shown in the UI",
-        ].join("\n"),
-      );
-      process.exit(1);
-    }
-    console.log(`Runtime:     ${runtime}`);
-    console.log(`Agent ID:    ${identity.agent_id}`);
-    console.log(`Name:        ${identity.name}`);
-    console.log(`Fingerprint: ${identity.fingerprint}`);
-  });
 
 // ─── Daemon ───
 

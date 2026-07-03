@@ -12,12 +12,6 @@ const statusDotColors: Record<string, string> = {
   offline: "bg-content-tertiary",
 };
 
-const agentStatusDotColors: Record<string, string> = {
-  idle: "bg-content-tertiary",
-  working: "bg-accent animate-pulse-glow",
-  offline: "bg-warning",
-};
-
 export function MachineDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -150,7 +144,7 @@ export function MachineDetailPage() {
                   key={agent.id}
                   to={`/agents/${agent.id}`}
                   className={`flex items-center justify-between bg-surface-secondary border rounded-lg px-4 py-3 hover:border-accent/30 transition-colors ${
-                    agent.status === "working" ? "border-accent/30 shadow-[0_0_16px_rgba(34,211,238,0.06)]" : "border-border"
+                    agent.active_session_count > 0 ? "border-accent/30 shadow-[0_0_16px_rgba(34,211,238,0.06)]" : "border-border"
                   }`}
                 >
                   <div className="flex items-center gap-3">
@@ -160,13 +154,15 @@ export function MachineDetailPage() {
                     <div>
                       <span className="font-mono text-sm text-accent">{agent.name}</span>
                       <div className="flex items-center gap-1.5 mt-0.5">
-                        <span className={`w-1.5 h-1.5 rounded-full ${agentStatusDotColors[agent.status] || "bg-content-tertiary"}`} />
-                        <span className="text-[11px] text-content-tertiary capitalize">{agent.status}</span>
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${agent.active_session_count > 0 ? "bg-accent animate-pulse-glow" : "bg-content-tertiary"}`}
+                        />
+                        <span className="text-[11px] text-content-tertiary">{agent.active_session_count || 0} active sessions</span>
                       </div>
                     </div>
                   </div>
                   <span className="text-[11px] font-mono text-content-tertiary">
-                    {agent.last_active_at ? formatRelative(agent.last_active_at) : "—"}
+                    {agent.last_session_at ? formatRelative(agent.last_session_at) : "—"}
                   </span>
                 </Link>
               ))}

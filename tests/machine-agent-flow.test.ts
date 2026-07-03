@@ -303,8 +303,8 @@ describe("machine → agent session flow", () => {
     const workerAgent = machine.agents.find((a: any) => a.id === agentId);
     expect(workerAgent).toBeDefined();
     expect(workerAgent.name).toBe("Test Agent");
-    expect(workerAgent.status).toBe("working");
-    expect(workerAgent.last_active_at).toBeTruthy();
+    expect(workerAgent.active_session_count).toBeGreaterThan(0);
+    expect(workerAgent.last_session_at).toBeTruthy();
   });
 
   it("final state is consistent", async () => {

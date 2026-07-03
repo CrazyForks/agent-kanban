@@ -11,7 +11,7 @@ import { createTestAgent } from "./helpers/db";
 // Integration tests for Agent Entity Redesign:
 // - Agent CRUD (update, delete)
 // - Session lifecycle (close, multi-session)
-// - Agent status computation (online/offline from sessions)
+// - Agent task status count computation
 // - Message sender model (sender_type + sender_id)
 // - User assigns task to agent
 // - Delegation proof tamper detection
@@ -58,6 +58,7 @@ async function applyMigrations(db: D1Database) {
     "0030_agent_taints.sql",
     "0031_drop_board_maintainer_name.sql",
     "0032_board_maintainer_api_key.sql",
+    "0034_task_assignee_status_index.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
@@ -166,12 +167,21 @@ describe("agent CRUD", () => {
     const agents = await listAgents(env.DB, userId);
     const agent = agents.find((a) => a.id === agentId);
     expect(agent).toBeTruthy();
-    expect(agent!.status).toBe("offline"); // no active sessions
+    expect(agent!.status).toEqual({
+      schedulable: false,
+      tasks: {
+        todo: 0,
+        in_progress: 0,
+        in_review: 0,
+        done: 0,
+        cancelled: 0,
+      },
+    });
     expect(agent!.input_tokens).toBe(0);
   });
 });
 
-describe("agent status computation", () => {
+describe("agent task status count computation", () => {
   let userId: string;
   let agentId: string;
   let machineId: string;
@@ -212,44 +222,58 @@ describe("agent status computation", () => {
     agentId = agent.id;
   });
 
-  it("agent is offline with no sessions", async () => {
+  it("reports zero task counts with no assigned tasks", async () => {
     const { getAgent } = await import("../apps/web/server/agentRepo");
     const agent = await getAgent(env.DB, agentId, userId);
-    expect(agent!.status).toBe("offline");
+    expect(agent!.status.tasks).toEqual({
+      todo: 0,
+      in_progress: 0,
+      in_review: 0,
+      done: 0,
+      cancelled: 0,
+    });
   });
 
-  it("agent goes online when session is created", async () => {
+  it("counts assigned tasks by status", async () => {
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createTask } = await import("../apps/web/server/taskRepo");
+    const board = await createBoard(env.DB, userId, "Status board", "ops");
+    const statuses = ["todo", "in_progress", "in_review", "done", "cancelled"] as const;
+    for (const status of statuses) {
+      const task = await createTask(env.DB, userId, {
+        board_id: board.id,
+        title: `${status} task`,
+        assigned_to: agentId,
+        skipRuntimeAvailability: true,
+      });
+      await env.DB.prepare("UPDATE tasks SET status = ? WHERE id = ?").bind(status, task.id).run();
+    }
+
+    const { getAgent } = await import("../apps/web/server/agentRepo");
+    const agent = await getAgent(env.DB, agentId, userId);
+    expect(agent!.status.tasks).toEqual({
+      todo: 1,
+      in_progress: 1,
+      in_review: 1,
+      done: 1,
+      cancelled: 1,
+    });
+  });
+
+  it("does not change task counts when sessions are created", async () => {
     const { createSession } = await import("../apps/web/server/agentSessionRepo");
     const { publicKey } = await createSessionKeypair();
     await createSession(env.DB, env, agentId, machineId, randomUUID(), publicKey, userId);
 
     const { getAgent } = await import("../apps/web/server/agentRepo");
     const agent = await getAgent(env.DB, agentId, userId);
-    expect(agent!.status).toBe("online");
-  });
-
-  it("agent stays online with multiple sessions", async () => {
-    const { createSession } = await import("../apps/web/server/agentSessionRepo");
-    const { publicKey } = await createSessionKeypair();
-    const sessionId2 = randomUUID();
-    await createSession(env.DB, env, agentId, machineId, sessionId2, publicKey, userId);
-
-    const { listAgents } = await import("../apps/web/server/agentRepo");
-    const agents = await listAgents(env.DB, userId);
-    const agent = agents.find((a) => a.id === agentId);
-    expect(agent!.status).toBe("online");
-  });
-
-  it("agent goes offline when all sessions are closed", async () => {
-    const { closeSession } = await import("../apps/web/server/agentSessionRepo");
-    const sessions = await env.DB.prepare("SELECT id FROM agent_sessions WHERE agent_id = ? AND status = 'active'").bind(agentId).all();
-    for (const s of sessions.results as any[]) {
-      await closeSession(env.DB, s.id);
-    }
-
-    const { getAgent } = await import("../apps/web/server/agentRepo");
-    const agent = await getAgent(env.DB, agentId, userId);
-    expect(agent!.status).toBe("offline");
+    expect(agent!.status.tasks).toEqual({
+      todo: 1,
+      in_progress: 1,
+      in_review: 1,
+      done: 1,
+      cancelled: 1,
+    });
   });
 });
 

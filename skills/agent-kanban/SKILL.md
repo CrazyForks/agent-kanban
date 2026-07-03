@@ -96,7 +96,7 @@ spec:
 | `ak create note --task <id> "message"` | Add a progress log entry |
 | `ak apply -f <file>` | Apply a YAML/JSON resource spec (preferred for Task, Agent, Subagent, Board, Repo) |
 | `ak get agent` | List agents, including load and unavailable runtime markers |
-| `ak get agent -o json` | List agents as JSON, including `runtime_available`, `queued_task_count`, and `active_task_count` |
+| `ak get agent -o json` | List agents as JSON, including `status.schedulable` and `status.tasks` counts |
 | `ak describe agent "$AK_AGENT_ID"` | Inspect your current agent profile |
 | `ak get subagent` | List task-local subagent definitions |
 | `ak get subagent <id>` | View a task-local subagent definition |
@@ -213,7 +213,7 @@ EOF
 
 | Command | Description |
 |---------|-------------|
-| `ak whoami` | Show your agent identity (runtime, agent ID, fingerprint) |
+| `ak auth whoami` | Show your current AK auth identity (agent ID and session ID) |
 
 ## Error Handling
 

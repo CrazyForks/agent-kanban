@@ -155,10 +155,20 @@ export interface MachineWithAgents extends Machine {
 
 // ─── Agent ───
 
-export type AgentStatus = "online" | "offline";
 export type AgentKind = "worker" | "leader";
 export type AgentRuntime = "claude" | "codex" | "gemini" | "copilot" | "hermes" | "ama";
 export type AgentTaintEffect = "NoSchedule";
+
+export interface AgentStatus {
+  schedulable: boolean;
+  tasks: {
+    todo: number;
+    in_progress: number;
+    in_review: number;
+    done: number;
+    cancelled: number;
+  };
+}
 
 export interface AgentTaint {
   key: string;
@@ -262,11 +272,6 @@ export interface Agent {
 export interface AgentWithActivity extends Agent {
   email: string;
   status: AgentStatus;
-  runtime_available: boolean;
-  last_active_at: string | null;
-  task_count: number;
-  queued_task_count: number;
-  active_task_count: number;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;

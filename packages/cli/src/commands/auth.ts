@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { Command } from "commander";
-import { createClient, createIdentity } from "../agent/leader.js";
-import { detectRuntime } from "../agent/runtime.js";
+import { loadIdentity } from "../agent/identity.js";
+import { createClient, loginLeaderAgent } from "../agent/leader.js";
+import { detectRuntime, findRuntimeAncestorPid } from "../agent/runtime.js";
 import { clearWorkerAuthSession, readWorkerAuthSession, writeWorkerAuthSession } from "../auth/session.js";
 import { AgentClient } from "../client/agent.js";
-import { saveCredentials } from "../config.js";
+import { getCredentials, saveCredentials } from "../config.js";
+import { isPidAlive, listSessions } from "../session/store.js";
 import { configureGithubAuth } from "./github.js";
 
 async function maintainerLogin(): Promise<{ agentId: string; sessionId: string; reused: boolean }> {
@@ -72,6 +74,43 @@ async function ensureAuthSession() {
   return await createClient();
 }
 
+function hasMaintainerLoginEnv(): boolean {
+  return Boolean(
+    process.env.AK_API_URL && process.env.AK_API_KEY && process.env.AK_AGENT_ID && process.env.AK_BOARD_ID && process.env.AK_MAINTAINER_ID,
+  );
+}
+
+function missingAuthSessionMessage(): string {
+  const base = "No AK auth session found.";
+
+  if (process.env.AK_API_KEY && process.env.AK_MAINTAINER_ID) {
+    return [base, "For a maintainer worker, run:", "  ak auth login"].join("\n");
+  }
+
+  if (process.env.AK_WORKER === "1" || process.env.AK_AGENT_ID || process.env.AK_SESSION_ID || process.env.AK_AGENT_KEY) {
+    return [
+      base,
+      "This worker runtime is missing a complete AK agent session.",
+      "The runtime should inject AK_AGENT_ID, AK_SESSION_ID, AK_AGENT_KEY, and AK_API_URL.",
+    ].join("\n");
+  }
+
+  const runtime = detectRuntime();
+  if (runtime) {
+    return [
+      base,
+      `For a leader agent in the current ${runtime} runtime, run:`,
+      "  ak auth login --leader-agent --username <username> [--name <name>]",
+    ].join("\n");
+  }
+
+  return [
+    base,
+    "Run inside an AK worker with an injected session, or run from a supported leader agent runtime:",
+    "  ak auth login --leader-agent --username <username> [--name <name>]",
+  ].join("\n");
+}
+
 function repositoryProvider(repo: any): "github" {
   const url = String(repo?.url ?? "");
   if (url.includes("github.com:") || url.includes("github.com/")) return "github";
@@ -92,9 +131,9 @@ export function registerAuthCommand(program: Command) {
     .description("Authenticate AK for the current user, machine, or agent worker")
     .option("--api-url <url>", "AK API server URL")
     .option("--api-key <key>", "AK API key")
-    .option("--agent", "Create an agent identity for the current runtime")
-    .option("--username <username>", "Agent username when using --agent")
-    .option("--name <name>", "Agent display name when using --agent")
+    .option("--leader-agent", "Create a leader agent identity for the current runtime")
+    .option("--username <username>", "Leader agent username when using --leader-agent")
+    .option("--name <name>", "Leader agent display name when using --leader-agent")
     .action(async (opts) => {
       if (opts.apiUrl || opts.apiKey) {
         if (!opts.apiUrl || !opts.apiKey) throw new Error("--api-url and --api-key must be provided together");
@@ -103,13 +142,18 @@ export function registerAuthCommand(program: Command) {
         return;
       }
 
-      if (opts.agent) {
-        if (!opts.username) throw new Error("--username is required with --agent");
+      if (opts.leaderAgent) {
+        if (!opts.username) throw new Error("--username is required with --leader-agent");
         const runtime = detectRuntime();
         if (!runtime) throw new Error("No supported agent runtime found. Run this command from inside an agent runtime.");
-        const identity = await createIdentity({ runtime: runtime as any, username: opts.username, name: opts.name });
-        console.log(`Created AK agent identity ${identity.agent_id}`);
+        const session = await loginLeaderAgent({ runtime: runtime as any, username: opts.username, name: opts.name });
+        console.log(`${session.reusedIdentity ? "Using" : "Created"} AK leader agent identity ${session.identity.agent_id}`);
+        console.log(`Created AK leader agent session ${session.sessionId}`);
         return;
+      }
+
+      if (!hasMaintainerLoginEnv() && detectRuntime()) {
+        throw new Error("Leader agent login requires --leader-agent. Run: ak auth login --leader-agent --username <username> [--name <name>]");
       }
 
       const session = await maintainerLogin();
@@ -142,7 +186,43 @@ export function registerAuthCommand(program: Command) {
         console.log(`Session ID:  ${cached.sessionId}`);
         return;
       }
-      throw new Error("No AK auth session found");
+      const runtime = detectRuntime();
+      if (runtime) {
+        let identity: ReturnType<typeof loadIdentity> = null;
+        try {
+          identity = loadIdentity(runtime);
+        } catch {
+          identity = null;
+        }
+        if (identity) {
+          console.log("Type:        leader");
+          console.log(`Runtime:     ${runtime}`);
+          console.log(`Agent ID:    ${identity.agent_id}`);
+          const leaderPid = findRuntimeAncestorPid(runtime);
+          let apiUrl: string | null = null;
+          try {
+            apiUrl = getCredentials().apiUrl;
+          } catch {
+            apiUrl = null;
+          }
+          const session =
+            leaderPid !== null && apiUrl
+              ? listSessions({ type: "leader" }).find(
+                  (candidate) =>
+                    candidate.pid === leaderPid &&
+                    candidate.runtime === runtime &&
+                    candidate.apiUrl === apiUrl &&
+                    candidate.agentId === identity.agent_id &&
+                    isPidAlive(leaderPid),
+                )
+              : null;
+          if (session) console.log(`Session ID:  ${session.sessionId}`);
+          console.log(`Name:        ${identity.name}`);
+          console.log(`Fingerprint: ${identity.fingerprint}`);
+          return;
+        }
+      }
+      throw new Error(missingAuthSessionMessage());
     });
 
   authCmd

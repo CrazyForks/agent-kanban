@@ -13,15 +13,17 @@ Use these fields:
 - `kind`: assign implementation tasks only to workers, not leaders.
 - `role`: match the task domain first.
 - `runtime`: the worker's runtime.
-- `runtime_available`: only `true` is schedulable.
-- `queued_task_count`: todo tasks already assigned to the worker.
-- `active_task_count`: in-progress tasks currently owned by the worker.
+- `status.schedulable`: the only hard scheduling gate; only `true` can receive new work.
+- `status.tasks.todo`: todo tasks already assigned to the worker.
+- `status.tasks.in_progress`: in-progress tasks currently owned by the worker.
+- `status.tasks.in_review`: tasks currently waiting for review.
+- `status.tasks.done` / `status.tasks.cancelled`: historical assigned task counts.
 
 ## Runtime Choice
 
 Runtime selection is a hard stop before task creation.
 
-If multiple runtimes are schedulable for the needed role and the user has not expressed a runtime preference, ask which runtime to use before creating a new worker or assigning the task. Present only runtimes with `runtime_available: true`, plus the relevant trade-off: existing matching worker, current load, model preference, or runtime-specific capability.
+If multiple runtimes are schedulable for the needed role and the user has not expressed a runtime preference, ask which runtime to use before creating a new worker or assigning the task. Present only agents with `status.schedulable: true`, plus the relevant trade-off: existing matching worker, current load, model preference, or runtime-specific capability.
 
 When creating a worker or choosing a non-default model, query provider-reported model availability:
 
@@ -38,8 +40,8 @@ Do not ask when there is only one schedulable runtime for the required capabilit
 ## Assignment Rules
 
 1. Pick a worker whose `role` matches the task.
-2. Exclude workers with `runtime_available !== true`.
-3. Prefer the matching worker with the lowest `active_task_count`, then lowest `queued_task_count`.
+2. Exclude workers with `status.schedulable !== true`.
+3. Prefer the matching worker with the lowest `status.tasks.in_progress + status.tasks.in_review`, then lowest `status.tasks.todo`.
 4. If the user specified a runtime, exclude workers whose `runtime` does not match.
 5. If the user specified a runtime and no worker or machine reports that runtime as schedulable, stop and ask the user to choose an available runtime.
 6. If no matching worker is schedulable, create a worker with the required capability profile on a schedulable runtime using `references/agent-creation.md`.
@@ -177,7 +179,7 @@ Agent creation rules:
 - If `subagents` is non-empty, `soul` must say how this agent collaborates with those subagents: when to call them, what they own, and how their output is reviewed or integrated.
 - Agent YAML updates the current `latest` profile for `metadata.name`. If the profile changed, AK keeps the previous `latest` as a hash-version snapshot.
 - Use `ak get agent <username>` to list snapshots and `ak describe agent <username> --version latest` to inspect the current approved profile.
-- Verify `runtime_available: true` before assigning any task to the new worker.
+- Verify `status.schedulable: true` before assigning any task to the new worker.
 
 Skill selection rules:
 

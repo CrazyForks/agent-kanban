@@ -1,43 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import type { Agent, AgentRuntime } from "@agent-kanban/shared";
 import { AgentClient } from "../client/agent.js";
 import { type ApiClient, ApiError } from "../client/base.js";
 import { MachineClient } from "../client/machine.js";
 import { getCredentials } from "../config.js";
-import { PID_FILE } from "../paths.js";
 import { isPidAlive, listSessions, removeSession, writeSession } from "../session/store.js";
 import { loadIdentity, removeIdentity, type StoredIdentity, saveIdentity } from "./identity.js";
 import { detectRuntime, findRuntimeAncestorPid } from "./runtime.js";
-
-function isDaemonAlive(): boolean {
-  try {
-    const pid = parseInt(readFileSync(PID_FILE, "utf-8").trim(), 10);
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function missingIdentityMessage(runtime: AgentRuntime): string {
-  return [
-    `No identity found for runtime "${runtime}".`,
-    "",
-    "Create one explicitly with:",
-    "  ak identity create --username <username> [--name <name>]",
-    "",
-    "Choose the identity values yourself:",
-    "  --username  required, user-like handle chosen by the agent",
-    "  --name      optional full name shown in the UI",
-    "",
-    `This legacy local identity is reused for the same api-url + runtime (${runtime}).`,
-    "",
-    "Examples:",
-    "  ak identity create --username alex",
-    '  ak identity create --username alex --name "Alex Chen"',
-  ].join("\n");
-}
 
 async function restoreIdentity(runtime: AgentRuntime, client: MachineClient): Promise<StoredIdentity | null> {
   const agents = (await client.listAgents()) as Agent[];
@@ -92,32 +61,57 @@ export async function createIdentity(input: { runtime: AgentRuntime; username: s
   return identity;
 }
 
-let cachedLeaderClient: AgentClient | null = null;
-let reapedThisProcess = false;
-
-// The old daemon heartbeat closed leader sessions whose runtime process had
-// exited and reported their usage. Without a local daemon, the CLI itself
-// reaps them lazily — once per process, on the first leader command.
-async function reapDeadLeaderSessions(client: MachineClient): Promise<void> {
-  if (reapedThisProcess) return;
-  reapedThisProcess = true;
-  for (const session of listSessions({ type: "leader" })) {
-    if (isPidAlive(session.pid)) continue;
-    try {
-      const { collectUsage } = await import("./usage.js");
-      const usage = await collectUsage(session.runtime, session.startedAt);
-      if (usage) await client.updateSessionUsage(session.agentId, session.sessionId, usage);
-    } catch {
-      // usage reporting is best-effort; the session still gets closed
-    }
-    try {
-      await client.closeSession(session.agentId, session.sessionId);
-    } catch {
-      // server may already have closed it
-    }
-    removeSession(session.sessionId);
+export async function loginLeaderAgent(input: { runtime: AgentRuntime; username: string; name?: string }): Promise<{
+  identity: StoredIdentity;
+  sessionId: string;
+  reusedIdentity: boolean;
+}> {
+  const leaderPid = findRuntimeAncestorPid(input.runtime);
+  if (leaderPid === null) {
+    throw new Error(`Could not locate ${input.runtime} process in ancestry. ak must be invoked from inside a ${input.runtime} session.`);
   }
+
+  const { apiUrl } = getCredentials();
+  const client = new MachineClient();
+  let identity = await loadOrRestoreIdentity(input.runtime, client);
+  let reusedIdentity = true;
+  if (!identity) {
+    identity = await createIdentity({ runtime: input.runtime, username: input.username, name: input.name });
+    reusedIdentity = false;
+  }
+
+  const existing = listSessions({ type: "leader" }).find(
+    (session) => session.pid === leaderPid && session.runtime === input.runtime && session.apiUrl === apiUrl,
+  );
+  if (existing && isPidAlive(leaderPid)) {
+    if (existing.agentId !== identity.agent_id) removeSession(existing.sessionId);
+    else return { identity, sessionId: existing.sessionId, reusedIdentity };
+  }
+
+  const { publicKey, privateKey } = (await crypto.subtle.generateKey({ name: "Ed25519" } as any, true, ["sign", "verify"])) as CryptoKeyPair;
+  const pubJwk = await crypto.subtle.exportKey("jwk", publicKey);
+  const privJwk = await crypto.subtle.exportKey("jwk", privateKey);
+  if (!pubJwk.x) throw new Error("Ed25519 key export missing x component");
+
+  const sessionId = randomUUID();
+  await client.createSession(identity.agent_id, sessionId, pubJwk.x);
+
+  writeSession({
+    type: "leader",
+    agentId: identity.agent_id,
+    sessionId,
+    pid: leaderPid,
+    runtime: input.runtime,
+    startedAt: Date.now(),
+    apiUrl,
+    privateKeyJwk: privJwk,
+  });
+
+  cachedLeaderClient = new AgentClient(apiUrl, identity.agent_id, sessionId, privateKey);
+  return { identity, sessionId, reusedIdentity };
 }
+
+let cachedLeaderClient: AgentClient | null = null;
 
 /**
  * Returns AgentClient for the current identity.
@@ -145,51 +139,22 @@ export async function createClient(): Promise<ApiClient> {
   }
 
   const apiUrl = getCredentials().apiUrl;
-  await reapDeadLeaderSessions(new MachineClient()).catch(() => {
-    // reaping is opportunistic; never block the actual command
-  });
   const existing = listSessions({ type: "leader" }).find(
     (session) => session.pid === leaderPid && session.runtime === runtime && session.apiUrl === apiUrl,
   );
   if (existing && isPidAlive(leaderPid)) {
-    const machineClient = new MachineClient();
-    if (await hasValidLeaderAgent(machineClient, existing.agentId, runtime)) {
-      const key = await crypto.subtle.importKey("jwk", existing.privateKeyJwk, { name: "Ed25519" } as any, false, ["sign"]);
-      cachedLeaderClient = new AgentClient(existing.apiUrl, existing.agentId, existing.sessionId, key);
-      return cachedLeaderClient;
-    }
-    removeSession(existing.sessionId);
+    const key = await crypto.subtle.importKey("jwk", existing.privateKeyJwk, { name: "Ed25519" } as any, false, ["sign"]);
+    cachedLeaderClient = new AgentClient(existing.apiUrl, existing.agentId, existing.sessionId, key);
+    return cachedLeaderClient;
   }
 
-  if (!isDaemonAlive()) {
-    throw new Error("No AK agent session is available. Start the Machine daemon with: ak start");
-  }
-
-  const machineClient = new MachineClient();
-  const identity = await loadOrRestoreIdentity(runtime, machineClient);
-  if (!identity) {
-    throw new Error(missingIdentityMessage(runtime));
-  }
-
-  // First call — create a leader session for an existing identity
-  const { publicKey, privateKey } = (await crypto.subtle.generateKey({ name: "Ed25519" } as any, true, ["sign", "verify"])) as CryptoKeyPair;
-  const pubJwk = await crypto.subtle.exportKey("jwk", publicKey);
-  const privJwk = await crypto.subtle.exportKey("jwk", privateKey);
-  if (!pubJwk.x) throw new Error("Ed25519 key export missing x component");
-  const sessionId = randomUUID();
-  await machineClient.createSession(identity.agent_id, sessionId, pubJwk.x);
-
-  writeSession({
-    type: "leader",
-    agentId: identity.agent_id,
-    sessionId,
-    pid: leaderPid,
-    runtime,
-    startedAt: Date.now(),
-    apiUrl,
-    privateKeyJwk: privJwk,
-  });
-
-  cachedLeaderClient = new AgentClient(apiUrl, identity.agent_id, sessionId, privateKey);
-  return cachedLeaderClient;
+  throw new Error(
+    [
+      "No AK agent session is available.",
+      "For a leader agent, run:",
+      "  ak auth login --leader-agent --username <username> [--name <name>]",
+      "Maintainer workers should run:",
+      "  ak auth login",
+    ].join("\n"),
+  );
 }

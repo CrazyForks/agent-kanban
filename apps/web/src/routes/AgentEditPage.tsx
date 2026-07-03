@@ -220,7 +220,7 @@ export function AgentEditPage() {
                 {bio && <p className="mt-3 text-xs text-content-secondary text-center leading-relaxed">{bio}</p>}
               </div>
               <div className="border-t border-border/50 px-5 py-3 flex items-center justify-between text-[10px] font-mono text-content-tertiary">
-                <span>{agent.task_count || 0} tasks</span>
+                <span>{agent.status.tasks.todo + agent.status.tasks.in_progress + agent.status.tasks.in_review} open tasks</span>
                 <span>{formatTokens((agent.input_tokens || 0) + (agent.output_tokens || 0))} tok</span>
                 <span>{formatCost(agent.cost_micro_usd || 0)}</span>
               </div>

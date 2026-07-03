@@ -83,11 +83,16 @@ export function formatAgentList(agents: any[]): string {
   if (agents.length === 0) return "No agents found.";
 
   const lines = agents.map((a) => {
-    const status = `[${a.status}]`.padEnd(10);
+    const status =
+      typeof a.status === "object" && a.status
+        ? `[${a.status.schedulable ? "schedulable" : "unschedulable"}]`.padEnd(16)
+        : `[${a.status}]`.padEnd(16);
     const role = a.role ? `(${a.role})` : "";
-    const runtime = a.runtime_available === false ? `${a.runtime ?? ""}:unavailable` : (a.runtime ?? "");
-    const load =
-      a.queued_task_count != null || a.active_task_count != null ? ` queued=${a.queued_task_count ?? 0} active=${a.active_task_count ?? 0}` : "";
+    const runtime = a.runtime ?? "";
+    const tasks = typeof a.status === "object" && a.status ? a.status.tasks : null;
+    const load = tasks
+      ? ` todo=${tasks.todo} progress=${tasks.in_progress} review=${tasks.in_review} done=${tasks.done} cancelled=${tasks.cancelled}`
+      : "";
     const bio = a.bio ? ` — ${a.bio}` : "";
     return `  ${a.id}  ${status} ${a.name} ${role} ${runtime}${load}${bio}`.trimEnd();
   });
@@ -386,19 +391,23 @@ export function formatTaskNotes(notes: any[]): string {
 
 export function formatAgent(agent: any): string {
   const lines: string[] = [];
+  const structuredStatus = typeof agent.status === "object" && agent.status ? agent.status : null;
   lines.push(`${agent.name}`);
   lines.push(`  ID:       ${agent.id}`);
-  lines.push(`  Status:   ${agent.status}`);
+  lines.push(`  Status:   ${structuredStatus ? (agent.status.schedulable ? "schedulable" : "unschedulable") : agent.status}`);
+  if (structuredStatus) {
+    lines.push(`  Todo:     ${agent.status.tasks.todo}`);
+    lines.push(`  Progress: ${agent.status.tasks.in_progress}`);
+    lines.push(`  Review:   ${agent.status.tasks.in_review}`);
+    lines.push(`  Done:     ${agent.status.tasks.done}`);
+    lines.push(`  Cancelled:${agent.status.tasks.cancelled}`);
+  }
   if (agent.role) lines.push(`  Role:     ${agent.role}`);
   if (agent.bio) lines.push(`  Bio:      ${agent.bio}`);
   lines.push(`  Runtime:  ${agent.runtime}`);
-  if (agent.runtime_available !== undefined) lines.push(`  Runnable: ${agent.runtime_available ? "yes" : "no"}`);
   if (agent.model) lines.push(`  Model:    ${agent.model}`);
   if (agent.skills?.length) lines.push(`  Skills:   ${agent.skills.join(", ")}`);
   if (agent.handoff_to?.length) lines.push(`  Handoff:  ${agent.handoff_to.join(", ")}`);
-  if (agent.task_count != null) lines.push(`  Tasks:    ${agent.task_count}`);
-  if (agent.queued_task_count != null) lines.push(`  Queued:   ${agent.queued_task_count}`);
-  if (agent.active_task_count != null) lines.push(`  Active:   ${agent.active_task_count}`);
   return lines.join("\n");
 }
 

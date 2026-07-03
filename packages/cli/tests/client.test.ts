@@ -332,23 +332,24 @@ describe("createClient — leader session restored from session file", () => {
 // ── createClient: runtime detected + no session + daemon not running ─────────
 
 describe("createClient — daemon not running", () => {
-  it("throws when runtime is detected but daemon PID is dead", async () => {
+  it("throws when runtime is detected but no agent session is available", async () => {
     const { createClient } = await freshClient();
     mockDetectRuntime.mockReturnValue("claude");
     mockFindRuntimeAncestorPid.mockReturnValue(99999);
     mockFindLeaderSession.mockReturnValue(null);
     mockLoadIdentity.mockReturnValue({ agent_id: randomUUID(), name: "claude@host", fingerprint: "fp-abc" });
     // DEAD_PID (4194304) is beyond kernel pid_max — process.kill will throw
-    await expect(createClient()).rejects.toThrow(/daemon/i);
+    await expect(createClient()).rejects.toThrow(/No AK agent session is available/);
   });
 
-  it("error message mentions ak start", async () => {
+  it("error message points to auth login instead of ak start", async () => {
     const { createClient } = await freshClient();
     mockDetectRuntime.mockReturnValue("claude");
     mockFindRuntimeAncestorPid.mockReturnValue(99999);
     mockFindLeaderSession.mockReturnValue(null);
     mockLoadIdentity.mockReturnValue({ agent_id: randomUUID(), name: "claude@host", fingerprint: "fp-abc" });
-    await expect(createClient()).rejects.toThrow(/ak start/i);
+    await expect(createClient()).rejects.toThrow(/ak auth login --leader-agent/);
+    await expect(createClient()).rejects.not.toThrow(/ak start/i);
   });
 
   it("throws when the PID file does not exist (readFileSync throws)", async () => {
@@ -360,7 +361,7 @@ describe("createClient — daemon not running", () => {
     mockReadFileSync.mockImplementation(() => {
       throw new Error("ENOENT");
     });
-    await expect(createClient()).rejects.toThrow(/daemon/i);
+    await expect(createClient()).rejects.toThrow(/No AK agent session is available/);
   });
 
   it("falls through to daemon check when session runtime does not match current runtime", async () => {
@@ -382,7 +383,7 @@ describe("createClient — daemon not running", () => {
     mockIsPidAlive.mockReturnValue(true);
     mockLoadIdentity.mockReturnValue({ agent_id: randomUUID(), name: "claude@host", fingerprint: "fp-abc" });
     // DEAD_PID daemon
-    await expect(createClient()).rejects.toThrow(/daemon/i);
+    await expect(createClient()).rejects.toThrow(/No AK agent session is available/);
   });
 
   it("falls through to daemon check when session pid is not alive", async () => {
@@ -403,7 +404,7 @@ describe("createClient — daemon not running", () => {
     mockIsPidAlive.mockReturnValue(false); // pid is dead
     mockLoadIdentity.mockReturnValue({ agent_id: randomUUID(), name: "claude@host", fingerprint: "fp-abc" });
     // DEAD_PID daemon
-    await expect(createClient()).rejects.toThrow(/daemon/i);
+    await expect(createClient()).rejects.toThrow(/No AK agent session is available/);
   });
 
   it("falls through to daemon check when findLeaderSession returns null (no matching leader session)", async () => {
@@ -414,7 +415,7 @@ describe("createClient — daemon not running", () => {
     mockFindLeaderSession.mockReturnValue(null);
     mockIsPidAlive.mockReturnValue(false); // daemon not running
     mockLoadIdentity.mockReturnValue({ agent_id: randomUUID(), name: "claude@host", fingerprint: "fp-abc" });
-    await expect(createClient()).rejects.toThrow(/daemon/i);
+    await expect(createClient()).rejects.toThrow(/No AK agent session is available/);
   });
 });
 
@@ -481,16 +482,9 @@ describe("AgentClient — authorize and messaging methods", () => {
   });
 });
 
-// ── createClient: explicit identity required (daemon alive + API calls) ───────
-//
-// To reach the leader session bootstrap path we need:
-//   1. detectRuntime → a runtime name
-//   2. findSessionByPid → null (no cached file)
-//   3. loadIdentity → a stored identity
-//   4. isDaemonAlive → true (readFileSync returns current process.pid)
-//   5. fetch mocked to respond to MachineClient session API calls
+// ── Leader identity/login helpers ───────────────────────────────────────────
 
-describe("createClient — explicit identity required", () => {
+describe("leader identity and login helpers", () => {
   function makeMockFetch(agents: any[] = [], createdAgent: any = null, createdSession = { delegation_proof: "proof" }) {
     return vi.fn().mockImplementation(async (url: string, opts: RequestInit) => {
       const path = new URL(url).pathname;
@@ -540,35 +534,6 @@ describe("createClient — explicit identity required", () => {
     });
   }
 
-  it("restores identity from the server when local identity is missing", async () => {
-    const { createClient, AgentClient } = await freshClient();
-    const restored = { id: randomUUID(), name: "Alex Chen", fingerprint: "fp-restore", runtime: "claude", kind: "leader" };
-    mockDetectRuntime.mockReturnValue("claude");
-    mockFindRuntimeAncestorPid.mockReturnValue(99999);
-    mockReadSession.mockReturnValue(null);
-    mockLoadIdentity.mockReturnValue(null);
-    mockReadFileSync.mockImplementation((path: unknown) => {
-      if (typeof path === "string" && path.endsWith("daemon.pid")) return String(process.pid);
-      if (typeof path === "string" && path.endsWith("package.json")) return JSON.stringify({ version: "0.0.0-test" });
-      throw new Error(`Unexpected readFileSync: ${path}`);
-    });
-
-    const mockFetch = makeMockFetch([restored]);
-    vi.stubGlobal("fetch", mockFetch);
-
-    try {
-      const client = await createClient();
-      expect(client).toBeInstanceOf(AgentClient);
-      expect(mockSaveIdentity).toHaveBeenCalledWith("claude", {
-        agent_id: restored.id,
-        name: restored.name,
-        fingerprint: restored.fingerprint,
-      });
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
   it("getIdentity restores identity from the server when local identity is missing", async () => {
     const { getIdentity } = await freshClient();
     const restored = { id: randomUUID(), name: "Hermes Leader", fingerprint: "fp-hermes", runtime: "hermes", kind: "leader" };
@@ -585,100 +550,6 @@ describe("createClient — explicit identity required", () => {
         fingerprint: restored.fingerprint,
       });
       expect(mockSaveIdentity).toHaveBeenCalledWith("hermes", identity);
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it("throws when daemon is alive and neither local nor server identity exists", async () => {
-    const { createClient } = await freshClient();
-    mockDetectRuntime.mockReturnValue("claude");
-    mockFindRuntimeAncestorPid.mockReturnValue(99999);
-    mockReadSession.mockReturnValue(null);
-    mockLoadIdentity.mockReturnValue(null);
-    mockReadFileSync.mockImplementation((path: unknown) => {
-      if (typeof path === "string" && path.endsWith("daemon.pid")) return String(process.pid);
-      if (typeof path === "string" && path.endsWith("package.json")) return JSON.stringify({ version: "0.0.0-test" });
-      throw new Error(`Unexpected readFileSync: ${path}`);
-    });
-
-    const mockFetch = makeMockFetch([]);
-    vi.stubGlobal("fetch", mockFetch);
-
-    try {
-      await expect(createClient()).rejects.toThrow(/No identity found for runtime "claude"/);
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it("error message points to ak identity create", async () => {
-    const { createClient } = await freshClient();
-    mockDetectRuntime.mockReturnValue("claude");
-    mockFindRuntimeAncestorPid.mockReturnValue(99999);
-    mockReadSession.mockReturnValue(null);
-    mockLoadIdentity.mockReturnValue(null);
-    mockReadFileSync.mockImplementation((path: unknown) => {
-      if (typeof path === "string" && path.endsWith("daemon.pid")) return String(process.pid);
-      if (typeof path === "string" && path.endsWith("package.json")) return JSON.stringify({ version: "0.0.0-test" });
-      throw new Error(`Unexpected readFileSync: ${path}`);
-    });
-    const mockFetch = makeMockFetch([]);
-    vi.stubGlobal("fetch", mockFetch);
-
-    try {
-      await expect(createClient()).rejects.toThrow(/Create one explicitly with:/);
-      await expect(createClient()).rejects.toThrow(/ak identity create --username <username> \[--name <name>\]/);
-      await expect(createClient()).rejects.toThrow(/Choose the identity values yourself:/);
-      await expect(createClient()).rejects.toThrow(/--username {2}required, user-like handle chosen by the agent/);
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it("returns an AgentClient when daemon is alive and a local identity exists", async () => {
-    const { createClient, AgentClient } = await freshClient();
-    mockDetectRuntime.mockReturnValue("claude");
-    mockFindRuntimeAncestorPid.mockReturnValue(99999);
-    mockReadSession.mockReturnValue(null);
-    mockLoadIdentity.mockReturnValue({ agent_id: randomUUID(), name: "claude@host", fingerprint: "fp-abc" });
-    // Make daemon appear alive by returning the current PID
-    mockReadFileSync.mockImplementation((path: unknown) => {
-      if (typeof path === "string" && path.endsWith("daemon.pid")) return String(process.pid);
-      if (typeof path === "string" && path.endsWith("package.json")) return JSON.stringify({ version: "0.0.0-test" });
-      throw new Error(`Unexpected readFileSync: ${path}`);
-    });
-
-    const mockFetch = makeMockFetch();
-    vi.stubGlobal("fetch", mockFetch);
-
-    try {
-      const client = await createClient();
-      expect(client).toBeInstanceOf(AgentClient);
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it("calls writeSession to persist the new leader session", async () => {
-    const { createClient } = await freshClient();
-    mockDetectRuntime.mockReturnValue("claude");
-    mockFindRuntimeAncestorPid.mockReturnValue(99999);
-    mockReadSession.mockReturnValue(null);
-    mockLoadIdentity.mockReturnValue({ agent_id: randomUUID(), name: "claude@host", fingerprint: "fp-abc" });
-    mockReadFileSync.mockImplementation((path: unknown) => {
-      if (typeof path === "string" && path.endsWith("daemon.pid")) return String(process.pid);
-      if (typeof path === "string" && path.endsWith("package.json")) return JSON.stringify({ version: "0.0.0-test" });
-      throw new Error(`Unexpected readFileSync: ${path}`);
-    });
-
-    const mockFetch = makeMockFetch();
-    vi.stubGlobal("fetch", mockFetch);
-
-    try {
-      await createClient();
-      expect(mockWriteSession).toHaveBeenCalledOnce();
-      expect(mockWriteSession).toHaveBeenCalledWith(expect.objectContaining({ type: "leader" }));
     } finally {
       vi.unstubAllGlobals();
     }
@@ -715,55 +586,63 @@ describe("createClient — explicit identity required", () => {
     await expect(createIdentity({ runtime: "claude", username: "claude-leader" })).rejects.toThrow(/already exists/);
   });
 
-  it("uses a pre-stored identity after validating that the leader agent still exists", async () => {
-    const { createClient } = await freshClient();
-    mockDetectRuntime.mockReturnValue("claude");
-    mockFindRuntimeAncestorPid.mockReturnValue(99999);
-    mockReadSession.mockReturnValue(null);
-    const agentId = randomUUID();
-    mockLoadIdentity.mockReturnValue({ agent_id: agentId, name: "claude", fingerprint: "fp" });
-    mockReadFileSync.mockImplementation((path: unknown) => {
-      if (typeof path === "string" && path.endsWith("daemon.pid")) return String(process.pid);
-      if (typeof path === "string" && path.endsWith("package.json")) return JSON.stringify({ version: "0.0.0-test" });
-      throw new Error(`Unexpected readFileSync: ${path}`);
-    });
-
-    const mockFetch = makeMockFetch();
+  it("loginLeaderAgent creates a leader identity and persists a leader session", async () => {
+    const { loginLeaderAgent } = await freshClient();
+    const createdAgent = { id: randomUUID(), name: "Claude Leader", fingerprint: "fp-abc", runtime: "claude", kind: "leader" };
+    mockFindRuntimeAncestorPid.mockReturnValue(12345);
+    mockLoadIdentity.mockReturnValue(null);
+    mockFindLeaderSession.mockReturnValue(null);
+    const mockFetch = makeMockFetch([], createdAgent);
     vi.stubGlobal("fetch", mockFetch);
 
     try {
-      await createClient();
+      const result = await loginLeaderAgent({ runtime: "claude", username: "claude-leader", name: "Claude Leader" });
+      expect(result).toMatchObject({
+        identity: { agent_id: createdAgent.id, name: createdAgent.name, fingerprint: createdAgent.fingerprint },
+        reusedIdentity: false,
+      });
+      expect(mockWriteSession).toHaveBeenCalledWith(expect.objectContaining({ type: "leader", agentId: createdAgent.id, pid: 12345 }));
       expect(
         mockFetch.mock.calls.some(
-          ([url, opts]: [string, RequestInit]) => new URL(url).pathname === `/api/agents/${agentId}` && opts.method === "GET",
+          ([url, opts]: [string, RequestInit]) => new URL(url).pathname === `/api/agents/${createdAgent.id}/sessions` && opts.method === "POST",
         ),
       ).toBe(true);
-      expect(mockRemoveIdentity).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it("removes a stale local identity and restores the unique server leader", async () => {
-    const { createClient, AgentClient } = await freshClient();
+  it("loginLeaderAgent reuses an existing identity and creates a leader session", async () => {
+    const { loginLeaderAgent } = await freshClient();
+    const agentId = randomUUID();
+    mockFindRuntimeAncestorPid.mockReturnValue(12345);
+    mockLoadIdentity.mockReturnValue({ agent_id: agentId, name: "claude", fingerprint: "fp" });
+    const mockFetch = makeMockFetch();
+    vi.stubGlobal("fetch", mockFetch);
+
+    try {
+      const result = await loginLeaderAgent({ runtime: "claude", username: "ignored" });
+      expect(result.reusedIdentity).toBe(true);
+      expect(mockWriteSession).toHaveBeenCalledWith(expect.objectContaining({ type: "leader", agentId, pid: 12345 }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("loginLeaderAgent removes a stale local identity and restores the unique server leader", async () => {
+    const { loginLeaderAgent } = await freshClient();
     const staleAgentId = randomUUID();
     const restored = { id: randomUUID(), name: "Restored Claude", fingerprint: "fp-restore", runtime: "claude", kind: "leader" };
-    mockDetectRuntime.mockReturnValue("claude");
-    mockFindRuntimeAncestorPid.mockReturnValue(99999);
+    mockFindRuntimeAncestorPid.mockReturnValue(12345);
     mockFindLeaderSession.mockReturnValue(null);
     mockLoadIdentity.mockReturnValue({ agent_id: staleAgentId, name: "stale", fingerprint: "fp-stale" });
-    mockReadFileSync.mockImplementation((path: unknown) => {
-      if (typeof path === "string" && path.endsWith("daemon.pid")) return String(process.pid);
-      if (typeof path === "string" && path.endsWith("package.json")) return JSON.stringify({ version: "0.0.0-test" });
-      throw new Error(`Unexpected readFileSync: ${path}`);
-    });
 
     const mockFetch = makeMockFetchWithMissingAgent(staleAgentId, [restored]);
     vi.stubGlobal("fetch", mockFetch);
 
     try {
-      const client = await createClient();
-      expect(client).toBeInstanceOf(AgentClient);
+      const result = await loginLeaderAgent({ runtime: "claude", username: "ignored" });
+      expect(result.identity.agent_id).toBe(restored.id);
       expect(mockRemoveIdentity).toHaveBeenCalledWith("claude");
       expect(mockSaveIdentity).toHaveBeenCalledWith("claude", {
         agent_id: restored.id,
@@ -775,60 +654,54 @@ describe("createClient — explicit identity required", () => {
     }
   });
 
-  it("throws when the server has multiple leader identities for the same runtime", async () => {
-    const { createClient } = await freshClient();
-    mockDetectRuntime.mockReturnValue("claude");
-    mockFindRuntimeAncestorPid.mockReturnValue(99999);
-    mockReadSession.mockReturnValue(null);
+  it("loginLeaderAgent creates a new identity when the server has multiple leader identities for the same runtime", async () => {
+    const { loginLeaderAgent } = await freshClient();
+    const createdAgent = { id: randomUUID(), name: "New Claude", fingerprint: "fp-new", runtime: "claude", kind: "leader" };
+    mockFindRuntimeAncestorPid.mockReturnValue(12345);
     mockLoadIdentity.mockReturnValue(null);
-    mockReadFileSync.mockImplementation((path: unknown) => {
-      if (typeof path === "string" && path.endsWith("daemon.pid")) return String(process.pid);
-      if (typeof path === "string" && path.endsWith("package.json")) return JSON.stringify({ version: "0.0.0-test" });
-      throw new Error(`Unexpected readFileSync: ${path}`);
-    });
-    const mockFetch = makeMockFetch([
-      { id: randomUUID(), name: "Alex", fingerprint: "fp-1", runtime: "claude", kind: "leader" },
-      { id: randomUUID(), name: "Sam", fingerprint: "fp-2", runtime: "claude", kind: "leader" },
-    ]);
+    const mockFetch = makeMockFetch(
+      [
+        { id: randomUUID(), name: "Alex", fingerprint: "fp-1", runtime: "claude", kind: "leader" },
+        { id: randomUUID(), name: "Sam", fingerprint: "fp-2", runtime: "claude", kind: "leader" },
+      ],
+      createdAgent,
+    );
     vi.stubGlobal("fetch", mockFetch);
 
     try {
-      await expect(createClient()).rejects.toThrow(/No identity found for runtime "claude"/);
+      const result = await loginLeaderAgent({ runtime: "claude", username: "new-claude", name: "New Claude" });
+      expect(result.identity.agent_id).toBe(createdAgent.id);
+      expect(result.reusedIdentity).toBe(false);
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it("writes the new session with the leaderPid returned by findRuntimeAncestorPid", async () => {
+  it("createClient without a session does not bootstrap via API key", async () => {
     const { createClient } = await freshClient();
-    const runtimePid = 12345;
     mockDetectRuntime.mockReturnValue("claude");
-    mockFindRuntimeAncestorPid.mockReturnValue(runtimePid);
+    mockFindRuntimeAncestorPid.mockReturnValue(12345);
     mockFindLeaderSession.mockReturnValue(null);
     mockLoadIdentity.mockReturnValue({ agent_id: randomUUID(), name: "claude@host", fingerprint: "fp-abc" });
-    mockReadFileSync.mockImplementation((path: unknown) => {
-      if (typeof path === "string" && path.endsWith("daemon.pid")) return String(process.pid);
-      if (typeof path === "string" && path.endsWith("package.json")) return JSON.stringify({ version: "0.0.0-test" });
-      throw new Error(`Unexpected readFileSync: ${path}`);
-    });
-
     const mockFetch = makeMockFetch();
     vi.stubGlobal("fetch", mockFetch);
 
     try {
-      await createClient();
-      expect(mockWriteSession).toHaveBeenCalledWith(expect.objectContaining({ pid: runtimePid }));
+      await expect(createClient()).rejects.toThrow(/No AK agent session is available/);
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockWriteSession).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it("throws with diagnostic message when findRuntimeAncestorPid returns null", async () => {
-    const { createClient } = await freshClient();
-    mockDetectRuntime.mockReturnValue("claude");
+  it("loginLeaderAgent throws with diagnostic message when findRuntimeAncestorPid returns null", async () => {
+    const { loginLeaderAgent } = await freshClient();
     mockFindRuntimeAncestorPid.mockReturnValue(null); // no ancestor found
 
-    await expect(createClient()).rejects.toThrow(/Could not locate claude process in ancestry\. ak must be invoked from inside a claude session\./);
+    await expect(loginLeaderAgent({ runtime: "claude", username: "claude-leader" })).rejects.toThrow(
+      /Could not locate claude process in ancestry\. ak must be invoked from inside a claude session\./,
+    );
   });
 });
 

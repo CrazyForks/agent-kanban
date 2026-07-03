@@ -171,7 +171,8 @@ export async function dispatchTasks(
         continue;
       }
       const runtime = normalizeRuntime(agent.runtime);
-      agentState = { runtime, available: agent.runtime_available !== false || isRuntimeLimitIgnored(runtime) };
+      const schedulable = typeof agent.status === "object" && agent.status ? agent.status.schedulable : false;
+      agentState = { runtime, available: schedulable === true };
       agentCache.set(t.assigned_to, agentState);
     }
     if (!agentState.runtime || !agentState.available || !localRuntimes.has(agentState.runtime)) continue;

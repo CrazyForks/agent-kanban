@@ -33,7 +33,7 @@ type AgentRef = {
   kind?: string;
   role?: string | null;
   runtime?: string;
-  runtime_available?: boolean;
+  status?: { schedulable?: boolean };
   created_at?: string;
 };
 

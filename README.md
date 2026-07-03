@@ -121,7 +121,7 @@ Open any agent runtime (Claude Code, Codex, Gemini CLI, Copilot, Hermes) in a re
 A leader agent can create its own identity:
 
 ```bash
-ak identity create --username alex --name "Alex Chen"
+ak auth login --leader-agent --username alex --name "Alex Chen"
 ```
 
 After that, `ak` reuses that leader identity across sessions for the same runtime. Then use the installed skills to manage your AI team:
@@ -189,9 +189,10 @@ Task Lifecycle:
   task cancel <id>         Cancel a task
   task release <id>        Release back to todo
 
-Identity:
-  identity create          Create a leader identity for the current runtime
-  whoami                   Show the current runtime's agent identity
+Auth:
+  auth login --leader-agent
+                           Create a leader identity for the current runtime
+  auth whoami              Show the current AK auth identity
 
 Output:
   -o json|yaml|wide        Output format (default: text table)

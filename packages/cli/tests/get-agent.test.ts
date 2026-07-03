@@ -135,7 +135,7 @@ describe("get agent — list mode filtering", () => {
   });
 
   it("filters workers by runtime availability", async () => {
-    mockListAgents.mockResolvedValue([{ id: "a1", kind: "worker", name: "Alice", runtime_available: true }]);
+    mockListAgents.mockResolvedValue([{ id: "a1", kind: "worker", name: "Alice", status: { schedulable: true } }]);
     await makeProgram().parseAsync(["get", "agent", "--available"], { from: "user" });
     expect(mockListAgents).toHaveBeenCalledWith({ kind: "worker", available: "true" });
     const passed = vi.mocked(outputModule.output).mock.calls[0][0] as any[];
@@ -143,7 +143,7 @@ describe("get agent — list mode filtering", () => {
   });
 
   it("combines role, runtime, and availability filters", async () => {
-    mockListAgents.mockResolvedValue([{ id: "a1", kind: "worker", name: "Alice", role: "qa", runtime: "codex", runtime_available: true }]);
+    mockListAgents.mockResolvedValue([{ id: "a1", kind: "worker", name: "Alice", role: "qa", runtime: "codex", status: { schedulable: true } }]);
     await makeProgram().parseAsync(["get", "agent", "--role", "qa", "--runtime", "codex", "--available"], { from: "user" });
     expect(mockListAgents).toHaveBeenCalledWith({ kind: "worker", role: "qa", runtime: "codex", available: "true" });
     const passed = vi.mocked(outputModule.output).mock.calls[0][0] as any[];

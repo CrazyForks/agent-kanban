@@ -1,5 +1,5 @@
-import type { Agent, AgentWithActivity, CreateAgentInput } from "@agent-kanban/shared";
-import { type AgentRuntime, BUILTIN_TEMPLATES, MACHINE_STALE_TIMEOUT_MS } from "@agent-kanban/shared";
+import type { Agent, AgentStatus, AgentWithActivity, CreateAgentInput } from "@agent-kanban/shared";
+import { type AgentRuntime, BUILTIN_TEMPLATES, hasNoScheduleTaint, MACHINE_STALE_TIMEOUT_MS } from "@agent-kanban/shared";
 import { type D1, parseJsonFields } from "./db";
 import { addSubkey, getOrCreateRootKey } from "./gpgKeyRepo";
 import { runtimeReadyPredicateSql } from "./machineRepo";
@@ -28,6 +28,69 @@ async function shortHash(value: string): Promise<string> {
 }
 
 type AgentProfile = Pick<Agent, "name" | "bio" | "soul" | "role" | "kind" | "handoff_to" | "runtime" | "model" | "skills" | "subagents" | "taints">;
+type AgentActivityRow = Agent & {
+  runtime_ready: number | boolean;
+  todo_task_count: number;
+  in_progress_task_count: number;
+  in_review_task_count: number;
+  done_task_count: number;
+  cancelled_task_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  cost_micro_usd: number;
+};
+
+function buildAgentStatus(agent: AgentActivityRow, runtimeAvailable: boolean): AgentStatus {
+  return {
+    schedulable: agent.kind === "worker" && !hasNoScheduleTaint(agent.taints) && runtimeAvailable,
+    tasks: {
+      todo: Number(agent.todo_task_count ?? 0),
+      in_progress: Number(agent.in_progress_task_count ?? 0),
+      in_review: Number(agent.in_review_task_count ?? 0),
+      done: Number(agent.done_task_count ?? 0),
+      cancelled: Number(agent.cancelled_task_count ?? 0),
+    },
+  };
+}
+
+export function withAgentStatus(agent: AgentWithActivity, runtimeAvailable: boolean): AgentWithActivity {
+  return {
+    ...agent,
+    status: buildAgentStatus(
+      {
+        ...agent,
+        runtime_ready: runtimeAvailable,
+        todo_task_count: agent.status.tasks.todo,
+        in_progress_task_count: agent.status.tasks.in_progress,
+        in_review_task_count: agent.status.tasks.in_review,
+        done_task_count: agent.status.tasks.done,
+        cancelled_task_count: agent.status.tasks.cancelled,
+      },
+      runtimeAvailable,
+    ),
+  };
+}
+
+function parseAgentActivity(row: AgentActivityRow): AgentWithActivity {
+  const parsed = parseAgent(row) as AgentActivityRow;
+  const runtimeAvailable = !!parsed.runtime_ready;
+  const {
+    runtime_ready: _runtimeReady,
+    todo_task_count: _todoTaskCount,
+    in_progress_task_count: _inProgressTaskCount,
+    in_review_task_count: _inReviewTaskCount,
+    done_task_count: _doneTaskCount,
+    cancelled_task_count: _cancelledTaskCount,
+    ...agent
+  } = parsed;
+  return {
+    ...agent,
+    email: `${parsed.username}@mails.agent-kanban.dev`,
+    status: buildAgentStatus(parsed, runtimeAvailable),
+  };
+}
 
 function profileJson(agent: AgentProfile): string {
   return JSON.stringify({
@@ -191,18 +254,29 @@ export async function listAgents(db: D1, ownerId: string, filters: AgentListFilt
           AND m.status = 'online'
           AND m.last_heartbeat_at >= ?
           AND ${runtimeReadyPredicateSql("a.runtime")}
-      ) THEN 1 ELSE 0 END as runtime_available,
-      CASE WHEN EXISTS (SELECT 1 FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id AND s.status = 'active') THEN 'online' ELSE 'offline' END as status,
-      (SELECT MAX(tl.created_at) FROM task_actions tl WHERE tl.actor_id = a.id) as last_active_at,
-      (SELECT COUNT(*) FROM tasks t WHERE t.assigned_to = a.id) as task_count,
-      (SELECT COUNT(*) FROM tasks t WHERE t.assigned_to = a.id AND t.status = 'todo') as queued_task_count,
-      (SELECT COUNT(*) FROM tasks t WHERE t.assigned_to = a.id AND t.status IN ('in_progress', 'in_review')) as active_task_count,
+      ) THEN 1 ELSE 0 END as runtime_ready,
+      COALESCE(tc.todo_task_count, 0) as todo_task_count,
+      COALESCE(tc.in_progress_task_count, 0) as in_progress_task_count,
+      COALESCE(tc.in_review_task_count, 0) as in_review_task_count,
+      COALESCE(tc.done_task_count, 0) as done_task_count,
+      COALESCE(tc.cancelled_task_count, 0) as cancelled_task_count,
       COALESCE((SELECT SUM(s.input_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as input_tokens,
       COALESCE((SELECT SUM(s.output_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as output_tokens,
       COALESCE((SELECT SUM(s.cache_read_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cache_read_tokens,
       COALESCE((SELECT SUM(s.cache_creation_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cache_creation_tokens,
       COALESCE((SELECT SUM(s.cost_micro_usd) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cost_micro_usd
     FROM agents a
+    LEFT JOIN (
+      SELECT assigned_to,
+        SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) as todo_task_count,
+        SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress_task_count,
+        SUM(CASE WHEN status = 'in_review' THEN 1 ELSE 0 END) as in_review_task_count,
+        SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done_task_count,
+        SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_task_count
+      FROM tasks
+      WHERE assigned_to IS NOT NULL
+      GROUP BY assigned_to
+    ) tc ON tc.assigned_to = a.id
     WHERE a.owner_id = ?
   `;
   const binds: unknown[] = [runtimeCutoff, ownerId];
@@ -222,14 +296,10 @@ export async function listAgents(db: D1, ownerId: string, filters: AgentListFilt
   const result = await db
     .prepare(query)
     .bind(...binds)
-    .all<AgentWithActivity>();
-  const agents = result.results.map((r) => ({
-    ...parseAgent(r),
-    runtime_available: !!r.runtime_available,
-    email: `${r.username}@mails.agent-kanban.dev`,
-  }));
+    .all<AgentActivityRow>();
+  const agents = result.results.map((r) => parseAgentActivity(r));
   if (filters.available === undefined) return agents;
-  return agents.filter((agent) => agent.runtime_available === filters.available);
+  return agents.filter((agent) => agent.status.schedulable === filters.available);
 }
 
 export async function getAgent(db: D1, agentId: string, ownerId: string): Promise<AgentWithActivity | null> {
@@ -245,23 +315,34 @@ export async function getAgent(db: D1, agentId: string, ownerId: string): Promis
           AND m.status = 'online'
           AND m.last_heartbeat_at >= ?
           AND ${runtimeReadyPredicateSql("a.runtime")}
-      ) THEN 1 ELSE 0 END as runtime_available,
-      CASE WHEN EXISTS (SELECT 1 FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id AND s.status = 'active') THEN 'online' ELSE 'offline' END as status,
-      (SELECT MAX(tl.created_at) FROM task_actions tl WHERE tl.actor_id = a.id) as last_active_at,
-      (SELECT COUNT(*) FROM tasks t WHERE t.assigned_to = a.id) as task_count,
-      (SELECT COUNT(*) FROM tasks t WHERE t.assigned_to = a.id AND t.status = 'todo') as queued_task_count,
-      (SELECT COUNT(*) FROM tasks t WHERE t.assigned_to = a.id AND t.status IN ('in_progress', 'in_review')) as active_task_count,
+      ) THEN 1 ELSE 0 END as runtime_ready,
+      COALESCE(tc.todo_task_count, 0) as todo_task_count,
+      COALESCE(tc.in_progress_task_count, 0) as in_progress_task_count,
+      COALESCE(tc.in_review_task_count, 0) as in_review_task_count,
+      COALESCE(tc.done_task_count, 0) as done_task_count,
+      COALESCE(tc.cancelled_task_count, 0) as cancelled_task_count,
       COALESCE((SELECT SUM(s.input_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as input_tokens,
       COALESCE((SELECT SUM(s.output_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as output_tokens,
       COALESCE((SELECT SUM(s.cache_read_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cache_read_tokens,
       COALESCE((SELECT SUM(s.cache_creation_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cache_creation_tokens,
       COALESCE((SELECT SUM(s.cost_micro_usd) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cost_micro_usd
     FROM agents a
+    LEFT JOIN (
+      SELECT assigned_to,
+        SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) as todo_task_count,
+        SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress_task_count,
+        SUM(CASE WHEN status = 'in_review' THEN 1 ELSE 0 END) as in_review_task_count,
+        SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done_task_count,
+        SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_task_count
+      FROM tasks
+      WHERE assigned_to IS NOT NULL
+      GROUP BY assigned_to
+    ) tc ON tc.assigned_to = a.id
     WHERE a.id = ? AND a.owner_id = ?
   `)
     .bind(runtimeCutoff, agentId, ownerId)
-    .first<AgentWithActivity>()
-    .then((r) => (r ? { ...parseAgent(r), runtime_available: !!r.runtime_available, email: `${r.username}@mails.agent-kanban.dev` } : null));
+    .first<AgentActivityRow>()
+    .then((r) => (r ? parseAgentActivity(r) : null));
 }
 
 export async function updateAgent(

@@ -17,7 +17,7 @@ This is a leader workflow.
 If `ak` says no leader identity exists for the current runtime, create one first:
 
 ```bash
-ak identity create --username <username> [--name <name>]
+ak auth login --leader-agent --username <username> [--name <name>]
 ```
 
 The leader chooses its own username and optional full name.
@@ -78,7 +78,7 @@ Before choosing or creating workers, read `references/runtime-delegation.md`. Be
 ```bash
 ak get board                   # pick the right board
 ak get label --board <board>   # existing board label taxonomy
-ak get agent -o json           # available agents, load, runtime_available
+ak get agent -o json           # agents, status.schedulable, and status.tasks load
 ak get model --runtime <name>  # provider-reported models for a runtime
 ak get repo                    # registered repos
 ```
@@ -145,7 +145,7 @@ Useful color defaults:
 
 Before creating workers or tasks, determine the worker runtime.
 
-- If the user specified a runtime, assign only to a worker whose `runtime` matches it and whose `runtime_available` is `true`.
+- If the user specified a runtime, assign only to a worker whose `runtime` matches it and whose `status.schedulable` is `true`.
 - If the user specified a runtime but that runtime is not schedulable, stop before worker or task creation and ask the user to choose an available runtime.
 - If no matching available worker exists for the specified schedulable runtime, create a worker on that runtime before task creation using `references/agent-creation.md`.
 - If the user did not specify runtime and multiple available runtimes are reasonable for the task, ask the user to choose the runtime before creating workers or tasks.
@@ -229,7 +229,7 @@ Everything from `## Goal` through `## Checks` is the exact text that will be pas
 Before running `ak create task`, verify:
 
 - Selected agent is a worker.
-- Selected agent has `runtime_available: true`.
+- Selected agent has `status.schedulable: true`.
 - If the user specified runtime, selected agent runtime matches it.
 - If the user specified runtime, that runtime is schedulable.
 - If runtime was ambiguous, the user chose the runtime.
@@ -249,7 +249,7 @@ ak create task \
   --labels "<comma-separated>"
 ```
 
-**`--assign-to` is mandatory.** Always include it on create. Only assign to an agent whose `runtime_available` is `true`. If the right role only exists on an unavailable runtime, create a new worker with the required capability profile on an available runtime and assign to that worker. Use `references/agent-creation.md`; do not create workers from role/runtime alone.
+**`--assign-to` is mandatory.** Always include it on create. Only assign to an agent whose `status.schedulable` is `true`. If the right role only exists on an unschedulable runtime, create a new worker with the required capability profile on a schedulable runtime and assign to that worker. Use `references/agent-creation.md`; do not create workers from role/runtime alone.
 
 **Dependencies**: If this task touches files that overlap with other in-flight tasks, add `--depends-on <task-id>`. Create all related tasks upfront with DAG dependencies — don't wait for one to finish before creating the next.
 
@@ -262,7 +262,7 @@ ak create task \
 - Make the title an action phrase, not a vague topic.
 - Put implementation constraints and acceptance checks in `--description`; do not rely on chat context.
 - Include concrete files, commands, endpoints, UI states, and error cases when known.
-- Assign only to worker agents with `runtime_available: true`.
+- Assign only to worker agents with `status.schedulable: true`.
 - Use `--depends-on` for real blockers or overlapping context. Parallel tasks must not fight over the same files, data model, or API contract.
 - Create missing reusable labels first with `ak create label --board <board-id> --name <name> --color <hex> --description "<desc>"`.
 

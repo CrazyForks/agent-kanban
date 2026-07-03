@@ -1604,14 +1604,16 @@ describe("routes", () => {
       expect(body).toHaveLength(1);
       expect(body[0]).toMatchObject({
         username: "ama-available-agent",
-        runtime_available: true,
-        runtime_source: "ama",
+        status: expect.objectContaining({ schedulable: true }),
       });
 
       const unavailableRes = await apiRequest("GET", "/api/agents?kind=worker&role=ama-runtime-source&available=false", undefined, apiKey);
       expect(unavailableRes.status).toBe(200);
       await expect(unavailableRes.json()).resolves.toEqual([
-        expect.objectContaining({ username: "ama-full-agent", runtime_available: false, runtime_source: "ama" }),
+        expect.objectContaining({
+          username: "ama-full-agent",
+          status: expect.objectContaining({ schedulable: false }),
+        }),
       ]);
     } finally {
       Object.assign(env, previousAma);
@@ -1685,7 +1687,10 @@ describe("routes", () => {
       const unavailableRes = await apiRequest("GET", "/api/agents?role=ama-runtime-unavailable&available=false", undefined, apiKey);
       expect(unavailableRes.status).toBe(200);
       await expect(unavailableRes.json()).resolves.toEqual([
-        expect.objectContaining({ username: "ama-unavailable-agent", runtime_available: false, runtime_source: "ama" }),
+        expect.objectContaining({
+          username: "ama-unavailable-agent",
+          status: expect.objectContaining({ schedulable: false }),
+        }),
       ]);
     } finally {
       Object.assign(env, previousAma);
@@ -1946,7 +1951,16 @@ describe("routes", () => {
     const res = await apiRequest("GET", `/api/agents/${amaAgent.id}`, undefined, apiKey);
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
-    expect(body.status).toBe("online");
+    expect(body.status).toEqual({
+      schedulable: true,
+      tasks: {
+        todo: 0,
+        in_progress: 0,
+        in_review: 0,
+        done: 0,
+        cancelled: 0,
+      },
+    });
     expect(body.input_tokens).toBe(1000);
     expect(body.output_tokens).toBe(2000);
     expect(body.cache_read_tokens).toBe(300);

@@ -175,13 +175,13 @@ export async function getMachine(db: D1, machineId: string, ownerId: string): Pr
   const agents = await db
     .prepare(`
     SELECT a.id, a.name,
-      CASE WHEN SUM(s.status = 'active') > 0 THEN 'working' ELSE 'idle' END as status,
-      MAX(s.created_at) as last_active_at
+      SUM(s.status = 'active') as active_session_count,
+      MAX(s.created_at) as last_session_at
     FROM agents a
     JOIN agent_sessions s ON s.agent_id = a.id
     WHERE s.machine_id = ?
     GROUP BY a.id
-    ORDER BY last_active_at DESC
+    ORDER BY last_session_at DESC
   `)
     .bind(machineId)
     .all();

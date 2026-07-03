@@ -38,6 +38,7 @@ import {
   prepareAgent,
   updateAgent,
   upsertLatestAgent,
+  withAgentStatus,
 } from "./agentRepo";
 import {
   closeSession,
@@ -275,9 +276,25 @@ function assertValidAgentRuntime(runtime: string | undefined): void {
 }
 
 function withRuntimeSource<T extends Record<string, any>>(env: Env, agent: T, availableRuntimes?: Set<string>): T {
-  if (!isAmaTaskDispatchConfigured(env)) return { ...agent, runtime_source: "ak-machine" };
-  if (availableRuntimes === undefined) return { ...agent, runtime_source: "ama" };
-  return { ...agent, runtime_available: availableRuntimes.has(agent.runtime), runtime_source: "ama" };
+  if (!isAmaTaskDispatchConfigured(env)) return agent;
+  if (availableRuntimes === undefined) return agent;
+  return withAgentStatus(agent as any, availableRuntimes.has(agent.runtime)) as unknown as T;
+}
+
+async function assertAmaAssignableWorkerRuntime(db: D1, env: Env, ownerId: string, agentId: string, missingStatus: 400 | 404): Promise<void> {
+  if (!isAmaTaskDispatchConfigured(env)) return;
+  const agent = await getAgent(db, agentId, ownerId);
+  if (!agent) throw new HTTPException(missingStatus, { message: "Agent not found" });
+  if (agent.kind !== "worker") throw new HTTPException(400, { message: "Tasks can only be assigned to worker agents" });
+  if (hasNoScheduleTaint(agent.taints)) {
+    throw new HTTPException(409, { message: "Agent is tainted NoSchedule and cannot be assigned normal tasks" });
+  }
+  const runtimes = await availableAmaRuntimes(db, env, ownerId, agent.runtime);
+  if (!runtimes.has(agent.runtime)) {
+    throw new HTTPException(409, {
+      message: `Runtime "${agent.runtime}" is not available on any AMA runner. Choose or create a worker that uses an available runtime.`,
+    });
+  }
 }
 
 function parseOptionalBoolean(value: string | undefined, name: string): boolean | undefined {
@@ -426,10 +443,17 @@ async function listPublicMaintainersWithAmaStatus(db: D1, env: Env, ownerId: str
   return await Promise.all(maintainers.map((maintainer) => publicBoardMaintainerWithAmaStatus(db, env, ownerId, maintainer)));
 }
 
-async function availableAmaRuntimes(db: D1, env: Env, ownerId: string): Promise<Set<string>> {
+async function availableAmaRuntimes(db: D1, env: Env, ownerId: string, runtimeFilter?: AgentRuntime): Promise<Set<string>> {
   if (!isAmaTaskDispatchConfigured(env)) return new Set();
   const machines = await listMachines(db, ownerId);
-  const environmentIds = [...new Set(machines.map((machine) => machine.ama_environment_id).filter((id): id is string => Boolean(id)))];
+  const environmentIds = [
+    ...new Set(
+      machines
+        .filter((machine) => !runtimeFilter || machine.runtimes.some((runtime) => runtime.name === runtimeFilter))
+        .map((machine) => machine.ama_environment_id)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
   const runtimes = new Set<string>();
   if (environmentIds.length === 0) return runtimes;
   const projectId = await getAmaProjectId(db, ownerId);
@@ -437,7 +461,7 @@ async function availableAmaRuntimes(db: D1, env: Env, ownerId: string): Promise<
   const runnerLists = await Promise.all(environmentIds.map((environmentId) => listAmaRunners(env, ownerId, projectId, environmentId)));
   for (const runners of runnerLists) {
     for (const runner of runners.data) {
-      for (const runtime of AGENT_RUNTIMES) {
+      for (const runtime of runtimeFilter ? [runtimeFilter] : AGENT_RUNTIMES) {
         if (amaRunnerCanRunRuntime(runner, amaRuntimeName(runtime))) {
           runtimes.add(runtime);
         }
@@ -1251,13 +1275,12 @@ api.get("/api/agents", async (c) => {
     runtime,
     available: amaRuntime ? undefined : available,
   });
-  // When AMA is the runtime substrate, machine.status/last_heartbeat_at are no
-  // longer updated by the daemon, so the SQL-derived runtime_available is always
-  // false. Recompute it from live AMA runners (as the detail endpoint does).
+  // When AMA is the runtime substrate, local machine heartbeats no longer
+  // describe schedulability. Recompute it from live AMA runners.
   const amaAvailableRuntimes = amaRuntime ? await availableAmaRuntimes(c.env.DB, c.env, c.get("ownerId")) : undefined;
   const withSource = agents.map((agent) => withRuntimeSource(c.env, agent, amaAvailableRuntimes));
   const filtered = maintainerOnly === true ? withSource.filter((agent) => isMaintainerAgentProfile(agent)) : withSource;
-  return c.json(available === undefined ? filtered : filtered.filter((agent) => agent.runtime_available === available));
+  return c.json(available === undefined ? filtered : filtered.filter((agent) => agent.status.schedulable === available));
 });
 
 api.get("/api/agents/:id", async (c) => {
@@ -1581,6 +1604,9 @@ api.post("/api/tasks", async (c) => {
   }
 
   const { actorType, actorId } = resolveActor(c);
+  if (body.assigned_to) {
+    await assertAmaAssignableWorkerRuntime(c.env.DB, c.env, c.get("ownerId"), body.assigned_to, 400);
+  }
   const task = await createTask(c.env.DB, c.get("ownerId"), {
     ...body,
     actorType,
@@ -1788,6 +1814,7 @@ api.post("/api/tasks/:id/assign", async (c) => {
   if (hasNoScheduleTaint(targetAgent.taints)) {
     throw new HTTPException(409, { message: "Agent is tainted NoSchedule and cannot be assigned normal tasks" });
   }
+  await assertAmaAssignableWorkerRuntime(c.env.DB, c.env, c.get("ownerId"), targetAgentId, 404);
 
   try {
     await dispatchTaskToAma(

@@ -83,7 +83,8 @@ export function AgentDetailPage() {
   const rgb = agent.public_key ? agentColorRgb(agent.public_key) : "34, 211, 238";
   const color = agent.public_key ? agentColor(agent.public_key) : "#22D3EE";
   const fp = agent.fingerprint ? agentFingerprint(agent.fingerprint) : "";
-  const isOnline = agent.status === "online";
+  const schedulable = agent.status.schedulable;
+  const taskCounts = agent.status.tasks;
   const totalTokens = (agent.input_tokens || 0) + (agent.output_tokens || 0) + (agent.cache_read_tokens || 0);
 
   const tabs: { key: Tab; label: string; count?: number }[] = [
@@ -106,7 +107,7 @@ export function AgentDetailPage() {
           className="mt-6 rounded-lg overflow-hidden"
           style={{
             background: "var(--bg-secondary)",
-            boxShadow: isOnline ? `0 8px 40px rgba(${rgb}, 0.12), 0 0 0 1px rgba(${rgb}, 0.1)` : "0 0 0 1px var(--border)",
+            boxShadow: schedulable ? `0 8px 40px rgba(${rgb}, 0.12), 0 0 0 1px rgba(${rgb}, 0.1)` : "0 0 0 1px var(--border)",
           }}
         >
           {/* Color bar */}
@@ -205,7 +206,7 @@ export function AgentDetailPage() {
             </button>
 
             <div className="flex items-start gap-6 relative">
-              <AgentIdenticon publicKey={agent.public_key} size={96} glow={isOnline} crystallize leader={agent.kind === "leader"} />
+              <AgentIdenticon publicKey={agent.public_key} size={96} glow={schedulable} crystallize leader={agent.kind === "leader"} />
 
               <div className="flex-1 min-w-0 pt-1">
                 <div className="flex items-center gap-3">
@@ -229,8 +230,8 @@ export function AgentDetailPage() {
                     </svg>
                   ) : null}
                   <span
-                    className={`w-2.5 h-2.5 rounded-full shrink-0 ${isOnline ? "animate-pulse-glow" : ""}`}
-                    style={{ backgroundColor: isOnline ? color : "#3f3f46" }}
+                    className={`w-2.5 h-2.5 rounded-full shrink-0 ${schedulable ? "animate-pulse-glow" : ""}`}
+                    style={{ backgroundColor: schedulable ? color : "#3f3f46" }}
                   />
                 </div>
 
@@ -247,7 +248,7 @@ export function AgentDetailPage() {
                     <span className="text-[10px] font-mono text-content-tertiary bg-surface-tertiary rounded-full px-2.5 py-0.5">{agent.model}</span>
                   )}
                   <span className="text-[10px] text-content-tertiary">Created {formatRelative(agent.created_at)}</span>
-                  {agent.last_active_at && <span className="text-[10px] text-content-tertiary">Active {formatRelative(agent.last_active_at)}</span>}
+                  <span className="text-[10px] text-content-tertiary">{schedulable ? "Schedulable" : "Not schedulable"}</span>
                 </div>
               </div>
             </div>
@@ -256,10 +257,10 @@ export function AgentDetailPage() {
           {/* Telemetry strip — inside hero card */}
           <div className="border-t border-border/50 grid grid-cols-5 divide-x divide-border/50">
             {[
-              { label: "TASKS", value: String(agent.task_count || 0) },
+              { label: "TODO", value: String(taskCounts.todo) },
+              { label: "PROGRESS", value: String(taskCounts.in_progress) },
+              { label: "REVIEW", value: String(taskCounts.in_review) },
               { label: "INPUT", value: formatTokens(agent.input_tokens || 0) },
-              { label: "OUTPUT", value: formatTokens(agent.output_tokens || 0) },
-              { label: "CACHE", value: formatTokens(agent.cache_read_tokens || 0) },
               { label: "COST", value: formatCost(agent.cost_micro_usd || 0) },
             ].map((stat) => (
               <div key={stat.label} className="py-3 px-4 text-center">

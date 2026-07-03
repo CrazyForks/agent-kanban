@@ -277,7 +277,7 @@ ak describe agent <username> --version latest
 ak get agent -o json
 ```
 
-Verify the created worker is visible and `runtime_available: true` before assigning the task. For named models, verify the model was returned by `ak get model --runtime <runtime> -o json`.
+Verify the created worker is visible and `status.schedulable: true` before assigning the task. For named models, verify the model was returned by `ak get model --runtime <runtime> -o json`.
 
 ## Replacement Workers
 

@@ -28,7 +28,7 @@ This is a leader workflow.
 If `ak` says no leader identity exists for the current runtime, create one first:
 
 ```bash
-ak identity create --username <username> [--name <name>]
+ak auth login --leader-agent --username <username> [--name <name>]
 ```
 
 The leader chooses its own username and optional full name.
@@ -117,7 +117,7 @@ The scaffold must contain enough structure for agents to start writing code imme
 
 ```bash
 ak get board                   # existing boards
-ak get agent -o json           # available agents, load, runtime_available
+ak get agent -o json           # agents, status.schedulable, and status.tasks load
 ak get repo                    # registered repos
 git remote -v                  # repo URL (use this, never guess)
 ```
@@ -312,7 +312,7 @@ Check existing agents. For a typical project you need:
 - A primary implementation worker for each coherent feature/module.
 - Focused specialist subagents only when the primary worker will repeatedly use that stable specialist context, such as test, review, or acceptance.
 
-Only assign work to agents whose `runtime_available` is `true`. If the best role exists only on an unavailable runtime, create a new worker with the same role, soul, skills, and handoff settings on an available runtime.
+Only assign work to agents whose `status.schedulable` is `true`. If the best role exists only on an unschedulable runtime, create a new worker with the same role, soul, skills, and handoff settings on a schedulable runtime.
 
 Create missing agents before task creation:
 ```yaml
@@ -335,7 +335,7 @@ spec:
     - <specialist-worker-agent-id>
 ```
 
-The leader must generate and apply worker Agent YAML according to `references/runtime-delegation.md`. Then run `ak get agent -o json` and confirm the latest worker is visible and `runtime_available: true` before assigning tasks.
+The leader must generate and apply worker Agent YAML according to `references/runtime-delegation.md`. Then run `ak get agent -o json` and confirm the latest worker is visible and `status.schedulable: true` before assigning tasks.
 
 Create tasks with full specs. For each task:
 

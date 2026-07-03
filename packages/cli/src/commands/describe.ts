@@ -58,7 +58,15 @@ function formatDescribeAgent(agent: any): string {
   lines.push(`${pad("ID")} ${agent.id}`);
   if (agent.username) lines.push(`${pad("Username")} ${agent.username}`);
   if (agent.version) lines.push(`${pad("Version")} ${agent.version}`);
-  lines.push(`${pad("Status")} ${agent.status}`);
+  const structuredStatus = typeof agent.status === "object" && agent.status ? agent.status : null;
+  lines.push(`${pad("Status")} ${structuredStatus ? (agent.status.schedulable ? "schedulable" : "unschedulable") : agent.status}`);
+  if (structuredStatus) {
+    lines.push(`${pad("Todo tasks")} ${agent.status.tasks.todo}`);
+    lines.push(`${pad("In progress")} ${agent.status.tasks.in_progress}`);
+    lines.push(`${pad("In review")} ${agent.status.tasks.in_review}`);
+    lines.push(`${pad("Done tasks")} ${agent.status.tasks.done}`);
+    lines.push(`${pad("Cancelled")} ${agent.status.tasks.cancelled}`);
+  }
   if (agent.role) lines.push(`${pad("Role")} ${agent.role}`);
   if (agent.bio) lines.push(`${pad("Bio")} ${agent.bio}`);
   lines.push(`${pad("Runtime")} ${agent.runtime}`);
@@ -66,9 +74,6 @@ function formatDescribeAgent(agent: any): string {
   if (agent.fingerprint) lines.push(`${pad("Fingerprint")} ${agent.fingerprint}`);
   if (agent.skills?.length) lines.push(`${pad("Skills")} ${agent.skills.join(", ")}`);
   if (agent.handoff_to?.length) lines.push(`${pad("Handoff")} ${agent.handoff_to.join(", ")}`);
-  if (agent.task_count != null) lines.push(`${pad("Task count")} ${agent.task_count}`);
-  if (agent.last_active_at) lines.push(`${pad("Last active")} ${agent.last_active_at}`);
-
   const logs = Array.isArray(agent.logs) ? agent.logs : [];
   if (logs.length > 0) {
     lines.push("");

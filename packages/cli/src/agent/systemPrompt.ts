@@ -116,8 +116,8 @@ function buildHandoffSection(agent: AgentInfo, boardType: BoardType): string {
 After delivering your own work, if it reveals NEW independent work (not review of your current task), you can create tasks for these roles: ${handoffRoles.join(", ")}
 
 To hand off:
-1. Run \`ak get agent -o json\` to find agents by role. Only assign to agents with \`runtime_available: true\`.
-2. If the matching role only exists on an unavailable runtime, create a new worker with the same role on an available runtime.
+1. Run \`ak get agent -o json\` to find agents by role. Only assign to agents with \`status.schedulable: true\`.
+2. If no matching role is schedulable, create a new worker with the same role on a schedulable runtime.
 3. Create a task: \`ak create task --board <current-board-id> --title "..." --assign-to <agent-id>${repoFlag} --parent <current-task-id>\`
 4. Log the handoff: \`ak create note --task <current-task-id> "Handed off to <agent-name> for <reason>"\`
 

@@ -6,6 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mockCreateRepositoryGithubToken = vi.hoisted(() => vi.fn());
 const mockGetRepository = vi.hoisted(() => vi.fn());
 const mockConfigureGithubAuth = vi.hoisted(() => vi.fn());
+const mockLoginLeaderAgent = vi.hoisted(() => vi.fn());
+const mockDetectRuntime = vi.hoisted(() => vi.fn(() => null));
+const mockFindRuntimeAncestorPid = vi.hoisted(() => vi.fn(() => null));
+const mockReadWorkerAuthSession = vi.hoisted(() => vi.fn(() => null));
+const mockLoadIdentity = vi.hoisted(() => vi.fn(() => null));
+const mockListSessions = vi.hoisted(() => vi.fn(() => []));
+const mockIsPidAlive = vi.hoisted(() => vi.fn(() => false));
 const mockCreateClient = vi.hoisted(() =>
   vi.fn(() =>
     Promise.resolve({
@@ -18,16 +25,21 @@ const mockAgentClientFromEnv = vi.hoisted(() => vi.fn(async () => null));
 
 vi.mock("../src/agent/leader.js", () => ({
   createClient: mockCreateClient,
-  createIdentity: vi.fn(),
+  loginLeaderAgent: mockLoginLeaderAgent,
 }));
 
 vi.mock("../src/agent/runtime.js", () => ({
-  detectRuntime: vi.fn(() => null),
+  detectRuntime: mockDetectRuntime,
+  findRuntimeAncestorPid: mockFindRuntimeAncestorPid,
+}));
+
+vi.mock("../src/agent/identity.js", () => ({
+  loadIdentity: mockLoadIdentity,
 }));
 
 vi.mock("../src/auth/session.js", () => ({
   clearWorkerAuthSession: vi.fn(),
-  readWorkerAuthSession: vi.fn(() => null),
+  readWorkerAuthSession: mockReadWorkerAuthSession,
   writeWorkerAuthSession: vi.fn(),
 }));
 
@@ -38,7 +50,13 @@ vi.mock("../src/client/agent.js", () => ({
 }));
 
 vi.mock("../src/config.js", () => ({
+  getCredentials: vi.fn(() => ({ apiUrl: "https://api.example.com", apiKey: "test-key" })),
   saveCredentials: vi.fn(),
+}));
+
+vi.mock("../src/session/store.js", () => ({
+  listSessions: mockListSessions,
+  isPidAlive: mockIsPidAlive,
 }));
 
 vi.mock("../src/commands/github.js", () => ({
@@ -59,6 +77,13 @@ let consoleLogSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   vi.clearAllMocks();
   delete process.env.AK_WORKER;
+  delete process.env.AK_API_URL;
+  delete process.env.AK_API_KEY;
+  delete process.env.AK_AGENT_ID;
+  delete process.env.AK_BOARD_ID;
+  delete process.env.AK_MAINTAINER_ID;
+  delete process.env.AK_SESSION_ID;
+  delete process.env.AK_AGENT_KEY;
   delete process.env.AMA_WORKSPACE_HOME;
   delete process.env.AMA_WORKSPACE;
   mockGetRepository.mockResolvedValue({ id: "repo-1", url: "https://github.com/org/repo" });
@@ -69,14 +94,103 @@ beforeEach(() => {
     expires_at: "2026-06-25T13:00:00Z",
   });
   mockConfigureGithubAuth.mockResolvedValue("configured");
+  mockLoginLeaderAgent.mockResolvedValue({
+    identity: { agent_id: "agent-leader-1", name: "Codex Leader", fingerprint: "fp-1" },
+    sessionId: "session-leader-1",
+    reusedIdentity: false,
+  });
+  mockDetectRuntime.mockReturnValue(null);
+  mockFindRuntimeAncestorPid.mockReturnValue(null);
+  mockReadWorkerAuthSession.mockReturnValue(null);
+  mockLoadIdentity.mockReturnValue(null);
+  mockListSessions.mockReturnValue([]);
+  mockIsPidAlive.mockReturnValue(false);
   consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 });
 
 afterEach(() => {
   delete process.env.AK_WORKER;
+  delete process.env.AK_API_URL;
+  delete process.env.AK_API_KEY;
+  delete process.env.AK_AGENT_ID;
+  delete process.env.AK_BOARD_ID;
+  delete process.env.AK_MAINTAINER_ID;
+  delete process.env.AK_SESSION_ID;
+  delete process.env.AK_AGENT_KEY;
   delete process.env.AMA_WORKSPACE_HOME;
   delete process.env.AMA_WORKSPACE;
   consoleLogSpy.mockRestore();
+});
+
+describe("auth login command", () => {
+  it("creates a leader agent identity for the current runtime", async () => {
+    mockDetectRuntime.mockReturnValue("codex");
+
+    await makeProgram().parseAsync(["auth", "login", "--leader-agent", "--username", "codex-leader", "--name", "Codex Leader"], { from: "user" });
+
+    expect(mockLoginLeaderAgent).toHaveBeenCalledWith({ runtime: "codex", username: "codex-leader", name: "Codex Leader" });
+    expect(consoleLogSpy).toHaveBeenCalledWith("Created AK leader agent identity agent-leader-1");
+    expect(consoleLogSpy).toHaveBeenCalledWith("Created AK leader agent session session-leader-1");
+  });
+});
+
+describe("auth whoami command", () => {
+  it("shows a local leader identity for the current runtime", async () => {
+    mockDetectRuntime.mockReturnValue("codex");
+    mockLoadIdentity.mockReturnValue({ agent_id: "agent-leader-1", name: "Codex Leader", fingerprint: "fp-1" });
+
+    await makeProgram().parseAsync(["auth", "whoami"], { from: "user" });
+
+    expect(consoleLogSpy).toHaveBeenCalledWith("Type:        leader");
+    expect(consoleLogSpy).toHaveBeenCalledWith("Runtime:     codex");
+    expect(consoleLogSpy).toHaveBeenCalledWith("Agent ID:    agent-leader-1");
+  });
+
+  it("shows a local leader session for the current runtime when present", async () => {
+    mockDetectRuntime.mockReturnValue("codex");
+    mockFindRuntimeAncestorPid.mockReturnValue(12345);
+    mockLoadIdentity.mockReturnValue({ agent_id: "agent-leader-1", name: "Codex Leader", fingerprint: "fp-1" });
+    mockListSessions.mockReturnValue([
+      {
+        type: "leader",
+        agentId: "agent-leader-1",
+        sessionId: "session-leader-1",
+        runtime: "codex",
+        pid: 12345,
+        apiUrl: "https://api.example.com",
+        startedAt: 0,
+        privateKeyJwk: {},
+      },
+    ]);
+    mockIsPidAlive.mockReturnValue(true);
+
+    await makeProgram().parseAsync(["auth", "whoami"], { from: "user" });
+
+    expect(consoleLogSpy).toHaveBeenCalledWith("Session ID:  session-leader-1");
+  });
+
+  it("guides a leader runtime to leader-agent login when no session exists", async () => {
+    mockDetectRuntime.mockReturnValue("codex");
+
+    await expect(makeProgram().parseAsync(["auth", "whoami"], { from: "user" })).rejects.toThrow(
+      /ak auth login --leader-agent --username <username> \[--name <name>\]/,
+    );
+  });
+
+  it("guides a maintainer worker to auth login when no session exists", async () => {
+    process.env.AK_API_KEY = "ak_maint_test";
+    process.env.AK_MAINTAINER_ID = "maintainer-1";
+
+    await expect(makeProgram().parseAsync(["auth", "whoami"], { from: "user" })).rejects.toThrow(/For a maintainer worker, run:\n {2}ak auth login/);
+  });
+
+  it("reports incomplete worker session injection without suggesting leader login", async () => {
+    process.env.AK_WORKER = "1";
+
+    await expect(makeProgram().parseAsync(["auth", "whoami"], { from: "user" })).rejects.toThrow(
+      /runtime should inject AK_AGENT_ID, AK_SESSION_ID, AK_AGENT_KEY, and AK_API_URL/,
+    );
+  });
 });
 
 describe("auth git command", () => {

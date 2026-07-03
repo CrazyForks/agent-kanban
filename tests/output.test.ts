@@ -368,20 +368,39 @@ describe("formatAgent", () => {
     expect(result).not.toContain("Handoff:");
   });
 
-  it("includes task_count when present", () => {
-    const agent = { id: "a1", name: "Claude", status: "idle", task_count: 3 };
+  it("includes structured status task counts when present", () => {
+    const agent = {
+      id: "a1",
+      name: "Claude",
+      status: { schedulable: true, tasks: { todo: 1, in_progress: 2, in_review: 3, done: 4, cancelled: 5 } },
+    };
     const result = formatAgent(agent);
-    expect(result).toContain("3");
+    expect(result).toContain("Status:   schedulable");
+    expect(result).toContain("Todo:     1");
+    expect(result).toContain("Progress: 2");
+    expect(result).toContain("Review:   3");
+    expect(result).toContain("Done:     4");
+    expect(result).toContain("Cancelled:5");
   });
 
-  it("includes task_count when zero", () => {
-    const agent = { id: "a1", name: "Claude", status: "idle", task_count: 0 };
+  it("includes zero structured status task count values", () => {
+    const agent = {
+      id: "a1",
+      name: "Claude",
+      status: { schedulable: false, tasks: { todo: 0, in_progress: 0, in_review: 0, done: 0, cancelled: 0 } },
+    };
     const result = formatAgent(agent);
-    expect(result).toContain("Tasks:");
+    expect(result).toContain("Status:   unschedulable");
+    expect(result).toContain("Todo:     0");
   });
 
-  it("omits Tasks line when task_count is null", () => {
-    const agent = { id: "a1", name: "Claude", status: "idle", task_count: null };
+  it("omits legacy Tasks line with structured status", () => {
+    const agent = {
+      id: "a1",
+      name: "Claude",
+      status: { schedulable: true, tasks: { todo: 0, in_progress: 0, in_review: 0, done: 0, cancelled: 0 } },
+      task_count: 3,
+    };
     const result = formatAgent(agent);
     expect(result).not.toContain("Tasks:");
   });
@@ -433,16 +452,21 @@ describe("formatAgentList", () => {
   });
 
   it("includes agent ID and name", () => {
-    const agents = [{ id: "a1", name: "Claude", status: "idle", task_count: 0, last_active_at: null }];
+    const agents = [
+      { id: "a1", name: "Claude", status: { schedulable: true, tasks: { todo: 0, in_progress: 0, in_review: 0, done: 0, cancelled: 0 } } },
+    ];
     const result = formatAgentList(agents);
     expect(result).toContain("a1");
     expect(result).toContain("Claude");
   });
 
   it("includes status", () => {
-    const agents = [{ id: "a1", name: "Claude", status: "working", task_count: 2, last_active_at: null }];
+    const agents = [
+      { id: "a1", name: "Claude", status: { schedulable: false, tasks: { todo: 1, in_progress: 2, in_review: 3, done: 4, cancelled: 5 } } },
+    ];
     const result = formatAgentList(agents);
-    expect(result).toContain("[working]");
+    expect(result).toContain("[unschedulable]");
+    expect(result).toContain("todo=1 progress=2 review=3 done=4 cancelled=5");
   });
 
   it("includes role when present", () => {

@@ -3,7 +3,6 @@ import { Bot, Cloud, Code2, Github, type LucideIcon, Sparkles, Terminal } from "
 import { Link } from "react-router-dom";
 import { AgentIdenticon } from "../components/AgentIdenticon";
 import { Header } from "../components/Header";
-import { formatRelative } from "../components/TaskDetailFields";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { useAgents, useSubagents } from "../hooks/useAgents";
 import { agentColor, agentColorRgb, agentFingerprint } from "../lib/agentIdentity";
@@ -34,7 +33,7 @@ export function AgentsPage() {
   const { agents, loading: agentsLoading } = useAgents();
   const { subagents, loading: subagentsLoading } = useSubagents();
   const latestAgents = (agents as AgentWithActivity[]).filter((agent) => agent.version === "latest");
-  const online = latestAgents.filter((agent) => agent.status === "online").length;
+  const schedulable = latestAgents.filter((agent) => agent.status.schedulable).length;
 
   return (
     <div className="min-h-screen bg-surface-primary">
@@ -45,7 +44,7 @@ export function AgentsPage() {
             <h1 className="text-2xl font-bold text-content-primary">Agents</h1>
             <div className="flex flex-wrap items-center gap-3 font-mono text-xs text-content-tertiary">
               <span>
-                {online}/{latestAgents.length} online
+                {schedulable}/{latestAgents.length} schedulable
               </span>
               <span>{subagents.length} sub-agents</span>
             </div>
@@ -138,7 +137,7 @@ function RuntimeMeta({ runtime, model, available }: { runtime: AgentRuntime; mod
       <span className="truncate">{model || "default"}</span>
       {available !== undefined && (
         <span
-          title={available ? "Runtime available" : "Runtime unavailable"}
+          title={available ? "Schedulable" : "Not schedulable"}
           className={cn("ml-0.5 size-1.5 shrink-0 rounded-full", available ? "bg-success" : "bg-warning")}
         />
       )}
@@ -160,7 +159,8 @@ function RuntimeChip({ runtime, model }: { runtime: AgentRuntime; model: string 
 }
 
 function AgentCard({ agent }: { agent: AgentWithActivity }) {
-  const isOnline = agent.status === "online";
+  const schedulable = agent.status.schedulable;
+  const tasks = agent.status.tasks;
   const color = agent.public_key ? agentColor(agent.public_key) : "#22D3EE";
   const rgb = agent.public_key ? agentColorRgb(agent.public_key) : "34, 211, 238";
   const fp = agent.fingerprint ? agentFingerprint(agent.fingerprint) : "";
@@ -171,20 +171,17 @@ function AgentCard({ agent }: { agent: AgentWithActivity }) {
       to={`/agents/${agent.id}`}
       className="group relative block overflow-hidden rounded-lg border border-border bg-surface-secondary transition-all hover:-translate-y-px hover:border-accent/35"
       style={{
-        boxShadow: isOnline ? `0 4px 20px rgba(${rgb}, 0.12)` : undefined,
+        boxShadow: schedulable ? `0 4px 20px rgba(${rgb}, 0.12)` : undefined,
       }}
     >
       <div className="h-[3px]" style={{ background: color }} />
-      <div
-        title={agent.last_active_at ? `Last active ${formatRelative(agent.last_active_at)}` : undefined}
-        className="absolute right-3 top-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-primary/80 px-2 py-0.5"
-      >
-        <span className={cn("size-1.5 rounded-full", isOnline ? "bg-success" : "bg-content-tertiary")} />
-        <span className="font-mono text-[10px] text-content-tertiary">{isOnline ? "Online" : "Offline"}</span>
+      <div className="absolute right-3 top-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-primary/80 px-2 py-0.5">
+        <span className={cn("size-1.5 rounded-full", schedulable ? "bg-success" : "bg-content-tertiary")} />
+        <span className="font-mono text-[10px] text-content-tertiary">{schedulable ? "Schedulable" : "Not schedulable"}</span>
       </div>
 
       <div className="flex flex-col items-center px-5 pb-4 pt-7 text-center">
-        <AgentIdenticon publicKey={agent.public_key} size={60} glow={isOnline} leader={agent.kind === "leader"} />
+        <AgentIdenticon publicKey={agent.public_key} size={60} glow={schedulable} leader={agent.kind === "leader"} />
 
         <div className="mt-3 flex max-w-full items-center gap-1.5">
           <h2 className="truncate font-mono text-base font-bold text-content-primary">{agent.name}</h2>
@@ -215,12 +212,13 @@ function AgentCard({ agent }: { agent: AgentWithActivity }) {
         </div>
 
         <div className="mt-2 flex max-w-full justify-center">
-          <RuntimeMeta runtime={agent.runtime} model={agent.model} available={agent.runtime_available} />
+          <RuntimeMeta runtime={agent.runtime} model={agent.model} available={schedulable} />
         </div>
       </div>
       <div className="flex items-center justify-between gap-2 border-t border-border/60 px-4 py-3 font-mono text-[10px] text-content-tertiary">
-        <span>{agent.active_task_count || 0} active</span>
-        <span>{agent.queued_task_count || 0} queued</span>
+        <span>{tasks.todo} todo</span>
+        <span>{tasks.in_progress} progress</span>
+        <span>{tasks.in_review} review</span>
         <span>{formatTokens(tokenCount)} tok</span>
         <span>{formatCost(agent.cost_micro_usd)}</span>
       </div>

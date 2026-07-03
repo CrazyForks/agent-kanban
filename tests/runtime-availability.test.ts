@@ -129,13 +129,26 @@ describe("agent runtime load fields", () => {
     const listedAgent = (await listAgents(db, ownerId)).find((candidate) => candidate.id === agent.id)!;
     const fetchedAgent = await getAgent(db, agent.id, ownerId);
 
-    expect(listedAgent.runtime_available).toBe(true);
-    expect(listedAgent.queued_task_count).toBe(1);
-    expect(listedAgent.active_task_count).toBe(1);
-    expect(listedAgent.task_count).toBe(2);
-    expect(fetchedAgent!.runtime_available).toBe(true);
-    expect(fetchedAgent!.queued_task_count).toBe(1);
-    expect(fetchedAgent!.active_task_count).toBe(1);
+    expect(listedAgent.status).toEqual({
+      schedulable: true,
+      tasks: {
+        todo: 1,
+        in_progress: 1,
+        in_review: 0,
+        done: 0,
+        cancelled: 0,
+      },
+    });
+    expect(fetchedAgent!.status).toEqual({
+      schedulable: true,
+      tasks: {
+        todo: 1,
+        in_progress: 1,
+        in_review: 0,
+        done: 0,
+        cancelled: 0,
+      },
+    });
     expect(queuedTask.assigned_to).toBe(agent.id);
   });
 });
