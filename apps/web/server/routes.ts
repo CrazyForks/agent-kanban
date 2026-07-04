@@ -58,6 +58,7 @@ import {
   resolveAmaSessionSecretVaultId,
 } from "./amaOwnerIntegrationRepo";
 import {
+  AmaLinkedAccountAuthError,
   type AmaRunner,
   amaEnvironmentExists,
   archiveAmaAgent,
@@ -793,6 +794,9 @@ api.use("*", async (c, next) => {
 
 // Error handler
 api.onError((err, c) => {
+  if (err instanceof AmaLinkedAccountAuthError) {
+    return c.json({ error: { code: err.code, message: err.message } }, err.status);
+  }
   if (err instanceof HTTPException) {
     return c.json({ error: { code: err.message, message: err.message } }, err.status);
   }

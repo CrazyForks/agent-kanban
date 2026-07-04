@@ -12,10 +12,21 @@ import {
   type Volume,
   type VolumeMount,
 } from "@any-managed-agents/sdk";
-import { createAuth } from "./betterAuth";
+import { amaOidcResource, oidcDiscoveryUrl } from "./betterAuth";
 import type { Env } from "./types";
 
 const amaAccessTokenRequests = new Map<string, Promise<string>>();
+const AMA_ACCESS_TOKEN_REFRESH_SKEW_MS = 30_000;
+
+export class AmaLinkedAccountAuthError extends Error {
+  readonly status = 401;
+  readonly code = "AMA_RECONNECT_REQUIRED";
+
+  constructor(message = "AMA rejected the linked account token. Reconnect AMA in Account settings, then run ak start again.") {
+    super(message);
+    this.name = "AmaLinkedAccountAuthError";
+  }
+}
 
 export type AmaResourceRef = Record<string, unknown>;
 export interface AmaRuntimeSecretEnvRef {
@@ -91,6 +102,20 @@ export interface AmaSessionSecretInput {
 export interface AmaSessionSecret {
   credentialId: string;
   activeVersionId: string;
+}
+
+interface AmaLinkedAccountRow {
+  id: string;
+  accessToken: string | null;
+  refreshToken: string | null;
+  accessTokenExpiresAt: string | null;
+  refreshTokenExpiresAt: string | null;
+}
+
+interface AmaRefreshTokenResult {
+  accessToken: string;
+  refreshToken?: string;
+  accessTokenExpiresAt: string | null;
 }
 
 export interface AmaScheduledTriggerInput {
@@ -592,6 +617,7 @@ async function withAmaErrorDetails<T>(operation: string, fn: () => Promise<T>): 
   try {
     return await fn();
   } catch (error) {
+    throwIfAmaAuthError(error);
     const status = typeof (error as { status?: unknown }).status === "number" ? ` HTTP ${(error as { status: number }).status}` : "";
     const responseText =
       typeof (error as { responseText?: unknown }).responseText === "string" ? `: ${(error as { responseText: string }).responseText}` : "";
@@ -606,6 +632,7 @@ export async function readAmaAgent(env: Env, ownerId: string, projectId: string,
     return toAmaAgent(agent, "");
   } catch (error) {
     if ((error as { status?: unknown }).status === 404) return null;
+    throwIfAmaAuthError(error);
     throw error;
   }
 }
@@ -656,6 +683,7 @@ export async function readAmaProject(env: Env, ownerId: string, projectId: strin
     return { id: project.id, name: project.name };
   } catch (error) {
     if ((error as { status?: unknown }).status === 404) return null;
+    throwIfAmaAuthError(error);
     throw error;
   }
 }
@@ -667,6 +695,7 @@ export async function amaEnvironmentExists(env: Env, ownerId: string, projectId:
     return true;
   } catch (error) {
     if ((error as { status?: unknown }).status === 404) return false;
+    throwIfAmaAuthError(error);
     throw error;
   }
 }
@@ -763,6 +792,7 @@ export async function readAmaSession(env: Env, ownerId: string, sessionId: strin
     return normalizeSession(await client.sessions.get(sessionId));
   } catch (error) {
     if ((error as { status?: unknown }).status === 404) return null;
+    throwIfAmaAuthError(error);
     throw error;
   }
 }
@@ -1107,11 +1137,10 @@ export async function dispatchAmaHttpTriggerRun(env: Env, ownerId: string, input
   return toAmaTriggerRun(run as SdkTriggerRun);
 }
 
-// Resolves the AMA access token for the linked AMA account of the AK user
-// `ownerId`. BetterAuth's getAccessToken auto-refreshes via the stored refresh
-// token. Surfaces a clear "no linked AMA account" error when the user hasn't
-// connected AMA (BetterAuth raises ACCOUNT_NOT_FOUND); other failures (e.g. a
-// revoked refresh token, network) propagate unchanged.
+// Resolves the AMA access token for the linked AMA account of the AK user.
+// BetterAuth's generic OAuth refresh path does not forward the resource
+// indicator, so AMA refresh is handled here to keep access tokens JWT-shaped for
+// AMA's bearer-token validation.
 async function userAmaAccessToken(env: Env, ownerId: string): Promise<string> {
   const requestKey = `${ownerId}:ama`;
   const existing = amaAccessTokenRequests.get(requestKey);
@@ -1125,27 +1154,168 @@ async function userAmaAccessToken(env: Env, ownerId: string): Promise<string> {
 }
 
 async function resolveUserAmaAccessToken(env: Env, ownerId: string): Promise<string> {
-  const auth = createAuth(env);
-  let res: { accessToken?: string } | undefined;
-  try {
-    res = await auth.api.getAccessToken({ body: { providerId: "ama", userId: ownerId } });
-  } catch (error) {
-    if (isAmaAccountNotFound(error)) {
-      throw new Error(`No linked AMA account for user ${ownerId}; connect AMA to enable cloud scheduling`);
-    }
-    throw error;
-  }
-  if (!res?.accessToken) {
+  const account = await readAmaLinkedAccount(env.DB, ownerId);
+  if (!account) {
     throw new Error(`No linked AMA account for user ${ownerId}; connect AMA to enable cloud scheduling`);
   }
-  return res.accessToken;
+
+  if (isUsableAmaAccessToken(account.accessToken, account.accessTokenExpiresAt)) {
+    return account.accessToken;
+  }
+  if (!account.refreshToken) {
+    throw new AmaLinkedAccountAuthError("AMA linked account has no refresh token. Reconnect AMA in Account settings, then run ak start again.");
+  }
+  if (isKnownExpired(account.refreshTokenExpiresAt, Date.now())) {
+    throw new AmaLinkedAccountAuthError("AMA linked account refresh token is expired. Reconnect AMA in Account settings, then run ak start again.");
+  }
+
+  const refreshed = await refreshAmaLinkedAccountToken(env, account.refreshToken);
+  await updateAmaLinkedAccountToken(env.DB, account, refreshed);
+  return refreshed.accessToken;
 }
 
-function isAmaAccountNotFound(error: unknown): boolean {
-  const code = (error as { body?: { code?: unknown } })?.body?.code;
-  if (code === "ACCOUNT_NOT_FOUND") return true;
+export function assertAmaAccessToken(accessToken: string): string {
+  if (!isSerializedJwt(accessToken)) {
+    throw new AmaLinkedAccountAuthError("AMA linked account token is not a JWT. Reconnect AMA in Account settings, then run ak start again.");
+  }
+  return accessToken;
+}
+
+export function isUsableAmaAccessToken(
+  accessToken: string | null | undefined,
+  expiresAt: string | null | undefined,
+  nowMs = Date.now(),
+): accessToken is string {
+  return Boolean(accessToken && isSerializedJwt(accessToken) && !isExpired(expiresAt, nowMs, AMA_ACCESS_TOKEN_REFRESH_SKEW_MS));
+}
+
+function isSerializedJwt(token: string): boolean {
+  return token.split(".").length === 3;
+}
+
+function isExpired(expiresAt: string | null | undefined, nowMs: number, skewMs: number): boolean {
+  if (!expiresAt) return true;
+  const expiresAtMs = Date.parse(expiresAt);
+  return Number.isNaN(expiresAtMs) || expiresAtMs <= nowMs + skewMs;
+}
+
+function isKnownExpired(expiresAt: string | null | undefined, nowMs: number): boolean {
+  if (!expiresAt) return false;
+  const expiresAtMs = Date.parse(expiresAt);
+  return Number.isNaN(expiresAtMs) || expiresAtMs <= nowMs;
+}
+
+async function readAmaLinkedAccount(db: Env["DB"], ownerId: string): Promise<AmaLinkedAccountRow | null> {
+  return db
+    .prepare(
+      `SELECT id, accessToken, refreshToken, accessTokenExpiresAt, refreshTokenExpiresAt
+       FROM account
+       WHERE userId = ? AND providerId = 'ama'
+       LIMIT 1`,
+    )
+    .bind(ownerId)
+    .first<AmaLinkedAccountRow>();
+}
+
+async function refreshAmaLinkedAccountToken(env: Env, refreshToken: string): Promise<AmaRefreshTokenResult> {
+  const tokenEndpoint = await amaOidcTokenEndpoint(env);
+  const resource = amaOidcResource(env);
+  const body = amaRefreshTokenForm(refreshToken, resource);
+
+  const response = await fetch(tokenEndpoint, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      authorization: `Basic ${btoa(`${requireEnv(env.AMA_OIDC_CLIENT_ID, "AMA_OIDC_CLIENT_ID")}:${requireEnv(env.AMA_OIDC_CLIENT_SECRET, "AMA_OIDC_CLIENT_SECRET")}`)}`,
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
+  const text = await response.text();
+  const data = parseJsonObject(text);
+  if (!response.ok) {
+    if (data?.error === "invalid_grant") {
+      throw new AmaLinkedAccountAuthError("AMA linked account refresh token is invalid. Reconnect AMA in Account settings, then run ak start again.");
+    }
+    throw new Error(`AMA OIDC refresh failed with HTTP ${response.status}: ${text}`);
+  }
+  if (typeof data?.access_token !== "string") {
+    throw new Error("AMA OIDC refresh response did not include an access token.");
+  }
+  const accessToken = assertAmaAccessToken(data.access_token);
+  return {
+    accessToken,
+    ...(typeof data.refresh_token === "string" ? { refreshToken: data.refresh_token } : {}),
+    accessTokenExpiresAt: tokenResponseExpiresAt(data),
+  };
+}
+
+export function amaRefreshTokenForm(refreshToken: string, resource: string | null): URLSearchParams {
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+  });
+  if (resource) body.set("resource", resource);
+  return body;
+}
+
+async function amaOidcTokenEndpoint(env: Env): Promise<string> {
+  const issuer = requireEnv(env.AMA_OIDC_ISSUER, "AMA_OIDC_ISSUER");
+  const response = await fetch(oidcDiscoveryUrl(issuer), { headers: { accept: "application/json" } });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`AMA OIDC discovery failed with HTTP ${response.status}: ${text}`);
+  }
+  const data = parseJsonObject(text);
+  if (typeof data?.token_endpoint !== "string") {
+    throw new Error("AMA OIDC discovery response did not include a token endpoint.");
+  }
+  return data.token_endpoint;
+}
+
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  try {
+    const value = JSON.parse(text) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function tokenResponseExpiresAt(data: Record<string, unknown>): string | null {
+  if (typeof data.expires_at === "number" && Number.isFinite(data.expires_at)) {
+    return new Date(data.expires_at * 1000).toISOString();
+  }
+  if (typeof data.expires_in === "number" && Number.isFinite(data.expires_in)) {
+    return new Date(Date.now() + data.expires_in * 1000).toISOString();
+  }
+  return null;
+}
+
+async function updateAmaLinkedAccountToken(db: Env["DB"], account: AmaLinkedAccountRow, token: AmaRefreshTokenResult): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE account
+       SET accessToken = ?,
+           refreshToken = ?,
+           accessTokenExpiresAt = ?,
+           updatedAt = datetime('now')
+       WHERE id = ?`,
+    )
+    .bind(token.accessToken, token.refreshToken ?? account.refreshToken, token.accessTokenExpiresAt, account.id)
+    .run();
+}
+
+function throwIfAmaAuthError(error: unknown): void {
+  if (isAmaUnauthorizedError(error)) {
+    throw new AmaLinkedAccountAuthError();
+  }
+}
+
+function isAmaUnauthorizedError(error: unknown): boolean {
+  if ((error as { status?: unknown }).status === 401) return true;
   const message = error instanceof Error ? error.message : String(error);
-  return /account not found/i.test(message);
+  return /\bHTTP 401\b/.test(message) || /authentication required/i.test(message);
 }
 
 async function createAmaClient(env: Env, ownerId: string, projectId?: string) {

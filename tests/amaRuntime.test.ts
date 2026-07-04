@@ -44,24 +44,44 @@ function amaSession(body: any, id = "session_123") {
   };
 }
 
-// The per-user AMA token now comes from the linked AMA account via BetterAuth's
-// getAccessToken (auto-refreshed), not a client-credentials exchange. Stub
-// createAuth so amaRuntime resolves a deterministic token for the test owner.
-const getAccessTokenMock = vi.fn(async ({ body }: { body: { providerId: string; userId: string } }) => {
-  expect(body.providerId).toBe("ama");
-  expect(body.userId).toBe("owner_123");
-  return { accessToken: "user-token", accessTokenExpiresAt: new Date(Date.now() + 3600_000), scopes: [], idToken: undefined };
-});
-vi.mock("../apps/web/server/betterAuth", () => ({
-  createAuth: () => ({ api: { getAccessToken: getAccessTokenMock } }),
-}));
-
 import { createAmaSessionSecret, createAmaTaskSession, isAmaRuntimeConfigured } from "../apps/web/server/amaRuntime";
 import type { Env } from "../apps/web/server/types";
 
+const USER_ACCESS_TOKEN = "test.jwt.token";
+
+function linkedAccountDb(
+  account: { accessToken?: string; refreshToken?: string; accessTokenExpiresAt?: string; refreshTokenExpiresAt?: string | null } | null = {},
+): D1Database {
+  const row =
+    account === null
+      ? null
+      : {
+          id: "acct_ama_owner",
+          accessToken: account.accessToken ?? USER_ACCESS_TOKEN,
+          refreshToken: account.refreshToken ?? "refresh-token",
+          accessTokenExpiresAt: account.accessTokenExpiresAt ?? new Date(Date.now() + 3600_000).toISOString(),
+          refreshTokenExpiresAt: account.refreshTokenExpiresAt ?? null,
+        };
+  return {
+    prepare(sql: string) {
+      return {
+        bind() {
+          return {
+            first: async () => {
+              if (sql.includes("FROM account") && sql.includes("providerId = 'ama'")) return row;
+              return null;
+            },
+            run: async () => ({ success: true }),
+          };
+        },
+      };
+    },
+  } as unknown as D1Database;
+}
+
 function env(overrides: Partial<Env> = {}): Env {
   return {
-    DB: null as any,
+    DB: linkedAccountDb(),
     AE: null as any,
     EMAIL: null as any,
     TUNNEL_RELAY: null as any,
@@ -88,7 +108,6 @@ const OWNER = "owner_123";
 describe("AMA runtime adapter", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    getAccessTokenMock.mockClear();
   });
 
   it("reports configured when origin and the OAuth client exist", () => {
@@ -102,7 +121,7 @@ describe("AMA runtime adapter", () => {
       const req = await parseFetchArgs(input, init);
       if (req.url === "https://ama.test/api/v1/sessions") {
         expect(req.method).toBe("POST");
-        expect(req.header("authorization")).toBe("Bearer user-token");
+        expect(req.header("authorization")).toBe(`Bearer ${USER_ACCESS_TOKEN}`);
         expect(req.header("x-ama-project-id")).toBe("project_123");
         const body = JSON.parse(await req.body()) as Record<string, unknown>;
         expect(body).toEqual({
@@ -153,9 +172,8 @@ describe("AMA runtime adapter", () => {
       status: "pending",
       statusReason: null,
     });
-    // Only the AMA SDK call — the token comes from getAccessToken, not a fetch.
+    // Only the AMA SDK call — the linked account token comes from D1, not a fetch.
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(getAccessTokenMock).toHaveBeenCalledWith({ body: { providerId: "ama", userId: OWNER } });
   });
 
   it("stores runtime session secrets in AMA vault credentials", async () => {
@@ -163,7 +181,7 @@ describe("AMA runtime adapter", () => {
       const req = await parseFetchArgs(input, init);
       if (req.url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
         expect(req.method).toBe("POST");
-        expect(req.header("authorization")).toBe("Bearer user-token");
+        expect(req.header("authorization")).toBe(`Bearer ${USER_ACCESS_TOKEN}`);
         expect(req.header("x-ama-project-id")).toBe("project_123");
         const body = JSON.parse(await req.body()) as Record<string, any>;
         expect(body).toMatchObject({
@@ -194,7 +212,6 @@ describe("AMA runtime adapter", () => {
   });
 
   it("throws a clear error when the owner has no linked AMA account", async () => {
-    getAccessTokenMock.mockResolvedValueOnce({ accessToken: "", accessTokenExpiresAt: undefined, scopes: [], idToken: undefined } as any);
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
@@ -202,7 +219,7 @@ describe("AMA runtime adapter", () => {
       }),
     );
     await expect(
-      createAmaSessionSecret(env(), OWNER, {
+      createAmaSessionSecret(env({ DB: linkedAccountDb(null) }), OWNER, {
         projectId: "project_123",
         vaultId: "vault_123",
         name: "AK_AGENT_KEY_session_123",

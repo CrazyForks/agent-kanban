@@ -29,6 +29,7 @@ export async function hasAmaResources(db: D1, ownerId: string): Promise<boolean>
 function amaProviderPlugins(env: Env): BetterAuthPlugin[] {
   const issuer = env.AMA_OIDC_ISSUER;
   if (!issuer || !env.AMA_OIDC_CLIENT_ID || !env.AMA_OIDC_CLIENT_SECRET) return [];
+  const resource = amaOidcResource(env);
   return [
     genericOAuth({
       config: [
@@ -40,13 +41,14 @@ function amaProviderPlugins(env: Env): BetterAuthPlugin[] {
           authentication: "basic",
           scopes: amaOidcScopes(env),
           pkce: true,
+          ...(resource ? { authorizationUrlParams: { resource }, tokenUrlParams: { resource } } : {}),
         },
       ],
     }),
   ];
 }
 
-function oidcDiscoveryUrl(issuer: string): string {
+export function oidcDiscoveryUrl(issuer: string): string {
   return `${issuer.replace(/\/+$/, "")}/.well-known/openid-configuration`;
 }
 
@@ -56,6 +58,11 @@ function amaOidcScopes(env: Env): string[] {
       .split(/[\s,]+/)
       .filter(Boolean) ?? ["openid", "profile", "email", "offline_access"]
   );
+}
+
+export function amaOidcResource(env: Pick<Env, "AMA_ORIGIN">): string | null {
+  const origin = env.AMA_ORIGIN?.trim().replace(/\/+$/, "");
+  return origin || null;
 }
 
 export function createAuth(env: Env) {

@@ -3485,7 +3485,7 @@ describe("routes", () => {
       const url = new URL(body.url);
       expect(url.origin).toBe("wss://ama.test");
       expect(url.pathname).toBe("/api/v1/sessions/session_runtime_123/socket");
-      expect(url.searchParams.get("access_token")).toBe("user-token");
+      expect(url.searchParams.get("access_token")).toBe("test.jwt.token");
       expect(url.searchParams.get("x-ama-project-id")).toBe("project_runtime_123");
     } finally {
       Object.assign(env, previousAma);
@@ -3624,7 +3624,7 @@ describe("routes", () => {
       const url = new URL(body.url);
       expect(url.origin).toBe("wss://ama.test");
       expect(url.pathname).toBe("/api/v1/sessions/session_direct_ws/socket");
-      expect(url.searchParams.get("access_token")).toBe("user-token");
+      expect(url.searchParams.get("access_token")).toBe("test.jwt.token");
       expect(url.searchParams.get("x-ama-project-id")).toBe("project_direct_session_ws");
     } finally {
       Object.assign(env, previousAma);

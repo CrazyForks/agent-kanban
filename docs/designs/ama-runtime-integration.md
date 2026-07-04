@@ -93,14 +93,15 @@ from resume to restart (teardown + release) when the session is already dead.
 - AK resolves AMA project, environment, capabilities, and runner federation
   server-side
 - AK creates/refreshes the generic AMA external project binding
-- AK performs OAuth2 token exchange for runner access and refresh tokens
+- the CLI ensures `ama-runner` has a valid AMA device-login credential for the
+  onboarding AMA origin
 - the CLI starts `ama-runner`
 
-The runner credentials are written to an AK-owned runner config file with
-restricted permissions. `AMA_TOKEN` is removed from the child process
-environment. The runner command line contains the config path, AMA API server,
-project, environment, workdir, and concurrency because those are runner process
-inputs, but they are not exposed as AK CLI options.
+The runner credentials are written by `ama-runner` to an AK-owned credentials
+file with restricted permissions. `AMA_TOKEN` and `AMA_RUNNER_CONFIG` are
+removed from the child process environment. The runner command line contains
+the AMA API server, project, environment, workdir, and concurrency because
+those are runner process inputs, but they are not exposed as AK CLI options.
 
 ## Cloud Placement (AMA Sandbox Runtime)
 

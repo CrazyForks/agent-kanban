@@ -1345,7 +1345,7 @@ describe("POST /api/tasks/:id/reject AMA 409 handling", () => {
 // AMA calls now authenticate as the logged-in user's own linked AMA account
 // (BetterAuth getAccessToken), not a client-credentials exchange. These unit
 // tests use the shared test DB where OWNER has a seeded "ama" account whose
-// access token resolves to "user-token", so AMA SDK calls carry that bearer.
+// access token resolves to a JWT-shaped fixture, so AMA SDK calls carry that bearer.
 
 describe("amaRuntime requireEnv guards", () => {
   afterEach(() => {
@@ -1387,7 +1387,7 @@ describe("amaRuntime vault credential helpers", () => {
       const url = reqUrl(input);
       if (url === "https://ama.test/api/v1/vaults/vault_test/credentials/cred_test") {
         const authHeader = input instanceof Request ? input.headers.get("authorization") : (init?.headers as Record<string, string>)?.authorization;
-        expect(authHeader).toBe("Bearer user-token");
+        expect(authHeader).toBe("Bearer test.jwt.token");
         revokeCalls.push({ url, body: JSON.parse(await reqBody(input, init)) });
         return jsonResponse({ id: "cred_test", state: "revoked" }, 200);
       }

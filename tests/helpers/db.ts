@@ -73,15 +73,14 @@ export async function seedUser(db: D1Database, id: string, email: string) {
     .bind(id, "Test User", email, now, now)
     .run();
   // AK calls AMA as the logged-in user's own linked AMA account; seed that link
-  // so dispatch paths can resolve a per-user token (getAccessToken). AK stores
-  // OAuth tokens unencrypted, so a plaintext token with a future expiry is
-  // returned as-is, never triggering a refresh.
+  // so dispatch paths can resolve a per-user JWT token without triggering an
+  // OIDC refresh round-trip in tests.
   await linkAmaAccount(db, id);
 }
 
-// Links an AMA generic-OIDC account to the user with a long-lived access token
-// so BetterAuth's getAccessToken returns it without a refresh round-trip.
-export async function linkAmaAccount(db: D1Database, userId: string, accessToken = "user-token") {
+// Links an AMA generic-OIDC account to the user with a long-lived JWT-shaped
+// access token so AMA calls do not trigger a refresh round-trip in tests.
+export async function linkAmaAccount(db: D1Database, userId: string, accessToken = "test.jwt.token") {
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + 3600_000).toISOString();
   await db
