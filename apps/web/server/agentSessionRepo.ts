@@ -86,8 +86,11 @@ export async function bindAmaAgentSession(db: D1, sessionId: string, amaSessionI
   await db.prepare("UPDATE ama_agent_sessions SET ama_session_id = ? WHERE id = ?").bind(amaSessionId, sessionId).run();
 }
 
-export async function setAmaAgentSessionSecretCredential(db: D1, sessionId: string, credentialId: string | null): Promise<void> {
-  await db.prepare("UPDATE ama_agent_sessions SET secret_credential_id = ? WHERE id = ?").bind(credentialId, sessionId).run();
+export async function setAmaAgentSessionSecretRef(db: D1, sessionId: string, secretRef: string | null, credentialId: string | null): Promise<void> {
+  await db
+    .prepare("UPDATE ama_agent_sessions SET secret_ref = ?, secret_credential_id = ? WHERE id = ?")
+    .bind(secretRef, credentialId, sessionId)
+    .run();
 }
 
 // Absolute set (idempotent) — usage comes pre-aggregated from the AMA usage
@@ -110,11 +113,12 @@ export interface AmaAgentSessionRow {
   ama_session_id: string | null;
   status: "active" | "closed";
   secret_credential_id: string | null;
+  secret_ref: string | null;
 }
 
 export async function getAmaAgentSession(db: D1, sessionId: string): Promise<AmaAgentSessionRow | null> {
   return db
-    .prepare("SELECT id, owner_id, agent_id, ama_session_id, status, secret_credential_id FROM ama_agent_sessions WHERE id = ?")
+    .prepare("SELECT id, owner_id, agent_id, ama_session_id, status, secret_credential_id, secret_ref FROM ama_agent_sessions WHERE id = ?")
     .bind(sessionId)
     .first<AmaAgentSessionRow>();
 }

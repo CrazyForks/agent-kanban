@@ -135,8 +135,8 @@ describe("AMA runtime adapter", () => {
               {
                 type: "secret",
                 name: "AK_AGENT_KEY",
-                secretRef: "ama://vaults/vault_123/credentials/vaultcred_123/versions/vaultver_123",
-                key: "value",
+                secretRef: "ama://vaults/vault_123/credentials/vaultcred_123",
+                key: "AK_AGENT_KEY",
               },
             ],
             volumes: [{ name: "repo", type: "git_repository", url: "https://github.com/saltbo/agent-kanban.git" }],
@@ -161,7 +161,7 @@ describe("AMA runtime adapter", () => {
       initialPrompt: "Use AK CLI to claim and review the task.",
       resourceRefs: [{ type: "github_repository", owner: "saltbo", repo: "agent-kanban" }],
       runtimeEnv: { AK_API_URL: "https://ak.example.com", AK_AGENT_ID: "agent_123" },
-      runtimeSecretEnv: [{ name: "AK_AGENT_KEY", vaultId: "vault_123", credentialId: "vaultcred_123", versionId: "vaultver_123" }],
+      runtimeSecretEnv: [{ name: "AK_AGENT_KEY", vaultId: "vault_123", credentialId: "vaultcred_123", key: "AK_AGENT_KEY" }],
     });
 
     expect(dispatch).toEqual({
@@ -185,13 +185,13 @@ describe("AMA runtime adapter", () => {
         expect(req.header("x-ama-project-id")).toBe("project_123");
         const body = JSON.parse(await req.body()) as Record<string, any>;
         expect(body).toMatchObject({
-          name: "AK_AGENT_KEY_session_123",
+          name: "ak-session-session_123",
           type: "opaque",
-          metadata: { purpose: "agent-session" },
+          metadata: { akSessionId: "session_123" },
           secret: {
-            stringData: { value: '{"kty":"OKP"}' },
-            referenceName: "AK_AGENT_KEY_session_123",
-            metadata: { purpose: "agent-session" },
+            stringData: { AK_AGENT_KEY: '{"kty":"OKP"}' },
+            referenceName: "ak-session-session_123",
+            metadata: { akSessionId: "session_123" },
           },
         });
         return jsonResponse(amaCredential("vaultcred_123", "vaultver_123"), 201);
@@ -204,11 +204,15 @@ describe("AMA runtime adapter", () => {
       createAmaSessionSecret(env(), OWNER, {
         projectId: "project_123",
         vaultId: "vault_123",
-        name: "AK_AGENT_KEY_session_123",
-        secretValue: '{"kty":"OKP"}',
-        metadata: { purpose: "agent-session" },
+        name: "ak-session-session_123",
+        secretData: { AK_AGENT_KEY: '{"kty":"OKP"}' },
+        metadata: { akSessionId: "session_123" },
       }),
-    ).resolves.toEqual({ credentialId: "vaultcred_123", activeVersionId: "vaultver_123" });
+    ).resolves.toEqual({
+      credentialId: "vaultcred_123",
+      activeVersionId: "vaultver_123",
+      secretRef: "ama://vaults/vault_123/credentials/vaultcred_123",
+    });
   });
 
   it("throws a clear error when the owner has no linked AMA account", async () => {

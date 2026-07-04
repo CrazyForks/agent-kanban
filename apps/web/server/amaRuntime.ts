@@ -33,10 +33,17 @@ export interface AmaRuntimeSecretRef {
   vaultId: string;
   credentialId: string;
   versionId?: string | null;
+  items?: AmaSecretItem[];
 }
 
 export interface AmaRuntimeSecretEnvRef extends AmaRuntimeSecretRef {
   name: string;
+  key?: string;
+}
+
+export interface AmaSecretItem {
+  key: string;
+  path: string;
 }
 
 export interface AmaTaskSessionInput {
@@ -99,13 +106,15 @@ export interface AmaSessionSecretInput {
   projectId: string;
   vaultId: string;
   name: string;
-  secretValue: string;
+  secretValue?: string;
+  secretData?: Record<string, string>;
   metadata?: Record<string, unknown>;
 }
 
 export interface AmaSessionSecret {
   credentialId: string;
   activeVersionId: string;
+  secretRef: string;
 }
 
 interface AmaLinkedAccountRow {
@@ -301,6 +310,13 @@ export interface AmaVault {
   id: string;
 }
 
+export interface AmaVaultCredential {
+  id: string;
+  name: string;
+  dataKeys: string[];
+  state: string;
+}
+
 export interface AmaEnvironmentInput {
   projectId: string;
   name: string;
@@ -396,20 +412,26 @@ function credentialVersionSecretRef(entry: Pick<AmaRuntimeSecretEnvRef, "vaultId
   return `ama://vaults/${vaultId}/credentials/${credentialId}`;
 }
 
+export function amaCredentialSecretRef(vaultId: string, credentialId: string): string {
+  return credentialVersionSecretRef({ vaultId, credentialId });
+}
+
 function toAmaEnvFrom(entries: AmaRuntimeSecretEnvRef[]): EnvFromEntry[] {
   return entries.map((entry) => ({
     type: "secret",
     name: entry.name,
     secretRef: credentialVersionSecretRef(entry),
-    key: "value",
+    key: entry.key ?? "value",
   }));
 }
+
+type VolumeWithSecretItems = Volume & { items?: AmaSecretItem[] };
 
 function toAmaRuntimeResources(
   resourceRefs: AmaResourceRef[],
   gitCredentialSecret: AmaRuntimeSecretRef | null,
 ): { volumes: Volume[]; volumeMounts: VolumeMount[] } {
-  const volumes: Volume[] = [];
+  const volumes: VolumeWithSecretItems[] = [];
   const volumeMounts: VolumeMount[] = [];
   for (const [index, resource] of resourceRefs.entries()) {
     if (resource.type === "github_repository" && typeof resource.owner === "string" && typeof resource.repo === "string") {
@@ -419,6 +441,7 @@ function toAmaRuntimeResources(
         type: "git_repository",
         url: `https://github.com/${resource.owner}/${resource.repo}.git`,
         ...(gitCredentialSecret ? { secretRef: credentialVersionSecretRef(gitCredentialSecret) } : {}),
+        ...(gitCredentialSecret?.items ? { items: gitCredentialSecret.items } : {}),
       });
       volumeMounts.push({ name, mountPath: `/workspace/repos/github.com/${resource.owner}/${resource.repo}` });
     }
@@ -434,7 +457,7 @@ function toAmaRuntimeResources(
       volumeMounts.push({ name, mountPath: `/workspace/.ama/memory-stores/${encodeURIComponent(resource.storeId)}`, readOnly });
     }
   }
-  return { volumes, volumeMounts };
+  return { volumes: volumes as Volume[], volumeMounts };
 }
 
 function triggerTemplateMetadata(metadata: Record<string, unknown> | undefined) {
@@ -593,6 +616,7 @@ export async function createAmaVault(env: Env, ownerId: string, input: AmaVaultI
   const vault = await withAmaErrorDetails("create vault", () =>
     client.vaults.create({
       metadata: {
+        ...(input.metadata ?? {}),
         name: input.name,
         description: input.description ?? null,
       },
@@ -600,6 +624,17 @@ export async function createAmaVault(env: Env, ownerId: string, input: AmaVaultI
     }),
   );
   return { id: vault.metadata.uid };
+}
+
+export async function listAmaVaultCredentials(env: Env, ownerId: string, projectId: string, vaultId: string): Promise<AmaVaultCredential[]> {
+  const client = await createAmaClient(env, ownerId, projectId);
+  const page = await withAmaErrorDetails("list vault credentials", () => client.vaults.listCredentials(vaultId, { limit: 100 }));
+  return page.data.map((credential) => ({
+    id: credential.metadata.uid,
+    name: credential.metadata.name,
+    state: credential.status.phase,
+    dataKeys: credential.status.activeVersion?.spec.dataKeys ?? [],
+  }));
 }
 
 export async function createAmaEnvironment(env: Env, ownerId: string, input: AmaEnvironmentInput): Promise<AmaEnvironment> {
@@ -723,12 +758,16 @@ export function resolveAmaProviderModelProfile(input: { runtime: string; preferr
 
 export async function createAmaSessionSecret(env: Env, ownerId: string, input: AmaSessionSecretInput): Promise<AmaSessionSecret> {
   const client = await createAmaClient(env, ownerId, input.projectId);
+  const stringData = input.secretData ?? (input.secretValue !== undefined ? { value: input.secretValue } : null);
+  if (!stringData || Object.keys(stringData).length === 0) {
+    throw new Error("AMA vault credential requires at least one secret data key");
+  }
   const credential = await client.vaults.createCredential(input.vaultId, {
     name: input.name,
     type: "opaque",
     metadata: input.metadata ?? {},
     secret: {
-      stringData: { value: input.secretValue },
+      stringData,
       referenceName: input.name,
       metadata: input.metadata ?? {},
     },
@@ -736,7 +775,11 @@ export async function createAmaSessionSecret(env: Env, ownerId: string, input: A
   if (!credential.status.activeVersionId) {
     throw new Error("AMA vault credential response did not include activeVersionId");
   }
-  return { credentialId: credential.metadata.uid, activeVersionId: credential.status.activeVersionId };
+  return {
+    credentialId: credential.metadata.uid,
+    activeVersionId: credential.status.activeVersionId,
+    secretRef: credentialVersionSecretRef({ vaultId: input.vaultId, credentialId: credential.metadata.uid }),
+  };
 }
 
 export interface AmaSessionUsageTotals {

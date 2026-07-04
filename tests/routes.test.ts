@@ -47,6 +47,22 @@ function amaCredential(id: string, activeVersionId?: string) {
   return { metadata: { uid: id }, spec: {}, status: { activeVersionId } };
 }
 
+function amaCredentialListItem(id: string, name: string, dataKeys: string[], state = "active") {
+  return {
+    metadata: { uid: id, name },
+    spec: {},
+    status: { phase: state, activeVersion: { spec: { dataKeys } } },
+  };
+}
+
+function amaVault(id: string, projectId = "project_123") {
+  return {
+    metadata: { uid: id, projectId, name: id, description: null, archivedAt: null },
+    spec: { scope: "project" },
+    status: {},
+  };
+}
+
 function amaAgent(id: string, input: { projectId?: string; name?: string; provider?: string; model?: string | null } = {}) {
   return {
     metadata: {
@@ -69,8 +85,8 @@ function amaAgent(id: string, input: { projectId?: string; name?: string; provid
   };
 }
 
-function amaCredentialSecretRef(vaultId: string, credentialId: string, versionId: string) {
-  return `ama://vaults/${vaultId}/credentials/${credentialId}/versions/${versionId}`;
+function amaCredentialSecretRef(vaultId: string, credentialId: string, _versionId?: string) {
+  return `ama://vaults/${vaultId}/credentials/${credentialId}`;
 }
 
 function amaMemoryStore(id: string, name: string, projectId = "project_123") {
@@ -433,6 +449,7 @@ describe("routes", () => {
     // The AMA agent is created eagerly at agent creation; the maintainer route
     // now reads the stored ama_agent_id and reconciles config (read + update).
     await setAgentAmaId(env.DB, maintainerAgent.id, "ama_agent_maintainer");
+    const boardVaultRequests: any[] = [];
     const memoryStoreRequests: any[] = [];
     const memoryRequests: any[] = [];
     const sessionSecretRequests: any[] = [];
@@ -468,21 +485,34 @@ describe("routes", () => {
         expect(body.spec.skills).toEqual(["saltbo/agent-kanban@agent-kanban", "saltbo/agent-kanban@ak-maintainer"]);
         return jsonResponse(amaAgent("ama_agent_maintainer", { projectId: "project_123", provider: "openai", model: "gpt-5.3-codex" }));
       }
-      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials" && method === "POST") {
+      if (url === "https://ama.test/api/v1/vaults" && method === "POST") {
+        const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
+        boardVaultRequests.push(body);
+        expect(body.metadata).toMatchObject({
+          name: `${maintainerBoard.name} variables`,
+          description: `Runtime variables for AK board ${maintainerBoard.id}.`,
+          boardId: maintainerBoard.id,
+        });
+        expect(body.spec).toEqual({ scope: "project" });
+        return jsonResponse(amaVault("vault_maintainer_board"), 201);
+      }
+      if (url === "https://ama.test/api/v1/vaults/vault_maintainer_board/credentials" && method === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         sessionSecretRequests.push(body);
-        expect(body.name).toMatch(/^AK_API_KEY_/);
+        expect(body.name).toBe("ak-variables");
         expect(body.type).toBe("opaque");
         expect(body.metadata).toEqual({
-          purpose: "board-maintainer-api-key",
           boardId: maintainerBoard.id,
           maintainerId: expect.any(String),
           agentId: maintainerAgent.id,
         });
-        expect(body.secret.referenceName).toBe(body.name);
-        expect(body.secret.stringData.value).toMatch(/^ak_maint_/);
-        maintainerApiKey = body.secret.stringData.value;
+        expect(body.secret.referenceName).toBe("ak-variables");
+        expect(body.secret.stringData.AK_API_KEY).toMatch(/^ak_maint_/);
+        maintainerApiKey = body.secret.stringData.AK_API_KEY;
         return jsonResponse(amaCredential("vaultcred_maintainer", "vaultver_maintainer"), 201);
+      }
+      if (url === "https://ama.test/api/v1/vaults/vault_maintainer_board/credentials?limit=100" && method === "GET") {
+        return jsonResponse({ data: [amaCredentialListItem("vaultcred_maintainer", "ak-variables", ["AK_API_KEY"])] });
       }
       if (url === "https://ama.test/api/v1/memory-stores" && method === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
@@ -528,8 +558,8 @@ describe("routes", () => {
           {
             type: "secret",
             name: "AK_API_KEY",
-            secretRef: amaCredentialSecretRef("vault_123", "vaultcred_maintainer", "vaultver_maintainer"),
-            key: "value",
+            secretRef: amaCredentialSecretRef("vault_maintainer_board", "vaultcred_maintainer"),
+            key: "AK_API_KEY",
           },
         ]);
         expect(spec.promptTemplate).not.toContain("maintainer-org/maintainer-repo");
@@ -733,6 +763,7 @@ describe("routes", () => {
       expect(maintainer).not.toHaveProperty("repository_id");
       expect(maintainer).not.toHaveProperty("ama_schedule_id");
       expect(maintainer).not.toHaveProperty("last_ama_session_id");
+      expect(maintainer).not.toHaveProperty("ama_board_vault_id");
       expect(maintainer).not.toHaveProperty("api_key_id");
       expect(maintainer).not.toHaveProperty("api_key_credential_id");
       expect(maintainer).not.toHaveProperty("api_key_credential_version_id");
@@ -766,6 +797,7 @@ describe("routes", () => {
       });
       expect(maintainer.latest_run).not.toHaveProperty("sessionId");
       expect(maintainer.latest_run).not.toHaveProperty("scheduledFor");
+      expect(boardVaultRequests).toHaveLength(1);
       expect(memoryStoreRequests).toHaveLength(1);
       expect(memoryRequests).toHaveLength(0);
       expect(sessionSecretRequests).toHaveLength(1);
@@ -806,26 +838,24 @@ describe("routes", () => {
         .first<{ count: number }>();
       expect(sessionBeforeLogin?.count).toBe(0);
       const maintainerRow = await env.DB.prepare(
-        "SELECT ama_schedule_id, ama_http_trigger_id, ama_memory_store_id, heartbeat_enabled, api_key_id, api_key_credential_id, api_key_credential_version_id FROM board_maintainers WHERE id = ?",
+        "SELECT ama_schedule_id, ama_http_trigger_id, ama_memory_store_id, ama_board_vault_id, heartbeat_enabled, api_key_id FROM board_maintainers WHERE id = ?",
       )
         .bind(maintainer.id)
         .first<{
           ama_schedule_id: string;
           ama_http_trigger_id: string;
           ama_memory_store_id: string;
+          ama_board_vault_id: string;
           heartbeat_enabled: number;
           api_key_id: string;
-          api_key_credential_id: string;
-          api_key_credential_version_id: string;
         }>();
       expect(maintainerRow).toMatchObject({
         ama_schedule_id: "sched_maintainer",
         ama_http_trigger_id: "http_maintainer",
         ama_memory_store_id: "mem_maintainer",
+        ama_board_vault_id: "vault_maintainer_board",
         heartbeat_enabled: 1,
         api_key_id: expect.any(String),
-        api_key_credential_id: "vaultcred_maintainer",
-        api_key_credential_version_id: "vaultver_maintainer",
       });
       expect(maintainerApiKey).toEqual(expect.any(String));
       const { publicKey } = (await crypto.subtle.generateKey({ name: "Ed25519" } as any, true, ["sign", "verify"])) as CryptoKeyPair;
@@ -882,6 +912,7 @@ describe("routes", () => {
       expect(detail).not.toHaveProperty("ama_schedule_id");
       expect(detail).not.toHaveProperty("ama_http_trigger_id");
       expect(detail).not.toHaveProperty("ama_memory_store_id");
+      expect(detail).not.toHaveProperty("ama_board_vault_id");
       expect(detail).not.toHaveProperty("api_key_id");
       expect(detail).not.toHaveProperty("api_key_credential_id");
       expect(detail).not.toHaveProperty("api_key_credential_version_id");
@@ -911,8 +942,8 @@ describe("routes", () => {
                   {
                     type: "secret",
                     name: "AK_API_KEY",
-                    secretRef: amaCredentialSecretRef("vault_123", "vaultcred_maintainer", "vaultver_maintainer"),
-                    key: "value",
+                    secretRef: amaCredentialSecretRef("vault_maintainer_board", "vaultcred_maintainer"),
+                    key: "AK_API_KEY",
                   },
                 ],
               },
@@ -1156,8 +1187,14 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/agents/ama_agent_patch" && reqMethod(input, init) === "PATCH") {
         return jsonResponse(amaAgent("ama_agent_patch", { projectId: amaProjectId, provider: "openai", model: "gpt-5.3-codex" }));
       }
-      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials" && reqMethod(input, init) === "POST") {
+      if (url === "https://ama.test/api/v1/vaults" && reqMethod(input, init) === "POST") {
+        return jsonResponse(amaVault("vault_patch_board", amaProjectId), 201);
+      }
+      if (url === "https://ama.test/api/v1/vaults/vault_patch_board/credentials" && reqMethod(input, init) === "POST") {
         return jsonResponse(amaCredential("vaultcred_patch", "vaultver_patch"), 201);
+      }
+      if (url === "https://ama.test/api/v1/vaults/vault_patch_board/credentials?limit=100" && reqMethod(input, init) === "GET") {
+        return jsonResponse({ data: [amaCredentialListItem("vaultcred_patch", "ak-variables", ["AK_API_KEY"])] });
       }
       if (url === "https://ama.test/api/v1/memory-stores" && reqMethod(input, init) === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
@@ -1283,8 +1320,14 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/agents/ama_agent_delete" && reqMethod(input, init) === "PATCH") {
         return jsonResponse(amaAgent("ama_agent_delete", { projectId: amaProjectId, provider: "openai", model: "gpt-5.3-codex" }));
       }
-      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials" && reqMethod(input, init) === "POST") {
+      if (url === "https://ama.test/api/v1/vaults" && reqMethod(input, init) === "POST") {
+        return jsonResponse(amaVault("vault_delete_board", amaProjectId), 201);
+      }
+      if (url === "https://ama.test/api/v1/vaults/vault_delete_board/credentials" && reqMethod(input, init) === "POST") {
         return jsonResponse(amaCredential("vaultcred_delete", "vaultver_delete"), 201);
+      }
+      if (url === "https://ama.test/api/v1/vaults/vault_delete_board/credentials?limit=100" && reqMethod(input, init) === "GET") {
+        return jsonResponse({ data: [amaCredentialListItem("vaultcred_delete", "ak-variables", ["AK_API_KEY"])] });
       }
       if (url === "https://ama.test/api/v1/memory-stores" && reqMethod(input, init) === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
@@ -2503,8 +2546,9 @@ describe("routes", () => {
       }
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        expect(body.secret.stringData.value).toContain('"kty":"OKP"');
-        runtimePrivateKeyJwk = JSON.parse(body.secret.stringData.value) as JsonWebKey;
+        expect(body.name).toMatch(/^ak-session-/);
+        expect(body.secret.stringData.AK_AGENT_KEY).toContain('"kty":"OKP"');
+        runtimePrivateKeyJwk = JSON.parse(body.secret.stringData.AK_AGENT_KEY) as JsonWebKey;
         return jsonResponse(amaCredential("vaultcred_123", "vaultver_123"), 201);
       }
       if (url === "https://ama.test/api/v1/sessions") {
@@ -2520,7 +2564,7 @@ describe("routes", () => {
         });
         expect(body.spec.env.AK_SESSION_ID).toEqual(expect.any(String));
         expect(body.spec.envFrom).toEqual([
-          { type: "secret", name: "AK_AGENT_KEY", secretRef: amaCredentialSecretRef("vault_123", "vaultcred_123", "vaultver_123"), key: "value" },
+          { type: "secret", name: "AK_AGENT_KEY", secretRef: amaCredentialSecretRef("vault_123", "vaultcred_123"), key: "AK_AGENT_KEY" },
         ]);
         expect(body.prompt).toContain(`ak describe task`);
         expect(body.prompt).toContain("do not use the ak-task leader workflow");

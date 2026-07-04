@@ -8,6 +8,7 @@ export interface BoardMaintainer {
   ama_schedule_id: string;
   ama_http_trigger_id: string | null;
   ama_memory_store_id: string | null;
+  ama_board_vault_id: string | null;
   prompt: string;
   interval_seconds: number;
   heartbeat_enabled: boolean;
@@ -16,8 +17,6 @@ export interface BoardMaintainer {
   last_ama_session_id: string | null;
   last_error_message: string | null;
   api_key_id: string | null;
-  api_key_credential_id: string | null;
-  api_key_credential_version_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -29,13 +28,12 @@ export interface CreateBoardMaintainerInput {
   amaScheduleId: string;
   amaHttpTriggerId: string;
   amaMemoryStoreId: string;
+  amaBoardVaultId?: string | null;
   prompt: string;
   intervalSeconds: number;
   heartbeatEnabled: boolean;
   status: "active" | "paused";
   apiKeyId?: string | null;
-  apiKeyCredentialId?: string | null;
-  apiKeyCredentialVersionId?: string | null;
 }
 
 export interface UpdateBoardMaintainerInput {
@@ -61,9 +59,9 @@ export async function createBoardMaintainer(db: D1, ownerId: string, input: Crea
   await db
     .prepare(
       `INSERT INTO board_maintainers (
-        id, owner_id, board_id, agent_id, ama_schedule_id, ama_http_trigger_id, ama_memory_store_id,
-        prompt, interval_seconds, heartbeat_enabled, status, api_key_id, api_key_credential_id, api_key_credential_version_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id, owner_id, board_id, agent_id, ama_schedule_id, ama_http_trigger_id, ama_memory_store_id, ama_board_vault_id,
+        prompt, interval_seconds, heartbeat_enabled, status, api_key_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -73,13 +71,12 @@ export async function createBoardMaintainer(db: D1, ownerId: string, input: Crea
       input.amaScheduleId,
       input.amaHttpTriggerId,
       input.amaMemoryStoreId,
+      input.amaBoardVaultId ?? null,
       input.prompt,
       input.intervalSeconds,
       input.heartbeatEnabled ? 1 : 0,
       input.status,
       input.apiKeyId ?? null,
-      input.apiKeyCredentialId ?? null,
-      input.apiKeyCredentialVersionId ?? null,
       now,
       now,
     )
@@ -138,6 +135,20 @@ export async function updateBoardMaintainer(
     .bind(...values)
     .run();
   return await getBoardMaintainer(db, ownerId, boardId, maintainerId);
+}
+
+export async function setBoardMaintainerVaultId(db: D1, ownerId: string, boardId: string, maintainerId: string, vaultId: string): Promise<void> {
+  await db
+    .prepare("UPDATE board_maintainers SET ama_board_vault_id = ?, updated_at = ? WHERE owner_id = ? AND board_id = ? AND id = ?")
+    .bind(vaultId, new Date().toISOString(), ownerId, boardId, maintainerId)
+    .run();
+}
+
+export async function setBoardMaintainerApiKeyId(db: D1, ownerId: string, boardId: string, maintainerId: string, apiKeyId: string): Promise<void> {
+  await db
+    .prepare("UPDATE board_maintainers SET api_key_id = ?, updated_at = ? WHERE owner_id = ? AND board_id = ? AND id = ?")
+    .bind(apiKeyId, new Date().toISOString(), ownerId, boardId, maintainerId)
+    .run();
 }
 
 export async function deleteBoardMaintainer(db: D1, ownerId: string, boardId: string, maintainerId: string): Promise<boolean> {

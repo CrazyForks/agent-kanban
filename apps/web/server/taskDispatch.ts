@@ -6,7 +6,7 @@ import {
   closeSession,
   createAmaAgentSession,
   getAmaAgentSession,
-  setAmaAgentSessionSecretCredential,
+  setAmaAgentSessionSecretRef,
   setAmaAgentSessionUsageTotals,
 } from "./agentSessionRepo";
 import { getAmaProjectId, requireAmaProjectId, resolveAmaProjectId, resolveAmaSessionSecretVaultId } from "./amaOwnerIntegrationRepo";
@@ -17,9 +17,11 @@ import {
   createAmaAgent,
   createAmaSessionSecret,
   createAmaTaskSession,
+  createAmaVault,
   isAmaRuntimeConfigured,
   isAmaTaskDispatchConfigured,
   listAmaRunners,
+  listAmaVaultCredentials,
   readAmaAgent,
   readAmaSession,
   readAmaSessionUsageTotals,
@@ -28,6 +30,7 @@ import {
   sendAmaSessionMessage,
   updateAmaAgentConfig,
 } from "./amaRuntime";
+import { setBoardMaintainerVaultId } from "./boardMaintainerRepo";
 import type { D1 } from "./db";
 import { isGithubAppConfigured, mintGithubInstallationToken } from "./githubApp";
 import { createLogger } from "./logger";
@@ -41,6 +44,13 @@ import type { Env } from "./types";
 type Annotations = Record<string, unknown>;
 
 const logger = createLogger("taskDispatch");
+
+export const AK_VARIABLES_CREDENTIAL_NAME = "ak-variables";
+export const USER_VARIABLES_CREDENTIAL_NAME = "user-variables";
+export const AK_SESSION_CREDENTIAL_PREFIX = "ak-session-";
+const AK_AGENT_KEY_DATA_KEY = "AK_AGENT_KEY";
+const GH_USERNAME_DATA_KEY = "GH_USERNAME";
+const GH_TOKEN_DATA_KEY = "GH_TOKEN";
 
 export async function dispatchTaskToAma(
   db: D1,
@@ -124,30 +134,30 @@ export async function dispatchTaskToAma(
   }
 
   const sessionIdentity = await createAkAgentSessionIdentity(db, env, ownerId, assignedTo);
-  const vaultId = await resolveAmaSessionSecretVaultId(db, env, ownerId);
+  const taskSecretVault = await resolveTaskSecretVault(db, env, ownerId, amaProjectId, task.board_id);
+  const vaultId = taskSecretVault.vaultId;
   // A cloud sandbox has no AK skill install or gh CLI, so its session gets the
   // self-contained step-by-step prompt regardless of the agent's runtime.
   const cloudDispatch = Boolean(cloudCandidate);
   const resourceRefs = await taskResourceRefs(db, task);
-  const githubCloneCredentialSecret = await githubCloneCredentialSecretRef(
-    env,
-    ownerId,
-    amaProjectId,
-    vaultId,
-    sessionIdentity.sessionId,
-    resourceRefs,
-  );
+  const githubCloneCredential = await githubCloneCredentialData(env, resourceRefs);
+  const boardRuntimeSecretEnv = taskSecretVault.boardScoped
+    ? await amaRuntimeSecretEnvForCredentialNames(env, ownerId, amaProjectId, vaultId, [USER_VARIABLES_CREDENTIAL_NAME])
+    : [];
   let secret: Awaited<ReturnType<typeof createAmaSessionSecret>> | null = null;
   let dispatch: Awaited<ReturnType<typeof createAmaTaskSession>> | null = null;
   try {
     secret = await createAmaSessionSecret(env, ownerId, {
       projectId: amaProjectId,
       vaultId,
-      name: secretReferenceName(sessionIdentity.sessionId),
-      secretValue: JSON.stringify(sessionIdentity.privateKeyJwk),
-      metadata: { purpose: "agent-session" },
+      name: sessionCredentialName(sessionIdentity.sessionId),
+      secretData: {
+        [AK_AGENT_KEY_DATA_KEY]: JSON.stringify(sessionIdentity.privateKeyJwk),
+        ...(githubCloneCredential?.secretData ?? {}),
+      },
+      metadata: { akSessionId: sessionIdentity.sessionId, ...(githubCloneCredential?.metadata ?? {}) },
     });
-    await setAmaAgentSessionSecretCredential(db, sessionIdentity.sessionId, secret.credentialId);
+    await setAmaAgentSessionSecretRef(db, sessionIdentity.sessionId, secret.secretRef, secret.credentialId);
 
     dispatch = await createAmaTaskSession(env, ownerId, {
       projectId: amaProjectId,
@@ -157,7 +167,16 @@ export async function dispatchTaskToAma(
       title: `AK task ${task.id}: ${task.title}`,
       initialPrompt: cloudDispatch ? cloudTaskInitialPrompt(task, resourceRefs) : taskInitialPrompt(task),
       resourceRefs,
-      gitCredentialSecret: githubCloneCredentialSecret,
+      gitCredentialSecret: githubCloneCredential
+        ? {
+            vaultId,
+            credentialId: secret.credentialId,
+            items: [
+              { key: GH_USERNAME_DATA_KEY, path: "username" },
+              { key: GH_TOKEN_DATA_KEY, path: "password" },
+            ],
+          }
+        : null,
       runtimeEnv: {
         AK_WORKER: "1",
         AK_AGENT_ID: assignedTo,
@@ -166,7 +185,10 @@ export async function dispatchTaskToAma(
         ...(cloudDispatch ? cloudSandboxHomeEnv() : {}),
         ...agentGitIdentityEnv(akAgent),
       },
-      runtimeSecretEnv: [{ name: "AK_AGENT_KEY", vaultId, credentialId: secret.credentialId, versionId: secret.activeVersionId }],
+      runtimeSecretEnv: [
+        ...boardRuntimeSecretEnv,
+        { name: AK_AGENT_KEY_DATA_KEY, vaultId, credentialId: secret.credentialId, key: AK_AGENT_KEY_DATA_KEY },
+      ],
     });
     await bindAmaAgentSession(db, sessionIdentity.sessionId, dispatch.sessionId);
   } catch (error) {
@@ -194,7 +216,6 @@ export async function dispatchTaskToAma(
     agentSessionId: sessionIdentity.sessionId,
     "ama.dispatch.result": "accepted",
     "ama.dispatch.lastReason": null,
-    ...(githubCloneCredentialSecret?.credentialId ? { "ama.ghCredentialId": githubCloneCredentialSecret.credentialId } : {}),
   });
   // Timeline entry last: a crash here leaves the task correctly marked accepted,
   // just missing one cosmetic note (better than a note with no accepted state).
@@ -341,6 +362,71 @@ function amaAgentHandoffPolicy(handoffTo: string[] | null | undefined) {
 
 export function amaRuntimeName(runtime: string): string {
   return runtime === "claude" ? "claude-code" : runtime;
+}
+
+export async function amaRuntimeSecretEnvForCredentialNames(
+  env: Env,
+  ownerId: string,
+  projectId: string,
+  vaultId: string,
+  credentialNames: string[],
+) {
+  const credentials = await listAmaVaultCredentials(env, ownerId, projectId, vaultId);
+  const entries: { name: string; vaultId: string; credentialId: string; key: string }[] = [];
+  const envNames = new Set<string>();
+  for (const credentialName of credentialNames) {
+    const matches = credentials.filter((credential) => credential.state === "active" && credential.name === credentialName);
+    if (matches.length > 1) {
+      throw new Error(`AMA vault ${vaultId} has multiple active credentials named ${credentialName}`);
+    }
+    const credential = matches[0];
+    if (!credential) continue;
+    for (const key of credential.dataKeys) {
+      if (envNames.has(key)) {
+        throw new Error(`AMA vault ${vaultId} projects duplicate runtime environment variable ${key}`);
+      }
+      envNames.add(key);
+      entries.push({ name: key, vaultId, credentialId: credential.id, key });
+    }
+  }
+  return entries;
+}
+
+async function resolveTaskSecretVault(
+  db: D1,
+  env: Env,
+  ownerId: string,
+  projectId: string,
+  boardId: string,
+): Promise<{ vaultId: string; boardScoped: boolean }> {
+  const maintainer = await db
+    .prepare(
+      `
+      SELECT bm.id, bm.ama_board_vault_id, b.name AS board_name
+      FROM board_maintainers bm
+      JOIN boards b ON b.id = bm.board_id AND b.owner_id = bm.owner_id
+      WHERE bm.owner_id = ? AND bm.board_id = ? AND bm.status != 'archived'
+      ORDER BY bm.created_at DESC
+      LIMIT 1
+    `,
+    )
+    .bind(ownerId, boardId)
+    .first<{ id: string; ama_board_vault_id: string | null; board_name: string }>();
+  if (!maintainer) {
+    return { vaultId: await resolveAmaSessionSecretVaultId(db, env, ownerId), boardScoped: false };
+  }
+  if (maintainer.ama_board_vault_id) {
+    return { vaultId: maintainer.ama_board_vault_id, boardScoped: true };
+  }
+  const vault = await createAmaVault(env, ownerId, {
+    projectId,
+    name: `${maintainer.board_name} variables`,
+    description: `Runtime variables for AK board ${boardId}.`,
+    scope: "project",
+    metadata: { boardId },
+  });
+  await setBoardMaintainerVaultId(db, ownerId, boardId, maintainer.id, vault.id);
+  return { vaultId: vault.id, boardScoped: true };
 }
 
 // Commits made by the agent carry its AK identity, not the host user's
@@ -536,11 +622,29 @@ async function collectAkAgentSessionUsage(db: D1, env: Env, akSessionId: string)
 async function revokeAkAgentSessionSecret(db: D1, env: Env, akSessionId: string): Promise<void> {
   if (!isAmaRuntimeConfigured(env)) return;
   const session = await getAmaAgentSession(db, akSessionId);
-  if (!session?.secret_credential_id) return;
+  if (!session?.secret_ref && !session?.secret_credential_id) return;
   const projectId = await resolveAmaProjectId(db, env, session.owner_id);
-  const vaultId = await resolveAmaSessionSecretVaultId(db, env, session.owner_id);
-  await revokeAmaVaultCredential(env, session.owner_id, projectId, vaultId, session.secret_credential_id);
-  await setAmaAgentSessionSecretCredential(db, akSessionId, null);
+  const identity = session.secret_ref ? credentialIdentityFromSecretRef(session.secret_ref) : null;
+  if (identity) {
+    await revokeAmaVaultCredential(env, session.owner_id, projectId, identity.vaultId, identity.credentialId);
+  } else if (session.secret_credential_id) {
+    const vaultId = await resolveAmaSessionSecretVaultId(db, env, session.owner_id);
+    await revokeAmaVaultCredential(env, session.owner_id, projectId, vaultId, session.secret_credential_id);
+  }
+  await setAmaAgentSessionSecretRef(db, akSessionId, null, null);
+}
+
+function credentialIdentityFromSecretRef(secretRef: string): { vaultId: string; credentialId: string } | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(secretRef);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "ama:" || parsed.hostname !== "vaults") return null;
+  const segments = parsed.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  if (segments.length !== 3 || segments[1] !== "credentials") return null;
+  return { vaultId: segments[0]!, credentialId: segments[2]! };
 }
 
 // Marks the task as being dispatched. The conditional update is the lock:
@@ -886,25 +990,20 @@ function cloudTaskInitialPrompt(task: Task, resourceRefs: { owner: string; repo:
 // No fallback — a task with no repo gets no token; if the App is configured but
 // not installed on the repo, minting throws and dispatch fails loudly rather
 // than cloning with a shared long-lived credential.
-async function githubCloneCredentialSecretRef(
+async function githubCloneCredentialData(
   env: Env,
-  ownerId: string,
-  projectId: string,
-  vaultId: string,
-  akSessionId: string,
   resourceRefs: { owner: string; repo: string }[],
-): Promise<{ vaultId: string; credentialId: string; versionId?: string | null } | null> {
+): Promise<{ secretData: Record<string, string>; metadata: Record<string, unknown> } | null> {
   const repo = resourceRefs[0];
   if (!repo || !isGithubAppConfigured(env)) return null;
   const minted = await mintGithubInstallationToken(env, repo.owner, repo.repo);
-  const secret = await createAmaSessionSecret(env, ownerId, {
-    projectId,
-    vaultId,
-    name: `GH_CLONE_TOKEN_${akSessionId.replaceAll(/[^A-Za-z0-9_]/g, "_")}`,
-    secretValue: minted.token,
-    metadata: { purpose: "github-clone-installation-token", repository: `${repo.owner}/${repo.repo}`, expiresAt: minted.expiresAt },
-  });
-  return { vaultId, credentialId: secret.credentialId, versionId: secret.activeVersionId };
+  return {
+    secretData: {
+      [GH_USERNAME_DATA_KEY]: "x-access-token",
+      [GH_TOKEN_DATA_KEY]: minted.token,
+    },
+    metadata: { repository: `${repo.owner}/${repo.repo}`, githubTokenExpiresAt: minted.expiresAt },
+  };
 }
 
 async function taskResourceRefs(db: D1, task: Task) {
@@ -916,8 +1015,8 @@ async function taskResourceRefs(db: D1, task: Task) {
 
 export { githubRepoRef } from "./repositoryRepo";
 
-export function secretReferenceName(sessionId: string) {
-  return `AK_AGENT_KEY_${sessionId.replaceAll(/[^A-Za-z0-9_]/g, "_")}`;
+export function sessionCredentialName(sessionId: string) {
+  return `${AK_SESSION_CREDENTIAL_PREFIX}${sessionId.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
 }
 
 export function apiUrl(env: Env, requestOrigin: string) {

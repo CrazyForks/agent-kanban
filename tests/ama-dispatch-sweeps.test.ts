@@ -1902,8 +1902,21 @@ describe("dispatchTaskToAma — GitHub clone credential (GitHub App installation
     const env = makeEnv({ GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: ghAppPrivateKey });
     await dispatchTaskToAma(db, env, ownerId, task, { apiOrigin: "https://ak.test" });
 
-    // Two vault credential calls: repository clone token + session key
-    expect(vaultCredCalls.length).toBeGreaterThanOrEqual(2);
+    expect(vaultCredCalls).toHaveLength(1);
+    const sessionCredential = vaultCredCalls[0]!.body;
+    expect(sessionCredential).toMatchObject({
+      name: expect.stringMatching(/^ak-session-/),
+      type: "opaque",
+      metadata: { repository: "saltbo/agent-kanban" },
+      secret: {
+        stringData: {
+          AK_AGENT_KEY: expect.stringContaining('"kty":"OKP"'),
+          GH_USERNAME: "x-access-token",
+          GH_TOKEN: "ghs_minted_token",
+        },
+        metadata: { repository: "saltbo/agent-kanban" },
+      },
+    });
 
     // The clone credential is attached to the git_repository volume, not
     // exposed to the worker as a GH_TOKEN runtime environment variable.
@@ -1915,25 +1928,18 @@ describe("dispatchTaskToAma — GitHub clone credential (GitHub App installation
     expect(sessionBody?.prompt).not.toContain("GH_TOKEN");
     expect(sessionBody?.prompt).toContain(`ak auth git ${task.repository_id}`);
     const repoSecretRef = (sessionBody?.spec.volumes ?? [])[0]?.secretRef;
-    expect(repoSecretRef).toMatch(/^ama:\/\/vaults\/vault_ghapp\/credentials\/vaultcred_ghapp_\d+\/versions\/vaultver_ghapp_\d+$/);
+    expect(repoSecretRef).toMatch(/^ama:\/\/vaults\/vault_ghapp\/credentials\/vaultcred_ghapp_\d+$/);
     expect((sessionBody?.spec.volumes ?? [])[0]).toMatchObject({
       name: "repo",
       type: "git_repository",
       url: "https://github.com/saltbo/agent-kanban.git",
       secretRef: repoSecretRef,
+      items: [
+        { key: "GH_USERNAME", path: "username" },
+        { key: "GH_TOKEN", path: "password" },
+      ],
     });
     expect(sessionBody?.spec.volumeMounts).toEqual([{ name: "repo", mountPath: "/workspace/repos/github.com/saltbo/agent-kanban" }]);
-
-    const cloneCredential = vaultCredCalls.find((call) => call.body.metadata?.purpose === "github-clone-installation-token")?.body;
-    expect(cloneCredential).toMatchObject({
-      name: expect.stringMatching(/^GH_CLONE_TOKEN_/),
-      type: "opaque",
-      metadata: { purpose: "github-clone-installation-token", repository: "saltbo/agent-kanban" },
-      secret: {
-        stringData: { value: "ghs_minted_token" },
-        metadata: { purpose: "github-clone-installation-token", repository: "saltbo/agent-kanban" },
-      },
-    });
   });
 
   it("propagates the error loudly when GitHub App is configured but repo is not installed (404)", async () => {

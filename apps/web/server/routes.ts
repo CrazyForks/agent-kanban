@@ -55,7 +55,6 @@ import {
   getAmaProjectId,
   hasAmaAccount,
   resolveAmaProjectId,
-  resolveAmaSessionSecretVaultId,
 } from "./amaOwnerIntegrationRepo";
 import {
   AmaLinkedAccountAuthError,
@@ -69,6 +68,7 @@ import {
   createAmaMemoryStore,
   createAmaScheduledAgentTrigger,
   createAmaSessionSecret,
+  createAmaVault,
   deleteAmaScheduledAgentTrigger,
   deleteAmaTrigger,
   getAmaSessionSocketUrl,
@@ -77,6 +77,7 @@ import {
   listAmaRunners,
   listAmaSessions,
   listAmaTriggerRuns,
+  listAmaVaultCredentials,
   readAmaSession,
   updateAmaHttpAgentTrigger,
   updateAmaScheduledAgentTrigger,
@@ -92,6 +93,8 @@ import {
   isActiveMaintainerForBoard,
   isActiveMaintainerForRepository,
   listBoardMaintainers,
+  setBoardMaintainerApiKeyId,
+  setBoardMaintainerVaultId,
   updateBoardMaintainer,
 } from "./boardMaintainerRepo";
 import {
@@ -146,8 +149,10 @@ import { createSSEResponse } from "./sse";
 import { getSystemStats } from "./statsRepo";
 import { createSubagent, deleteSubagent, getSubagent, listSubagents, updateSubagent } from "./subagentRepo";
 import {
+  AK_VARIABLES_CREDENTIAL_NAME,
   amaRunnerCanRunRuntime,
   amaRuntimeName,
+  amaRuntimeSecretEnvForCredentialNames,
   apiUrl,
   clearAmaDispatchClaim,
   createAmaAgentForAkProfile,
@@ -157,6 +162,7 @@ import {
   sendTaskMessageToAma,
   sendTaskRejectToAma,
   syncAmaAgentForAkProfile,
+  USER_VARIABLES_CREDENTIAL_NAME,
 } from "./taskDispatch";
 import {
   addTaskAction,
@@ -401,24 +407,16 @@ function publicBoardMaintainer(
   maintainer: BoardMaintainer,
 ): Omit<
   BoardMaintainer,
-  | "ama_schedule_id"
-  | "ama_http_trigger_id"
-  | "ama_memory_store_id"
-  | "last_ama_session_id"
-  | "prompt"
-  | "api_key_id"
-  | "api_key_credential_id"
-  | "api_key_credential_version_id"
+  "ama_schedule_id" | "ama_http_trigger_id" | "ama_memory_store_id" | "ama_board_vault_id" | "last_ama_session_id" | "prompt" | "api_key_id"
 > {
   const {
     ama_schedule_id: _scheduleId,
     ama_http_trigger_id: _httpTriggerId,
     ama_memory_store_id: _memoryStoreId,
+    ama_board_vault_id: _boardVaultId,
     last_ama_session_id: _lastAmaSessionId,
     prompt: _prompt,
     api_key_id: _apiKeyId,
-    api_key_credential_id: _apiKeyCredentialId,
-    api_key_credential_version_id: _apiKeyCredentialVersionId,
     ...publicMaintainer
   } = maintainer;
   return publicMaintainer;
@@ -2067,12 +2065,12 @@ api.post("/api/boards/:id/maintainers", async (c) => {
   const maintainerId = newLongId();
   const triggerName = `${board.name} maintainer ${maintainerId}`;
   const maintainerSessionMetadata = maintainerAmaSessionMetadata(maintainerId);
-  const vaultId = await resolveAmaSessionSecretVaultId(c.env.DB, c.env, ownerId);
+  const boardVault = await createBoardMaintainerVault(c.env, ownerId, amaProjectId, board);
   const maintainerKey = await createMaintainerApiKeySecret({
     env: c.env,
     ownerId,
     amaProjectId,
-    vaultId,
+    vaultId: boardVault.id,
     boardId,
     maintainerId,
     agentId: maintainerAgentId,
@@ -2083,7 +2081,10 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     maintainerId,
     apiUrl: apiUrl(c.env, new URL(c.req.url).origin),
   });
-  const runtimeSecretEnv = [{ name: "AK_API_KEY", vaultId, credentialId: maintainerKey.credentialId, versionId: maintainerKey.versionId }];
+  const runtimeSecretEnv = await amaRuntimeSecretEnvForCredentialNames(c.env, ownerId, amaProjectId, boardVault.id, [
+    AK_VARIABLES_CREDENTIAL_NAME,
+    USER_VARIABLES_CREDENTIAL_NAME,
+  ]);
   const memoryStore = await createAmaMemoryStore(c.env, ownerId, {
     projectId: amaProjectId,
     name: `${triggerName} memory`,
@@ -2128,9 +2129,8 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     intervalSeconds,
     heartbeatEnabled,
     status: maintainerStatus,
+    amaBoardVaultId: boardVault.id,
     apiKeyId: maintainerKey.apiKeyId,
-    apiKeyCredentialId: maintainerKey.credentialId,
-    apiKeyCredentialVersionId: maintainerKey.versionId,
   });
   return c.json(await publicBoardMaintainerWithAmaStatus(c.env.DB, c.env, ownerId, maintainer), 201);
 });
@@ -2145,6 +2145,8 @@ api.get("/api/boards/:id/maintainers", async (c) => {
 api.get("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   const ownerId = c.get("ownerId");
   const boardId = c.req.param("id");
+  const board = await getOwnedBoard(c.env.DB, ownerId, boardId);
+  if (!board) throw new HTTPException(404, { message: "Board not found" });
   const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
   if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
   return c.json(await publicBoardMaintainerWithAmaStatus(c.env.DB, c.env, ownerId, maintainer));
@@ -2195,6 +2197,8 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   }
   const ownerId = c.get("ownerId");
   const boardId = c.req.param("id");
+  const board = await getOwnedBoard(c.env.DB, ownerId, boardId);
+  if (!board) throw new HTTPException(404, { message: "Board not found" });
   const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
   if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
   const body = await c.req.json<{ interval_seconds?: number; heartbeat_enabled?: boolean; status?: "active" | "paused" }>();
@@ -2211,41 +2215,27 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   const amaAgent = await ensureAmaAgentForAkAgent(c.env.DB, c.env, ownerId, maintainer.agent_id, amaProjectId, amaRuntime, {
     memoryEnabled: true,
   });
-  let apiKeyCredentialId = maintainer.api_key_credential_id;
-  let apiKeyCredentialVersionId = maintainer.api_key_credential_version_id;
-  if (!maintainer.api_key_id || !apiKeyCredentialId || !apiKeyCredentialVersionId) {
-    const vaultId = await resolveAmaSessionSecretVaultId(c.env.DB, c.env, ownerId);
-    const maintainerKey = await createMaintainerApiKeySecret({
-      env: c.env,
-      ownerId,
-      amaProjectId,
-      vaultId,
-      boardId,
-      maintainerId: maintainer.id,
-      agentId: maintainer.agent_id,
-    });
-    await c.env.DB.prepare(
-      "UPDATE board_maintainers SET api_key_id = ?, api_key_credential_id = ?, api_key_credential_version_id = ?, updated_at = ? WHERE owner_id = ? AND board_id = ? AND id = ?",
-    )
-      .bind(maintainerKey.apiKeyId, maintainerKey.credentialId, maintainerKey.versionId, new Date().toISOString(), ownerId, boardId, maintainer.id)
-      .run();
-    apiKeyCredentialId = maintainerKey.credentialId;
-    apiKeyCredentialVersionId = maintainerKey.versionId;
-  }
+  const boardVaultId = await ensureBoardMaintainerVault(c.env.DB, c.env, ownerId, amaProjectId, board, maintainer);
+  await ensureMaintainerApiKeySecret({
+    db: c.env.DB,
+    env: c.env,
+    ownerId,
+    amaProjectId,
+    vaultId: boardVaultId,
+    boardId,
+    maintainerId: maintainer.id,
+    agentId: maintainer.agent_id,
+  });
   const runtimeEnv = maintainerRuntimeEnv({
     agentId: maintainer.agent_id,
     boardId,
     maintainerId: maintainer.id,
     apiUrl: apiUrl(c.env, new URL(c.req.url).origin),
   });
-  const runtimeSecretEnv = [
-    {
-      name: "AK_API_KEY",
-      vaultId: await resolveAmaSessionSecretVaultId(c.env.DB, c.env, ownerId),
-      credentialId: apiKeyCredentialId,
-      versionId: apiKeyCredentialVersionId,
-    },
-  ];
+  const runtimeSecretEnv = await amaRuntimeSecretEnvForCredentialNames(c.env, ownerId, amaProjectId, boardVaultId, [
+    AK_VARIABLES_CREDENTIAL_NAME,
+    USER_VARIABLES_CREDENTIAL_NAME,
+  ]);
   const resourceRefs = maintainer.ama_memory_store_id
     ? [{ type: "memory_store", storeId: maintainer.ama_memory_store_id, access: "read_write" }]
     : [];
@@ -2508,9 +2498,50 @@ function boardMaintainerHttpPrompt(boardId: string) {
 }
 
 const MAINTAINER_API_KEY_PERMISSIONS = { maintainerSession: ["create"] };
+const AK_API_KEY_DATA_KEY = "AK_API_KEY";
 
-function maintainerApiKeySecretName(maintainerId: string) {
-  return `AK_API_KEY_${maintainerId.replaceAll(/[^A-Za-z0-9_]/g, "_")}`;
+async function createBoardMaintainerVault(env: Env, ownerId: string, amaProjectId: string, board: { id: string; name: string }) {
+  return await createAmaVault(env, ownerId, {
+    projectId: amaProjectId,
+    name: `${board.name} variables`,
+    description: `Runtime variables for AK board ${board.id}.`,
+    scope: "project",
+    metadata: { boardId: board.id },
+  });
+}
+
+async function ensureBoardMaintainerVault(
+  db: D1,
+  env: Env,
+  ownerId: string,
+  amaProjectId: string,
+  board: { id: string; name: string },
+  maintainer: BoardMaintainer,
+): Promise<string> {
+  if (maintainer.ama_board_vault_id) return maintainer.ama_board_vault_id;
+  const vault = await createBoardMaintainerVault(env, ownerId, amaProjectId, board);
+  await setBoardMaintainerVaultId(db, ownerId, board.id, maintainer.id, vault.id);
+  return vault.id;
+}
+
+async function ensureMaintainerApiKeySecret(input: {
+  db: D1;
+  env: Env;
+  ownerId: string;
+  amaProjectId: string;
+  vaultId: string;
+  boardId: string;
+  maintainerId: string;
+  agentId: string;
+}) {
+  const credentials = await listAmaVaultCredentials(input.env, input.ownerId, input.amaProjectId, input.vaultId);
+  const matches = credentials.filter((credential) => credential.state === "active" && credential.name === AK_VARIABLES_CREDENTIAL_NAME);
+  if (matches.length > 1) {
+    throw new Error(`AMA vault ${input.vaultId} has multiple active credentials named ${AK_VARIABLES_CREDENTIAL_NAME}`);
+  }
+  if (matches.length === 1) return;
+  const maintainerKey = await createMaintainerApiKeySecret(input);
+  await setBoardMaintainerApiKeyId(input.db, input.ownerId, input.boardId, input.maintainerId, maintainerKey.apiKeyId);
 }
 
 async function createMaintainerApiKeySecret(input: {
@@ -2536,14 +2567,14 @@ async function createMaintainerApiKeySecret(input: {
       },
     },
   });
-  const secret = await createAmaSessionSecret(input.env, input.ownerId, {
+  await createAmaSessionSecret(input.env, input.ownerId, {
     projectId: input.amaProjectId,
     vaultId: input.vaultId,
-    name: maintainerApiKeySecretName(input.maintainerId),
-    secretValue: apiKey.key,
-    metadata: { purpose: "board-maintainer-api-key", boardId: input.boardId, maintainerId: input.maintainerId, agentId: input.agentId },
+    name: AK_VARIABLES_CREDENTIAL_NAME,
+    secretData: { [AK_API_KEY_DATA_KEY]: apiKey.key },
+    metadata: { boardId: input.boardId, maintainerId: input.maintainerId, agentId: input.agentId },
   });
-  return { apiKeyId: apiKey.id, credentialId: secret.credentialId, versionId: secret.activeVersionId };
+  return { apiKeyId: apiKey.id };
 }
 
 function maintainerRuntimeEnv(input: { agentId: string; boardId: string; maintainerId: string; apiUrl: string }): Record<string, string> {
