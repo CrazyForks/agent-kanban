@@ -82,13 +82,24 @@ function stubLeaderAgent(agentId: string, runtime = "claude") {
   );
 }
 
+function leaderAuthGuidance(runtime: string): string {
+  return [
+    "No AK auth session found.",
+    `For a leader agent in the current ${runtime} runtime, run:`,
+    "  ak auth login --leader-agent --username <username> [--name <name>]",
+  ].join("\n");
+}
+
 // ── Global env cleanup ───────────────────────────────────────────────────────
 
 function clearAkEnv() {
+  delete process.env.AK_WORKER;
   delete process.env.AK_AGENT_ID;
   delete process.env.AK_SESSION_ID;
   delete process.env.AK_AGENT_KEY;
   delete process.env.AK_API_URL;
+  delete process.env.AK_API_KEY;
+  delete process.env.AK_MAINTAINER_ID;
   delete process.env.AK_LEADER_SESSION_ID;
 }
 
@@ -238,10 +249,11 @@ describe("createClient — no runtime (human in terminal)", () => {
     await expect(createClient()).rejects.toThrow();
   });
 
-  it("error message mentions agent identity", async () => {
+  it("error message includes generic auth guidance", async () => {
     const { createClient } = await freshClient();
     mockDetectRuntime.mockReturnValue(null);
-    await expect(createClient()).rejects.toThrow(/agent identity/i);
+    await expect(createClient()).rejects.toThrow(/No AK auth session found\./);
+    await expect(createClient()).rejects.toThrow(/ak auth login --leader-agent/);
   });
 
   it("calls detectRuntime when no env vars are set", async () => {
@@ -329,17 +341,16 @@ describe("createClient — leader session restored from session file", () => {
   });
 });
 
-// ── createClient: runtime detected + no session + daemon not running ─────────
+// ── createClient: runtime detected + no leader session ───────────────────────
 
-describe("createClient — daemon not running", () => {
-  it("throws when runtime is detected but no agent session is available", async () => {
+describe("createClient — runtime detected without leader session", () => {
+  it("throws shared leader auth guidance when runtime is detected but no session is available", async () => {
     const { createClient } = await freshClient();
     mockDetectRuntime.mockReturnValue("claude");
     mockFindRuntimeAncestorPid.mockReturnValue(99999);
     mockFindLeaderSession.mockReturnValue(null);
     mockLoadIdentity.mockReturnValue({ agent_id: randomUUID(), name: "claude@host", fingerprint: "fp-abc" });
-    // DEAD_PID (4194304) is beyond kernel pid_max — process.kill will throw
-    await expect(createClient()).rejects.toThrow(/No AK agent session is available/);
+    await expect(createClient()).rejects.toThrow(leaderAuthGuidance("claude"));
   });
 
   it("error message points to auth login instead of ak start", async () => {
@@ -352,7 +363,27 @@ describe("createClient — daemon not running", () => {
     await expect(createClient()).rejects.not.toThrow(/ak start/i);
   });
 
-  it("throws when the PID file does not exist (readFileSync throws)", async () => {
+  it("preserves leader-runtime guidance when API credentials are not configured", async () => {
+    const { createClient } = await freshClient();
+    mockDetectRuntime.mockReturnValue("codex");
+    mockFindRuntimeAncestorPid.mockReturnValue(99999);
+    mockGetCredentials.mockImplementation(() => {
+      throw new Error("No AK API environment configured");
+    });
+
+    let error: unknown;
+    try {
+      await createClient();
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(leaderAuthGuidance("codex"));
+    expect((error as Error).message).not.toContain("No AK API environment configured");
+  });
+
+  it("throws shared leader auth guidance when the PID file does not exist (readFileSync throws)", async () => {
     const { createClient } = await freshClient();
     mockDetectRuntime.mockReturnValue("claude");
     mockFindRuntimeAncestorPid.mockReturnValue(99999);
@@ -361,10 +392,10 @@ describe("createClient — daemon not running", () => {
     mockReadFileSync.mockImplementation(() => {
       throw new Error("ENOENT");
     });
-    await expect(createClient()).rejects.toThrow(/No AK agent session is available/);
+    await expect(createClient()).rejects.toThrow(leaderAuthGuidance("claude"));
   });
 
-  it("falls through to daemon check when session runtime does not match current runtime", async () => {
+  it("throws shared leader auth guidance when session runtime does not match current runtime", async () => {
     const { createClient } = await freshClient();
     const privJwk = await makePrivKeyJwk();
     mockDetectRuntime.mockReturnValue("claude");
@@ -382,11 +413,10 @@ describe("createClient — daemon not running", () => {
     });
     mockIsPidAlive.mockReturnValue(true);
     mockLoadIdentity.mockReturnValue({ agent_id: randomUUID(), name: "claude@host", fingerprint: "fp-abc" });
-    // DEAD_PID daemon
-    await expect(createClient()).rejects.toThrow(/No AK agent session is available/);
+    await expect(createClient()).rejects.toThrow(leaderAuthGuidance("claude"));
   });
 
-  it("falls through to daemon check when session pid is not alive", async () => {
+  it("throws shared leader auth guidance when session pid is not alive", async () => {
     const { createClient } = await freshClient();
     const privJwk = await makePrivKeyJwk();
     mockDetectRuntime.mockReturnValue("claude");
@@ -403,11 +433,10 @@ describe("createClient — daemon not running", () => {
     });
     mockIsPidAlive.mockReturnValue(false); // pid is dead
     mockLoadIdentity.mockReturnValue({ agent_id: randomUUID(), name: "claude@host", fingerprint: "fp-abc" });
-    // DEAD_PID daemon
-    await expect(createClient()).rejects.toThrow(/No AK agent session is available/);
+    await expect(createClient()).rejects.toThrow(leaderAuthGuidance("claude"));
   });
 
-  it("falls through to daemon check when findLeaderSession returns null (no matching leader session)", async () => {
+  it("throws shared leader auth guidance when findLeaderSession returns null (no matching leader session)", async () => {
     const { createClient } = await freshClient();
     mockDetectRuntime.mockReturnValue("claude");
     mockFindRuntimeAncestorPid.mockReturnValue(99999);
@@ -415,7 +444,7 @@ describe("createClient — daemon not running", () => {
     mockFindLeaderSession.mockReturnValue(null);
     mockIsPidAlive.mockReturnValue(false); // daemon not running
     mockLoadIdentity.mockReturnValue({ agent_id: randomUUID(), name: "claude@host", fingerprint: "fp-abc" });
-    await expect(createClient()).rejects.toThrow(/No AK agent session is available/);
+    await expect(createClient()).rejects.toThrow(leaderAuthGuidance("claude"));
   });
 });
 
@@ -687,7 +716,7 @@ describe("leader identity and login helpers", () => {
     vi.stubGlobal("fetch", mockFetch);
 
     try {
-      await expect(createClient()).rejects.toThrow(/No AK agent session is available/);
+      await expect(createClient()).rejects.toThrow(leaderAuthGuidance("claude"));
       expect(mockFetch).not.toHaveBeenCalled();
       expect(mockWriteSession).not.toHaveBeenCalled();
     } finally {

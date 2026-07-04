@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Agent, AgentRuntime } from "@agent-kanban/shared";
+import { missingAuthSessionMessage } from "../auth/guidance.js";
 import { AgentClient } from "../client/agent.js";
 import { type ApiClient, ApiError } from "../client/base.js";
 import { MachineClient } from "../client/machine.js";
@@ -127,7 +128,7 @@ export async function createClient(): Promise<ApiClient> {
 
   const runtime = detectRuntime() as AgentRuntime | null;
   if (!runtime) {
-    throw new Error("This command requires agent identity. Run inside an agent runtime.");
+    throw new Error(missingAuthSessionMessage(runtime));
   }
 
   // Anchor the leader session to the long-lived runtime process PID so it outlives
@@ -138,7 +139,12 @@ export async function createClient(): Promise<ApiClient> {
     throw new Error(`Could not locate ${runtime} process in ancestry. ak must be invoked from inside a ${runtime} session.`);
   }
 
-  const apiUrl = getCredentials().apiUrl;
+  let apiUrl: string;
+  try {
+    apiUrl = getCredentials().apiUrl;
+  } catch {
+    throw new Error(missingAuthSessionMessage(runtime));
+  }
   const existing = listSessions({ type: "leader" }).find(
     (session) => session.pid === leaderPid && session.runtime === runtime && session.apiUrl === apiUrl,
   );
@@ -148,13 +154,5 @@ export async function createClient(): Promise<ApiClient> {
     return cachedLeaderClient;
   }
 
-  throw new Error(
-    [
-      "No AK agent session is available.",
-      "For a leader agent, run:",
-      "  ak auth login --leader-agent --username <username> [--name <name>]",
-      "Maintainer workers should run:",
-      "  ak auth login",
-    ].join("\n"),
-  );
+  throw new Error(missingAuthSessionMessage(runtime));
 }

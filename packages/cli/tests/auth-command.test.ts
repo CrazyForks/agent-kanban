@@ -72,6 +72,14 @@ function makeProgram(): Command {
   return program;
 }
 
+function leaderAuthGuidance(runtime: string): string {
+  return [
+    "No AK auth session found.",
+    `For a leader agent in the current ${runtime} runtime, run:`,
+    "  ak auth login --leader-agent --username <username> [--name <name>]",
+  ].join("\n");
+}
+
 let consoleLogSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
@@ -172,9 +180,7 @@ describe("auth whoami command", () => {
   it("guides a leader runtime to leader-agent login when no session exists", async () => {
     mockDetectRuntime.mockReturnValue("codex");
 
-    await expect(makeProgram().parseAsync(["auth", "whoami"], { from: "user" })).rejects.toThrow(
-      /ak auth login --leader-agent --username <username> \[--name <name>\]/,
-    );
+    await expect(makeProgram().parseAsync(["auth", "whoami"], { from: "user" })).rejects.toThrow(leaderAuthGuidance("codex"));
   });
 
   it("guides a maintainer worker to auth login when no session exists", async () => {

@@ -4,6 +4,7 @@ import type { Command } from "commander";
 import { loadIdentity } from "../agent/identity.js";
 import { createClient, loginLeaderAgent } from "../agent/leader.js";
 import { detectRuntime, findRuntimeAncestorPid } from "../agent/runtime.js";
+import { missingAuthSessionMessage } from "../auth/guidance.js";
 import { clearWorkerAuthSession, readWorkerAuthSession, writeWorkerAuthSession } from "../auth/session.js";
 import { AgentClient } from "../client/agent.js";
 import { getCredentials, saveCredentials } from "../config.js";
@@ -78,37 +79,6 @@ function hasMaintainerLoginEnv(): boolean {
   return Boolean(
     process.env.AK_API_URL && process.env.AK_API_KEY && process.env.AK_AGENT_ID && process.env.AK_BOARD_ID && process.env.AK_MAINTAINER_ID,
   );
-}
-
-function missingAuthSessionMessage(): string {
-  const base = "No AK auth session found.";
-
-  if (process.env.AK_API_KEY && process.env.AK_MAINTAINER_ID) {
-    return [base, "For a maintainer worker, run:", "  ak auth login"].join("\n");
-  }
-
-  if (process.env.AK_WORKER === "1" || process.env.AK_AGENT_ID || process.env.AK_SESSION_ID || process.env.AK_AGENT_KEY) {
-    return [
-      base,
-      "This worker runtime is missing a complete AK agent session.",
-      "The runtime should inject AK_AGENT_ID, AK_SESSION_ID, AK_AGENT_KEY, and AK_API_URL.",
-    ].join("\n");
-  }
-
-  const runtime = detectRuntime();
-  if (runtime) {
-    return [
-      base,
-      `For a leader agent in the current ${runtime} runtime, run:`,
-      "  ak auth login --leader-agent --username <username> [--name <name>]",
-    ].join("\n");
-  }
-
-  return [
-    base,
-    "Run inside an AK worker with an injected session, or run from a supported leader agent runtime:",
-    "  ak auth login --leader-agent --username <username> [--name <name>]",
-  ].join("\n");
 }
 
 function repositoryProvider(repo: any): "github" {
@@ -222,7 +192,7 @@ export function registerAuthCommand(program: Command) {
           return;
         }
       }
-      throw new Error(missingAuthSessionMessage());
+      throw new Error(missingAuthSessionMessage(runtime));
     });
 
   authCmd
