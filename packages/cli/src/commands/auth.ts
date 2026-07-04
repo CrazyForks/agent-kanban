@@ -215,6 +215,7 @@ export function registerAuthCommand(program: Command) {
         const ghStatus = await configureGithubAuth(auth.token, { homeDir: workerGithubAuthHome() });
         const ghMessage = ghStatus === "configured" ? "gh credentials configured" : "gh not found; git credentials configured";
         console.log(`Configured GitHub auth for ${auth.full_name}; ${ghMessage}; expires at ${auth.expires_at}`);
+        console.log(`Token validity: about 1 hour. If it expires, re-run \`ak auth git ${repoId}\` to mint a fresh token.`);
       }
     });
 }

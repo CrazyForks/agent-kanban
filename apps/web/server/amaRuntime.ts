@@ -29,11 +29,14 @@ export class AmaLinkedAccountAuthError extends Error {
 }
 
 export type AmaResourceRef = Record<string, unknown>;
-export interface AmaRuntimeSecretEnvRef {
-  name: string;
+export interface AmaRuntimeSecretRef {
   vaultId: string;
   credentialId: string;
   versionId?: string | null;
+}
+
+export interface AmaRuntimeSecretEnvRef extends AmaRuntimeSecretRef {
+  name: string;
 }
 
 export interface AmaTaskSessionInput {
@@ -46,6 +49,7 @@ export interface AmaTaskSessionInput {
   resourceRefs?: AmaResourceRef[];
   runtimeEnv?: Record<string, string>;
   runtimeSecretEnv?: AmaRuntimeSecretEnvRef[];
+  gitCredentialSecret?: AmaRuntimeSecretRef | null;
 }
 
 export interface AmaAgentInput {
@@ -351,7 +355,7 @@ export function isAmaTaskDispatchConfigured(env: Env): boolean {
 export async function createAmaTaskSession(env: Env, ownerId: string, input: AmaTaskSessionInput): Promise<AmaSessionDispatch> {
   const client = await createAmaClient(env, ownerId, input.projectId);
   const envFrom = toAmaEnvFrom(input.runtimeSecretEnv ?? []);
-  const resources = toAmaRuntimeResources(input.resourceRefs ?? [], input.runtimeSecretEnv ?? []);
+  const resources = toAmaRuntimeResources(input.resourceRefs ?? [], input.gitCredentialSecret ?? null);
   const session = await withAmaErrorDetails("create session", () =>
     client.sessions.create({
       metadata: { name: input.title },
@@ -403,9 +407,8 @@ function toAmaEnvFrom(entries: AmaRuntimeSecretEnvRef[]): EnvFromEntry[] {
 
 function toAmaRuntimeResources(
   resourceRefs: AmaResourceRef[],
-  secretEnv: AmaRuntimeSecretEnvRef[],
+  gitCredentialSecret: AmaRuntimeSecretRef | null,
 ): { volumes: Volume[]; volumeMounts: VolumeMount[] } {
-  const githubCredential = secretEnv.find((entry) => entry.name === "GH_TOKEN");
   const volumes: Volume[] = [];
   const volumeMounts: VolumeMount[] = [];
   for (const [index, resource] of resourceRefs.entries()) {
@@ -415,7 +418,7 @@ function toAmaRuntimeResources(
         name,
         type: "git_repository",
         url: `https://github.com/${resource.owner}/${resource.repo}.git`,
-        ...(githubCredential ? { secretRef: credentialVersionSecretRef(githubCredential) } : {}),
+        ...(gitCredentialSecret ? { secretRef: credentialVersionSecretRef(gitCredentialSecret) } : {}),
       });
       volumeMounts.push({ name, mountPath: `/workspace/repos/github.com/${resource.owner}/${resource.repo}` });
     }
@@ -442,7 +445,7 @@ function triggerTemplateMetadata(metadata: Record<string, unknown> | undefined) 
 }
 
 function triggerExecutionSpec(input: AmaScheduledTriggerInput | AmaHttpTriggerInput) {
-  const resources = toAmaRuntimeResources(input.resourceRefs ?? [], input.runtimeSecretEnv ?? []);
+  const resources = toAmaRuntimeResources(input.resourceRefs ?? [], null);
   return {
     agentId: input.agentId,
     ...(input.environmentId !== undefined ? { environmentId: input.environmentId } : {}),
@@ -465,7 +468,7 @@ function triggerExecutionSpecUpdate(input: AmaScheduledTriggerUpdate | AmaHttpTr
   if (input.runtimeEnv !== undefined) spec.env = input.runtimeEnv;
   if (input.runtimeSecretEnv !== undefined) spec.envFrom = toAmaEnvFrom(input.runtimeSecretEnv);
   if (input.resourceRefs !== undefined) {
-    const resources = toAmaRuntimeResources(input.resourceRefs, input.runtimeSecretEnv ?? []);
+    const resources = toAmaRuntimeResources(input.resourceRefs, null);
     spec.volumes = resources.volumes;
     spec.volumeMounts = resources.volumeMounts;
   }

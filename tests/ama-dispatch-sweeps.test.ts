@@ -1776,7 +1776,7 @@ describe("githubRepoRef", () => {
   });
 });
 
-// ─── 8b. githubTokenSecretRef — GitHub App installation token paths ──────────
+// ─── 8b. GitHub clone credentials — GitHub App installation token paths ─────
 
 // Pre-computed throwaway RSA-2048 PKCS#8 private key (PEM) for test JWT signing.
 // Copied from github-installations.test.ts to avoid calling crypto.subtle.generateKey.
@@ -1810,7 +1810,7 @@ const ghAppPrivateKey =
   "8or33ehPHwLc5KQfnNaXXXY=\n" +
   "-----END PRIVATE KEY-----\n";
 
-describe("dispatchTaskToAma — githubTokenSecretRef (GitHub App installation token)", () => {
+describe("dispatchTaskToAma — GitHub clone credential (GitHub App installation token)", () => {
   // Helper to build a task with a repository linked to github.com/saltbo/agent-kanban.
   async function makeRepoTask(ownerId: string, envId: string) {
     const { createBoard } = await import("../apps/web/server/boardRepo");
@@ -1843,7 +1843,7 @@ describe("dispatchTaskToAma — githubTokenSecretRef (GitHub App installation to
   // return a Response to handle the call, or null to fall through to the default
   // AMA infrastructure handlers (which will throw for unexpected URLs).
   function makeBaseFetchMock(projectId: string, vaultId: string, envId: string, githubHandler: (url: string, init?: RequestInit) => Response | null) {
-    const vaultCredCalls: string[] = [];
+    const vaultCredCalls: Array<{ url: string; body: Record<string, any> }> = [];
     let capturedSessionBody: Record<string, any> | null = null;
     const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
@@ -1858,7 +1858,7 @@ describe("dispatchTaskToAma — githubTokenSecretRef (GitHub App installation to
       if (url === "https://ama.test/api/v1/providers?limit=100")
         return jsonResponse({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }, 200);
       if (url === `https://ama.test/api/v1/vaults/${vaultId}/credentials`) {
-        vaultCredCalls.push(url);
+        vaultCredCalls.push({ url, body: JSON.parse(await reqBody(input, init)) as Record<string, any> });
         const n = vaultCredCalls.length;
         return jsonResponse(amaCredential(`vaultcred_ghapp_${n}`, `vaultver_ghapp_${n}`), 201);
       }
@@ -1875,7 +1875,7 @@ describe("dispatchTaskToAma — githubTokenSecretRef (GitHub App installation to
     };
   }
 
-  it("mints a GH_TOKEN installation-token secret when GitHub App is configured and repo is installed", async () => {
+  it("mints a repository clone installation-token secret when GitHub App is configured and repo is installed", async () => {
     const { dispatchTaskToAma } = await import("../apps/web/server/taskDispatch");
 
     const ownerId = `ghapp-installed-owner-${randomUUID()}`;
@@ -1902,22 +1902,38 @@ describe("dispatchTaskToAma — githubTokenSecretRef (GitHub App installation to
     const env = makeEnv({ GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: ghAppPrivateKey });
     await dispatchTaskToAma(db, env, ownerId, task, { apiOrigin: "https://ak.test" });
 
-    // Two vault credential calls: GH_TOKEN installation token + session key
+    // Two vault credential calls: repository clone token + session key
     expect(vaultCredCalls.length).toBeGreaterThanOrEqual(2);
 
-    // The session body sent to AMA must have an envFrom entry named GH_TOKEN.
+    // The clone credential is attached to the git_repository volume, not
+    // exposed to the worker as a GH_TOKEN runtime environment variable.
     const sessionBody = getSessionBody();
     expect(sessionBody).not.toBeNull();
     const ghTokenEntry = (sessionBody?.spec.envFrom ?? []).find((s: any) => s.name === "GH_TOKEN");
-    expect(ghTokenEntry).toBeDefined();
-    expect(ghTokenEntry?.secretRef).toMatch(/^ama:\/\/vaults\/vault_ghapp\/credentials\/vaultcred_ghapp_\d+\/versions\/vaultver_ghapp_\d+$/);
+    expect(ghTokenEntry).toBeUndefined();
+    expect(sessionBody?.spec.env).not.toHaveProperty("GH_TOKEN");
+    expect(sessionBody?.prompt).not.toContain("GH_TOKEN");
+    expect(sessionBody?.prompt).toContain(`ak auth git ${task.repository_id}`);
+    const repoSecretRef = (sessionBody?.spec.volumes ?? [])[0]?.secretRef;
+    expect(repoSecretRef).toMatch(/^ama:\/\/vaults\/vault_ghapp\/credentials\/vaultcred_ghapp_\d+\/versions\/vaultver_ghapp_\d+$/);
     expect((sessionBody?.spec.volumes ?? [])[0]).toMatchObject({
       name: "repo",
       type: "git_repository",
       url: "https://github.com/saltbo/agent-kanban.git",
-      secretRef: ghTokenEntry?.secretRef,
+      secretRef: repoSecretRef,
     });
     expect(sessionBody?.spec.volumeMounts).toEqual([{ name: "repo", mountPath: "/workspace/repos/github.com/saltbo/agent-kanban" }]);
+
+    const cloneCredential = vaultCredCalls.find((call) => call.body.metadata?.purpose === "github-clone-installation-token")?.body;
+    expect(cloneCredential).toMatchObject({
+      name: expect.stringMatching(/^GH_CLONE_TOKEN_/),
+      type: "opaque",
+      metadata: { purpose: "github-clone-installation-token", repository: "saltbo/agent-kanban" },
+      secret: {
+        stringData: { value: "ghs_minted_token" },
+        metadata: { purpose: "github-clone-installation-token", repository: "saltbo/agent-kanban" },
+      },
+    });
   });
 
   it("propagates the error loudly when GitHub App is configured but repo is not installed (404)", async () => {
@@ -1947,7 +1963,7 @@ describe("dispatchTaskToAma — githubTokenSecretRef (GitHub App installation to
     expect(sessionCalls).toHaveLength(0);
   });
 
-  it("does not create a GH_TOKEN secret when GitHub App is not configured (returns null)", async () => {
+  it("does not create a repository clone secret when GitHub App is not configured (returns null)", async () => {
     const { dispatchTaskToAma } = await import("../apps/web/server/taskDispatch");
 
     const ownerId = `ghapp-unconfigured-owner-${randomUUID()}`;
@@ -1976,7 +1992,7 @@ describe("dispatchTaskToAma — githubTokenSecretRef (GitHub App installation to
     const env = makeEnv();
     await dispatchTaskToAma(db, env, ownerId, task, { apiOrigin: "https://ak.test" });
 
-    // Only one vault credential call — the session key; no GH_TOKEN was minted
+    // Only one vault credential call — the session key; no clone token was minted
     expect(vaultCredCalls).toHaveLength(1);
 
     // The session's envFrom must only contain AK_AGENT_KEY, not GH_TOKEN.
@@ -1984,6 +2000,7 @@ describe("dispatchTaskToAma — githubTokenSecretRef (GitHub App installation to
     expect(sessionBody).not.toBeNull();
     const ghTokenEntry = (sessionBody?.spec.envFrom ?? []).find((s: any) => s.name === "GH_TOKEN");
     expect(ghTokenEntry).toBeUndefined();
+    expect((sessionBody?.spec.volumes ?? [])[0]).not.toHaveProperty("secretRef");
     expect(sessionBody?.spec.volumeMounts).toEqual([{ name: "repo", mountPath: "/workspace/repos/github.com/saltbo/agent-kanban" }]);
   });
 });
@@ -2052,6 +2069,14 @@ describe("dispatchTaskToAma with cloud runtime (ama)", () => {
     expect(sessionCreated).toBe(true);
     // Cloud dispatch uses the cloud env, not a machine env
     expect(sessionBody?.spec.environmentId).toBe(cloudEnvId);
+    expect(sessionBody?.spec.env).toMatchObject({
+      HOME: "/workspace/.home",
+      AMA_WORKSPACE: "/workspace",
+      AMA_WORKSPACE_HOME: "/workspace/.home",
+      GH_CONFIG_DIR: "/workspace/.home/.config/gh",
+      GIT_CONFIG_GLOBAL: "/workspace/.home/.gitconfig",
+      GIT_CONFIG_NOSYSTEM: "1",
+    });
     // Cloud dispatch uses cloudTaskInitialPrompt — initial prompt differs from machine dispatch
     expect(sessionBody?.prompt).toContain("cloud sandbox");
     expect(sessionBody?.prompt).toContain(`ak describe task ${task.id}`);

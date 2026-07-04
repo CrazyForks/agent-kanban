@@ -129,7 +129,14 @@ export async function dispatchTaskToAma(
   // self-contained step-by-step prompt regardless of the agent's runtime.
   const cloudDispatch = Boolean(cloudCandidate);
   const resourceRefs = await taskResourceRefs(db, task);
-  const githubTokenSecret = await githubTokenSecretRef(env, ownerId, amaProjectId, vaultId, sessionIdentity.sessionId, resourceRefs);
+  const githubCloneCredentialSecret = await githubCloneCredentialSecretRef(
+    env,
+    ownerId,
+    amaProjectId,
+    vaultId,
+    sessionIdentity.sessionId,
+    resourceRefs,
+  );
   let secret: Awaited<ReturnType<typeof createAmaSessionSecret>> | null = null;
   let dispatch: Awaited<ReturnType<typeof createAmaTaskSession>> | null = null;
   try {
@@ -150,26 +157,16 @@ export async function dispatchTaskToAma(
       title: `AK task ${task.id}: ${task.title}`,
       initialPrompt: cloudDispatch ? cloudTaskInitialPrompt(task, resourceRefs) : taskInitialPrompt(task),
       resourceRefs,
+      gitCredentialSecret: githubCloneCredentialSecret,
       runtimeEnv: {
         AK_WORKER: "1",
         AK_AGENT_ID: assignedTo,
         AK_SESSION_ID: sessionIdentity.sessionId,
         AK_API_URL: apiUrl(env, options.apiOrigin),
+        ...(cloudDispatch ? cloudSandboxHomeEnv() : {}),
         ...agentGitIdentityEnv(akAgent),
       },
-      runtimeSecretEnv: [
-        { name: "AK_AGENT_KEY", vaultId, credentialId: secret.credentialId, versionId: secret.activeVersionId },
-        ...(githubTokenSecret
-          ? [
-              {
-                name: githubTokenSecret.name,
-                vaultId: githubTokenSecret.vaultId,
-                credentialId: githubTokenSecret.credentialId,
-                versionId: githubTokenSecret.versionId,
-              },
-            ]
-          : []),
-      ],
+      runtimeSecretEnv: [{ name: "AK_AGENT_KEY", vaultId, credentialId: secret.credentialId, versionId: secret.activeVersionId }],
     });
     await bindAmaAgentSession(db, sessionIdentity.sessionId, dispatch.sessionId);
   } catch (error) {
@@ -197,7 +194,7 @@ export async function dispatchTaskToAma(
     agentSessionId: sessionIdentity.sessionId,
     "ama.dispatch.result": "accepted",
     "ama.dispatch.lastReason": null,
-    ...(githubTokenSecret?.credentialId ? { "ama.ghCredentialId": githubTokenSecret.credentialId } : {}),
+    ...(githubCloneCredentialSecret?.credentialId ? { "ama.ghCredentialId": githubCloneCredentialSecret.credentialId } : {}),
   });
   // Timeline entry last: a crash here leaves the task correctly marked accepted,
   // just missing one cosmetic note (better than a note with no accepted state).
@@ -356,6 +353,18 @@ export function agentGitIdentityEnv(agent: { name?: string | null; username: str
     GIT_AUTHOR_EMAIL: email,
     GIT_COMMITTER_NAME: name,
     GIT_COMMITTER_EMAIL: email,
+  };
+}
+
+function cloudSandboxHomeEnv(): Record<string, string> {
+  const home = "/workspace/.home";
+  return {
+    HOME: home,
+    AMA_WORKSPACE: "/workspace",
+    AMA_WORKSPACE_HOME: home,
+    GH_CONFIG_DIR: `${home}/.config/gh`,
+    GIT_CONFIG_GLOBAL: `${home}/.gitconfig`,
+    GIT_CONFIG_NOSYSTEM: "1",
   };
 }
 
@@ -814,12 +823,18 @@ function taskInitialPrompt(task: Task) {
     "- Before submitting review, post a final note that starts with `Completion Summary:` and includes `Profile Decision:`.",
     "- If you changed code, create a draft PR and keep it draft while work, checks, and the completion note are still pending. After the completion note exists and the PR is otherwise reviewable, mark it ready immediately before submitting review with `ak task review --pr-url <PR URL>`. Never submit review without a PR URL after code changes.",
     `- Before you stop working on this task for any reason, including blockers or partial completion, you must submit it for review with \`ak task review ${task.id}\` after documenting the result. Do not end the session without submitting review.`,
+    task.repository_id ? "" : null,
+    task.repository_id ? "GitHub auth:" : null,
+    task.repository_id
+      ? `- The runtime may use a short-lived token only to clone the repository. Before your first \`git push\` or \`gh\` command, run \`ak auth git ${task.repository_id}\` to configure fresh worker credentials.`
+      : null,
+    task.repository_id ? "- The token is valid for about 1 hour. If GitHub auth fails or expires, run the same command again." : null,
   ].filter(Boolean);
   return prompt.join("\n");
 }
 
-// Cloud sandboxes have no AK skill install and no gh CLI: the prompt has to
-// carry the whole workflow, step by step, for the sandbox-hosted agent.
+// Cloud sandboxes have no AK skill install: the prompt has to carry the whole
+// workflow, step by step, for the sandbox-hosted agent.
 function cloudTaskInitialPrompt(task: Task, resourceRefs: { owner: string; repo: string }[]) {
   const repo = resourceRefs[0] ?? null;
   // AMA normalizes github_repository mounts to /workspace/repos/{host}/{owner}/{repo}.
@@ -828,8 +843,10 @@ function cloudTaskInitialPrompt(task: Task, resourceRefs: { owner: string; repo:
   const prompt = [
     `You are assigned AK task ${task.id}: ${task.title}`,
     "",
-    "You work inside a cloud sandbox. Run every shell command with the bash tool. Environment variables (AK_*, GH_TOKEN, GIT_*) are already set for those commands.",
-    repo ? `The repository ${repo.owner}/${repo.repo} is already cloned at ${repoDir}; git push credentials are preconfigured.` : null,
+    "You work inside a cloud sandbox. Run every shell command with the bash tool. Environment variables (AK_* and GIT_*) are already set for those commands.",
+    repo
+      ? `The repository ${repo.owner}/${repo.repo} is already cloned at ${repoDir}. The clone used a short-lived bootstrap credential; before pushing or running gh, run \`ak auth git ${task.repository_id}\` to mint fresh worker credentials.`
+      : null,
     "Follow the Agent Kanban worker lifecycle. Use the agent-kanban workflow; do not use the ak-task leader workflow.",
     "The full task description is intentionally not included here. Get the authoritative task details, status, rejection history, logs, and messages with `ak describe task` after installing the AK CLI.",
     "",
@@ -841,15 +858,16 @@ function cloudTaskInitialPrompt(task: Task, resourceRefs: { owner: string; repo:
     `3. If the task status is todo, claim it: ak task claim ${task.id}. If claim fails, stop without changing files and report the error. If it is already in_progress because it was rejected or resumed, do not claim again; continue from the rejection/log history.`,
     ...(repo && repoDir
       ? [
-          `4. Note the default branch: git -C ${repoDir} branch --show-current`,
-          `5. Create a work branch: git -C ${repoDir} checkout -b ${branch}`,
-          "6. Do the work described by `ak describe task` (edit files under the repository).",
-          "7. Post progress notes with `ak create note --task` while working.",
-          `8. Commit and push: git -C ${repoDir} add -A && git -C ${repoDir} commit -m "<summary>" && git -C ${repoDir} push -u origin ${branch}`,
-          `9. Create a draft pull request (replace <base> with the default branch from step 4): gh pr create --draft --repo ${repo.owner}/${repo.repo} --head ${branch} --base <base> --title "${task.title.replaceAll('"', "'")}" --body "AK task ${task.id}" - the command prints the PR URL.`,
-          "10. Post a final note that starts with `Completion Summary:` and includes `Profile Decision:`.",
-          `11. Mark the PR ready for review immediately before task review: gh pr ready <pr-number> --repo ${repo.owner}/${repo.repo}`,
-          `12. Submit for review before stopping: ak task review ${task.id} --pr-url <PR URL>`,
+          `4. Configure GitHub auth: ak auth git ${task.repository_id}. The token is valid for about 1 hour; re-run this command if it expires.`,
+          `5. Note the default branch: git -C ${repoDir} branch --show-current`,
+          `6. Create a work branch: git -C ${repoDir} checkout -b ${branch}`,
+          "7. Do the work described by `ak describe task` (edit files under the repository).",
+          "8. Post progress notes with `ak create note --task` while working.",
+          `9. Commit and push: git -C ${repoDir} add -A && git -C ${repoDir} commit -m "<summary>" && git -C ${repoDir} push -u origin ${branch}`,
+          `10. Create a draft pull request (replace <base> with the default branch from step 5): gh pr create --draft --repo ${repo.owner}/${repo.repo} --head ${branch} --base <base> --title "${task.title.replaceAll('"', "'")}" --body "AK task ${task.id}" - the command prints the PR URL.`,
+          "11. Post a final note that starts with `Completion Summary:` and includes `Profile Decision:`.",
+          `12. Mark the PR ready for review immediately before task review: gh pr ready <pr-number> --repo ${repo.owner}/${repo.repo}`,
+          `13. Submit for review before stopping: ak task review ${task.id} --pr-url <PR URL>`,
         ]
       : [
           "4. Do the work described by `ak describe task`.",
@@ -862,30 +880,31 @@ function cloudTaskInitialPrompt(task: Task, resourceRefs: { owner: string; repo:
   return prompt.join("\n");
 }
 
-// The GitHub credential sessions push with: a repository-scoped ~1h GitHub App
-// installation token minted per session and revoked at binding teardown. No
-// fallback — a task with no repo gets no token; if the App is configured but not
-// installed on the repo, minting throws and dispatch fails loudly rather than
-// pushing with a shared long-lived credential.
-async function githubTokenSecretRef(
+// The repository clone uses a repository-scoped ~1h GitHub App installation
+// token minted per session and revoked at binding teardown. It is mounted into
+// AMA workspace resources only, not exposed as a runtime environment variable.
+// No fallback — a task with no repo gets no token; if the App is configured but
+// not installed on the repo, minting throws and dispatch fails loudly rather
+// than cloning with a shared long-lived credential.
+async function githubCloneCredentialSecretRef(
   env: Env,
   ownerId: string,
   projectId: string,
   vaultId: string,
   akSessionId: string,
   resourceRefs: { owner: string; repo: string }[],
-): Promise<{ name: string; vaultId: string; credentialId: string; versionId?: string | null } | null> {
+): Promise<{ vaultId: string; credentialId: string; versionId?: string | null } | null> {
   const repo = resourceRefs[0];
   if (!repo || !isGithubAppConfigured(env)) return null;
   const minted = await mintGithubInstallationToken(env, repo.owner, repo.repo);
   const secret = await createAmaSessionSecret(env, ownerId, {
     projectId,
     vaultId,
-    name: `GH_TOKEN_${akSessionId.replaceAll(/[^A-Za-z0-9_]/g, "_")}`,
+    name: `GH_CLONE_TOKEN_${akSessionId.replaceAll(/[^A-Za-z0-9_]/g, "_")}`,
     secretValue: minted.token,
-    metadata: { purpose: "github-installation-token", repository: `${repo.owner}/${repo.repo}`, expiresAt: minted.expiresAt },
+    metadata: { purpose: "github-clone-installation-token", repository: `${repo.owner}/${repo.repo}`, expiresAt: minted.expiresAt },
   });
-  return { name: "GH_TOKEN", vaultId, credentialId: secret.credentialId, versionId: secret.activeVersionId };
+  return { vaultId, credentialId: secret.credentialId, versionId: secret.activeVersionId };
 }
 
 async function taskResourceRefs(db: D1, task: Task) {

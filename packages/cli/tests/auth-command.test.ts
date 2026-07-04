@@ -218,6 +218,7 @@ describe("auth git command", () => {
     expect(mockCreateRepositoryGithubToken).toHaveBeenCalledWith("repo-1");
     expect(mockConfigureGithubAuth).toHaveBeenCalledWith("ghs_repo_token", { homeDir: "/tmp/ak-session-home" });
     expect(consoleLogSpy).toHaveBeenCalledWith("Configured GitHub auth for org/repo; gh credentials configured; expires at 2026-06-25T13:00:00Z");
+    expect(consoleLogSpy).toHaveBeenCalledWith("Token validity: about 1 hour. If it expires, re-run `ak auth git repo-1` to mint a fresh token.");
   });
 
   it("uses AMA_WORKSPACE .home for worker GitHub auth when the bridge session home is absent", async () => {

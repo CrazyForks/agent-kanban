@@ -769,6 +769,32 @@ async function requireTaskManager(c: { env: Env; get: (key: string) => any }, ta
   return identity;
 }
 
+async function isCurrentTaskWorkerForRepository(
+  db: D1,
+  ownerId: string,
+  agentId: string,
+  sessionId: string | null,
+  repositoryId: string,
+): Promise<boolean> {
+  if (!sessionId) return false;
+  const row = await db
+    .prepare(
+      `
+      SELECT t.id FROM tasks t
+      JOIN boards b ON b.id = t.board_id
+      WHERE b.owner_id = ?
+        AND t.repository_id = ?
+        AND t.assigned_to = ?
+        AND t.status IN ('todo', 'in_progress', 'in_review')
+        AND json_extract(t.metadata, '$.annotations."agentSessionId"') = ?
+      LIMIT 1
+    `,
+    )
+    .bind(ownerId, repositoryId, agentId, sessionId)
+    .first<{ id: string }>();
+  return Boolean(row);
+}
+
 async function validateTaskManagementTransition(
   c: { env: Env; get: (key: string) => any },
   action: "complete" | "release" | "cancel" | "reject",
@@ -2669,8 +2695,13 @@ api.post("/api/repositories/:id/github-token", async (c) => {
   if (!repo) throw new HTTPException(404, { message: "Repository not found" });
   if (c.get("identityType") === "agent:worker") {
     const agentId = c.get("agentId");
-    if (!agentId || !(await isActiveMaintainerForRepository(c.env.DB, ownerId, agentId, repo.id))) {
-      throw new HTTPException(403, { message: "Worker agent is not an active maintainer for this repository" });
+    const sessionId = c.get("sessionId") || null;
+    const allowed = agentId
+      ? (await isActiveMaintainerForRepository(c.env.DB, ownerId, agentId, repo.id)) ||
+        (await isCurrentTaskWorkerForRepository(c.env.DB, ownerId, agentId, sessionId, repo.id))
+      : false;
+    if (!allowed) {
+      throw new HTTPException(403, { message: "Worker agent is not an active maintainer or current task worker for this repository" });
     }
   }
   const githubUrl = new URL(repo.url);

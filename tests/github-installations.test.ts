@@ -113,7 +113,7 @@ async function createVerifiedUserToken(): Promise<{ token: string; userId: strin
   return { token: result.token, userId: result.user.id };
 }
 
-async function createWorkerSessionToken(ownerId: string, agentId: string): Promise<string> {
+async function createWorkerSession(ownerId: string, agentId: string): Promise<{ token: string; sessionId: string }> {
   const { createAmaAgentSession } = await import("../apps/web/server/agentSessionRepo");
   const sessionId = randomUUID();
   const keypair = await crypto.subtle.generateKey({ name: "Ed25519" } as any, true, ["sign", "verify"]);
@@ -125,11 +125,16 @@ async function createWorkerSessionToken(ownerId: string, agentId: string): Promi
     sessionPublicKey: pubJwk.x!,
     amaSessionId: `ama-session-${sessionId}`,
   });
-  return await new SignJWT({ sub: sessionId, aid: agentId, jti: randomUUID(), aud: "http://localhost:8788" })
+  const token = await new SignJWT({ sub: sessionId, aid: agentId, jti: randomUUID(), aud: "http://localhost:8788" })
     .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
     .setIssuedAt()
     .setExpirationTime("60s")
     .sign((keypair as any).privateKey);
+  return { token, sessionId };
+}
+
+async function createWorkerSessionToken(ownerId: string, agentId: string): Promise<string> {
+  return (await createWorkerSession(ownerId, agentId)).token;
 }
 
 // Seed a github account row so backfill can join on it.
@@ -1679,8 +1684,153 @@ describe("recordInstallationFromSetup", () => {
 
     expect(res.status).toBe(403);
     const body = (await res.json()) as any;
-    expect(body.error.message).toBe("Worker agent is not an active maintainer for this repository");
+    expect(body.error.message).toBe("Worker agent is not an active maintainer or current task worker for this repository");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/repositories/:id/github-token allows the current task worker for its task repository", async () => {
+    const { upsertInstallation } = await import("../apps/web/server/githubInstallations");
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { recordBoardRepository } = await import("../apps/web/server/boardRepositoryRepo");
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    const { createTask } = await import("../apps/web/server/taskRepo");
+    const ownerId = `task-worker-token-owner-${randomUUID()}`;
+    await seedUser(db, ownerId, `${ownerId}@test.local`);
+    await upsertInstallation(db, {
+      installationId: 8_003,
+      ownerId,
+      accountLogin: "task-worker-org",
+      accountId: 8_003,
+      accountType: "Organization",
+      repositorySelection: "all",
+    });
+    const board = await createBoard(db, ownerId, `task-worker-board-${randomUUID()}`, "dev");
+    const repo = await createRepository(db, ownerId, {
+      name: `task-worker-repo-${randomUUID()}`,
+      url: "https://github.com/task-worker-org/task-worker-repo",
+    });
+    await recordBoardRepository(db, board.id, repo.id);
+    const worker = await createTestAgent(db, ownerId, {
+      name: "Task worker",
+      username: `task-worker-${randomUUID()}`,
+      runtime: "claude",
+    });
+    const { token: jwt, sessionId } = await createWorkerSession(ownerId, worker.id);
+    await createTask(db, ownerId, {
+      title: "Use task-scoped GitHub auth",
+      board_id: board.id,
+      assigned_to: worker.id,
+      repository_id: repo.id,
+      metadata: { annotations: { agentSessionId: sessionId } },
+      skipRuntimeAvailability: true,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url === "https://api.github.com/repos/task-worker-org/task-worker-repo/installation") {
+          return new Response(JSON.stringify({ id: 8_003 }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        if (url === "https://api.github.com/app/installations/8003/access_tokens") {
+          const body = input instanceof Request ? await input.clone().text() : String((init as any)?.body ?? "");
+          expect(JSON.parse(body)).toEqual({
+            repositories: ["task-worker-repo"],
+            permissions: { contents: "write", issues: "write", pull_requests: "write" },
+          });
+          return new Response(JSON.stringify({ token: "ghs_task_worker", expires_at: "2026-06-25T15:00:00Z" }), {
+            status: 201,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    const res = await apiRequest(
+      "POST",
+      `/api/repositories/${repo.id}/github-token`,
+      undefined,
+      {},
+      { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
+      jwt,
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      repository_id: repo.id,
+      full_name: "task-worker-org/task-worker-repo",
+      token: "ghs_task_worker",
+    });
+  });
+
+  it("POST /api/repositories/:id/github-token rejects task workers that are not bound to the requested active task repository", async () => {
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { recordBoardRepository } = await import("../apps/web/server/boardRepositoryRepo");
+    const { createRepository } = await import("../apps/web/server/repositoryRepo");
+    const { createTask } = await import("../apps/web/server/taskRepo");
+
+    const cases = [
+      { name: "session mismatch", taskSession: "other" as const },
+      { name: "repository mismatch", requestOtherRepo: true },
+      { name: "done task", status: "done" },
+      { name: "cancelled task", status: "cancelled" },
+      { name: "assigned to another agent", assignedToOtherAgent: true },
+    ];
+
+    for (const scenario of cases) {
+      const ownerId = `task-worker-deny-${scenario.name.replaceAll(" ", "-")}-${randomUUID()}`;
+      await seedUser(db, ownerId, `${ownerId}@test.local`);
+      const board = await createBoard(db, ownerId, `task-worker-deny-board-${randomUUID()}`, "dev");
+      const repo = await createRepository(db, ownerId, {
+        name: `task-worker-deny-repo-${randomUUID()}`,
+        url: `https://github.com/task-worker-deny-org/${randomUUID()}`,
+      });
+      const otherRepo = await createRepository(db, ownerId, {
+        name: `task-worker-deny-other-repo-${randomUUID()}`,
+        url: `https://github.com/task-worker-deny-org/${randomUUID()}`,
+      });
+      await recordBoardRepository(db, board.id, repo.id);
+      await recordBoardRepository(db, board.id, otherRepo.id);
+      const worker = await createTestAgent(db, ownerId, {
+        name: "Denied task worker",
+        username: `denied-task-worker-${randomUUID()}`,
+        runtime: "claude",
+      });
+      const otherWorker = await createTestAgent(db, ownerId, {
+        name: "Other task worker",
+        username: `other-task-worker-${randomUUID()}`,
+        runtime: "claude",
+      });
+      const { token: jwt, sessionId } = await createWorkerSession(ownerId, worker.id);
+      const task = await createTask(db, ownerId, {
+        title: `Denied task-scoped GitHub auth: ${scenario.name}`,
+        board_id: board.id,
+        assigned_to: scenario.assignedToOtherAgent ? otherWorker.id : worker.id,
+        repository_id: repo.id,
+        metadata: { annotations: { agentSessionId: scenario.taskSession === "other" ? randomUUID() : sessionId } },
+        skipRuntimeAvailability: true,
+      });
+      if (scenario.status) {
+        await db.prepare("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?").bind(scenario.status, new Date().toISOString(), task.id).run();
+      }
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      const res = await apiRequest(
+        "POST",
+        `/api/repositories/${scenario.requestOtherRepo ? otherRepo.id : repo.id}/github-token`,
+        undefined,
+        {},
+        { GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: sharedPrivateKey },
+        jwt,
+      );
+
+      expect(res.status, scenario.name).toBe(403);
+      const body = (await res.json()) as any;
+      expect(body.error.message, scenario.name).toBe("Worker agent is not an active maintainer or current task worker for this repository");
+      expect(fetchMock, scenario.name).not.toHaveBeenCalled();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("POST /api/repositories/:id/github-token rejects repos not covered by this owner's GitHub App installation", async () => {

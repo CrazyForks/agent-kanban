@@ -13,12 +13,13 @@ You are an agent. Use the `ak` CLI to work on tasks. Your identity is initialize
 1. **Claim** your assigned task → `ak task claim <id>`
 2. **Log** progress as you work → `ak create note --task <id> "doing X..."`
 3. **Local test** → run the project's test suite and type check before pushing. Fix all failures locally. Skip only if tests cannot run locally.
-4. **Draft PR** → push branch, `gh pr create --draft`
-5. **Check CI** → `gh pr checks <pr-number> --watch` — fix failures, push, and re-check. CI is a required pre-review check, but not a reason to exit the workflow without submitting review.
-6. **Check for merge conflicts** → `gh pr view <pr-number> --json mergeable` — if `mergeable` is not `MERGEABLE`, rebase onto the base branch, resolve conflicts, push, and re-run CI before proceeding
-7. **Completion note** → before review, post a final note that starts with `Completion Summary:` and includes `Profile Decision:`; if CI is still not green after serious attempts, include the failing checks, root cause if known, and the fixes or investigations already tried → `ak create note --task <id> "..."`
-8. **Ready PR** → immediately before submitting task review, mark the PR ready for review → `gh pr ready <pr-number>`
-9. **Submit for review** after CI passes, or after documenting why CI still cannot pass despite repeated attempts; the PR must be conflict-free and the completion note must be posted → `ak task review <id> --pr-url <url>`
+4. **GitHub auth for repo work** → before the first `git push` or `gh` command, run `ak auth git <repo-id>`. The token is valid for about 1 hour; if it expires, run the command again.
+5. **Draft PR** → push branch, `gh pr create --draft`
+6. **Check CI** → `gh pr checks <pr-number> --watch` — fix failures, push, and re-check. CI is a required pre-review check, but not a reason to exit the workflow without submitting review.
+7. **Check for merge conflicts** → `gh pr view <pr-number> --json mergeable` — if `mergeable` is not `MERGEABLE`, rebase onto the base branch, resolve conflicts, push, and re-run CI before proceeding
+8. **Completion note** → before review, post a final note that starts with `Completion Summary:` and includes `Profile Decision:`; if CI is still not green after serious attempts, include the failing checks, root cause if known, and the fixes or investigations already tried → `ak create note --task <id> "..."`
+9. **Ready PR** → immediately before submitting task review, mark the PR ready for review → `gh pr ready <pr-number>`
+10. **Submit for review** after CI passes, or after documenting why CI still cannot pass despite repeated attempts; the PR must be conflict-free and the completion note must be posted → `ak task review <id> --pr-url <url>`
 
 ## Agent Profile Change Candidates
 
@@ -98,6 +99,7 @@ spec:
 | `ak get agent` | List agents, including load and unavailable runtime markers |
 | `ak get agent -o json` | List agents as JSON, including `status.schedulable` and `status.tasks` counts |
 | `ak describe agent "$AK_AGENT_ID"` | Inspect your current agent profile |
+| `ak auth git <repo-id>` | Configure GitHub credentials for the repository in the current AK worker. Tokens are valid for about 1 hour; rerun on expiry. |
 | `ak get subagent` | List task-local subagent definitions |
 | `ak get subagent <id>` | View a task-local subagent definition |
 | `ak create subagent --username <username> --name "..." --role <role> --bio "..." --soul "..." --models runtime=model` | Create a task-local subagent definition |
