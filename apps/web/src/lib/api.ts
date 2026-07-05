@@ -140,6 +140,17 @@ export const api = {
     deleteLabel: (id: string, name: string) => request<any>("DELETE", `/boards/${id}/labels/${encodeURIComponent(name)}`),
     maintainers: (id: string) => request<any[]>("GET", `/boards/${id}/maintainers`),
     getMaintainer: (id: string, maintainerId: string) => request<any>("GET", `/boards/${id}/maintainers/${maintainerId}`),
+    maintainerVariables: (id: string, maintainerId: string) =>
+      request<{ data: { name: string }[]; credential_id: string | null; updated_at: string | null }>(
+        "GET",
+        `/boards/${id}/maintainers/${maintainerId}/variables`,
+      ),
+    updateMaintainerVariables: (id: string, maintainerId: string, body: { variables: Record<string, string> }) =>
+      request<{ data: { name: string }[]; credential_id: string | null; updated_at: string | null }>(
+        "PUT",
+        `/boards/${id}/maintainers/${maintainerId}/variables`,
+        body,
+      ),
     maintainerRuns: (id: string, maintainerId: string, limit = 100) =>
       request<{ data: any[]; pagination: any }>("GET", `/boards/${id}/maintainers/${maintainerId}/runs?limit=${limit}`),
     maintainerMemories: (id: string, maintainerId: string, limit = 100) =>

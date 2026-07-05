@@ -81,6 +81,7 @@ import {
   readAmaSession,
   updateAmaHttpAgentTrigger,
   updateAmaScheduledAgentTrigger,
+  updateAmaVaultCredentialSecret,
 } from "./amaRuntime";
 import { authMiddleware } from "./auth";
 import { createAuth, hasAmaResources } from "./betterAuth";
@@ -2152,6 +2153,66 @@ api.get("/api/boards/:id/maintainers/:maintainerId", async (c) => {
   return c.json(await publicBoardMaintainerWithAmaStatus(c.env.DB, c.env, ownerId, maintainer));
 });
 
+api.get("/api/boards/:id/maintainers/:maintainerId/variables", async (c) => {
+  if (!isAmaTaskDispatchConfigured(c.env)) {
+    throw new HTTPException(500, { message: "Task dispatch runtime is not configured" });
+  }
+  const ownerId = c.get("ownerId");
+  const boardId = c.req.param("id");
+  const board = await getOwnedBoard(c.env.DB, ownerId, boardId);
+  if (!board) throw new HTTPException(404, { message: "Board not found" });
+  const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
+  if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
+  if (!maintainer.ama_board_vault_id) return c.json(emptyMaintainerVariables());
+  const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
+  const credentials = await listAmaVaultCredentials(c.env, ownerId, amaProjectId, maintainer.ama_board_vault_id);
+  return c.json(publicMaintainerVariables(credentials, maintainer.ama_board_vault_id));
+});
+
+api.put("/api/boards/:id/maintainers/:maintainerId/variables", async (c) => {
+  if (!isAmaTaskDispatchConfigured(c.env)) {
+    throw new HTTPException(500, { message: "Task dispatch runtime is not configured" });
+  }
+  const ownerId = c.get("ownerId");
+  const boardId = c.req.param("id");
+  const board = await getOwnedBoard(c.env.DB, ownerId, boardId);
+  if (!board) throw new HTTPException(404, { message: "Board not found" });
+  const maintainer = await getBoardMaintainer(c.env.DB, ownerId, boardId, c.req.param("maintainerId"));
+  if (!maintainer) throw new HTTPException(404, { message: "Board maintainer not found" });
+  const variables = parseMaintainerVariables(await readJsonBody(c.req.json()));
+  const amaProjectId = await resolveAmaProjectId(c.env.DB, c.env, ownerId);
+  const boardVaultId = await ensureBoardMaintainerVault(c.env.DB, c.env, ownerId, amaProjectId, board, maintainer);
+  const credentials = await listAmaVaultCredentials(c.env, ownerId, amaProjectId, boardVaultId);
+  const userVariablesCredential = activeMaintainerCredential(credentials, boardVaultId, USER_VARIABLES_CREDENTIAL_NAME);
+  let createdUserVariablesCredential = false;
+
+  if (userVariablesCredential) {
+    await updateAmaVaultCredentialSecret(c.env, ownerId, {
+      projectId: amaProjectId,
+      vaultId: boardVaultId,
+      credentialId: userVariablesCredential.id,
+      referenceName: USER_VARIABLES_CREDENTIAL_NAME,
+      secretData: variables,
+      metadata: { boardId, maintainerId: maintainer.id },
+    });
+  } else {
+    await createAmaSessionSecret(c.env, ownerId, {
+      projectId: amaProjectId,
+      vaultId: boardVaultId,
+      name: USER_VARIABLES_CREDENTIAL_NAME,
+      secretData: variables,
+      metadata: { boardId, maintainerId: maintainer.id },
+    });
+    createdUserVariablesCredential = true;
+  }
+
+  if (createdUserVariablesCredential) {
+    await syncMaintainerSecretEnvRefs(c.env, ownerId, amaProjectId, boardVaultId, maintainer);
+  }
+  const refreshed = await listAmaVaultCredentials(c.env, ownerId, amaProjectId, boardVaultId);
+  return c.json(publicMaintainerVariables(refreshed, boardVaultId));
+});
+
 api.post("/api/boards/:id/maintainers/:maintainerId/sessions", async (c) => {
   const ownerId = c.get("ownerId");
   const boardId = c.req.param("id");
@@ -2499,6 +2560,91 @@ function boardMaintainerHttpPrompt(boardId: string) {
 
 const MAINTAINER_API_KEY_PERMISSIONS = { maintainerSession: ["create"] };
 const AK_API_KEY_DATA_KEY = "AK_API_KEY";
+const ENV_VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const MAX_MAINTAINER_VARIABLES = 100;
+type MaintainerVaultCredential = Awaited<ReturnType<typeof listAmaVaultCredentials>>[number];
+
+async function readJsonBody(input: Promise<unknown>): Promise<unknown> {
+  try {
+    return await input;
+  } catch {
+    throw new HTTPException(400, { message: "Request body must be valid JSON" });
+  }
+}
+
+function parseMaintainerVariables(body: unknown): Record<string, string> {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new HTTPException(400, { message: "variables must be an object" });
+  }
+  const variables = (body as Record<string, unknown>).variables;
+  if (!variables || typeof variables !== "object" || Array.isArray(variables)) {
+    throw new HTTPException(400, { message: "variables must be an object" });
+  }
+  const entries = Object.entries(variables);
+  if (entries.length > MAX_MAINTAINER_VARIABLES) {
+    throw new HTTPException(400, { message: `variables cannot contain more than ${MAX_MAINTAINER_VARIABLES} keys` });
+  }
+  if (entries.length === 0) {
+    throw new HTTPException(400, { message: "variables must contain at least one key" });
+  }
+  const normalized: Record<string, string> = {};
+  for (const [name, value] of entries) {
+    if (!ENV_VARIABLE_NAME_PATTERN.test(name)) {
+      throw new HTTPException(400, { message: `Invalid environment variable name: ${name}` });
+    }
+    if (typeof value !== "string") {
+      throw new HTTPException(400, { message: `Environment variable ${name} must be a string` });
+    }
+    if (value.length === 0) {
+      throw new HTTPException(400, { message: `Environment variable ${name} cannot be empty` });
+    }
+    if (value.length > 16000) {
+      throw new HTTPException(400, { message: `Environment variable ${name} is too large` });
+    }
+    normalized[name] = value;
+  }
+  return Object.fromEntries(Object.entries(normalized).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+function emptyMaintainerVariables() {
+  return { data: [], credential_id: null, updated_at: null };
+}
+
+function activeMaintainerCredential(
+  credentials: MaintainerVaultCredential[],
+  vaultId: string,
+  credentialName: string,
+): MaintainerVaultCredential | null {
+  const matches = credentials.filter((credential) => credential.state === "active" && credential.name === credentialName);
+  if (matches.length > 1) {
+    throw new HTTPException(409, { message: `AMA vault ${vaultId} has multiple active credentials named ${credentialName}` });
+  }
+  return matches[0] ?? null;
+}
+
+function publicMaintainerVariables(credentials: MaintainerVaultCredential[], vaultId: string) {
+  const credential = activeMaintainerCredential(credentials, vaultId, USER_VARIABLES_CREDENTIAL_NAME);
+  if (!credential) return emptyMaintainerVariables();
+  return {
+    data: credential.dataKeys
+      .slice()
+      .sort((a, b) => a.localeCompare(b))
+      .map((name) => ({ name })),
+    credential_id: credential.id,
+    updated_at: credential.updatedAt,
+  };
+}
+
+async function syncMaintainerSecretEnvRefs(env: Env, ownerId: string, amaProjectId: string, boardVaultId: string, maintainer: BoardMaintainer) {
+  const runtimeSecretEnv = await amaRuntimeSecretEnvForCredentialNames(env, ownerId, amaProjectId, boardVaultId, [
+    AK_VARIABLES_CREDENTIAL_NAME,
+    USER_VARIABLES_CREDENTIAL_NAME,
+  ]);
+  await updateAmaScheduledAgentTrigger(env, ownerId, amaProjectId, maintainer.ama_schedule_id, { runtimeSecretEnv });
+  if (maintainer.ama_http_trigger_id) {
+    await updateAmaHttpAgentTrigger(env, ownerId, amaProjectId, maintainer.ama_http_trigger_id, { runtimeSecretEnv });
+  }
+}
 
 async function createBoardMaintainerVault(env: Env, ownerId: string, amaProjectId: string, board: { id: string; name: string }) {
   return await createAmaVault(env, ownerId, {

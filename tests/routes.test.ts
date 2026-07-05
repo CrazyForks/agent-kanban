@@ -453,7 +453,10 @@ describe("routes", () => {
     const memoryStoreRequests: any[] = [];
     const memoryRequests: any[] = [];
     const sessionSecretRequests: any[] = [];
+    const userVariableRequests: any[] = [];
+    const userVariableUpdateRequests: any[] = [];
     let maintainerApiKey: string | null = null;
+    let userVariablesCreated = false;
     const triggerRequests: any[] = [];
     const updateRequests: Array<{ triggerId: string; body: any }> = [];
     const archiveRequests: string[] = [];
@@ -498,6 +501,18 @@ describe("routes", () => {
       }
       if (url === "https://ama.test/api/v1/vaults/vault_maintainer_board/credentials" && method === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
+        if (body.name === "user-variables") {
+          userVariableRequests.push(body);
+          expect(body.type).toBe("opaque");
+          expect(body.metadata).toEqual({
+            boardId: maintainerBoard.id,
+            maintainerId: expect.any(String),
+          });
+          expect(body.secret.referenceName).toBe("user-variables");
+          expect(body.secret.stringData).toEqual({ GH_TOKEN: "ghp_secret", FEATURE_FLAG: "true" });
+          userVariablesCreated = true;
+          return jsonResponse(amaCredential("vaultcred_user_variables", "vaultver_user_variables"), 201);
+        }
         sessionSecretRequests.push(body);
         expect(body.name).toBe("ak-variables");
         expect(body.type).toBe("opaque");
@@ -511,8 +526,20 @@ describe("routes", () => {
         maintainerApiKey = body.secret.stringData.AK_API_KEY;
         return jsonResponse(amaCredential("vaultcred_maintainer", "vaultver_maintainer"), 201);
       }
+      if (url === "https://ama.test/api/v1/vaults/vault_maintainer_board/credentials/vaultcred_user_variables" && method === "PUT") {
+        const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
+        userVariableUpdateRequests.push(body);
+        expect(body.referenceName).toBe("user-variables");
+        expect(body.stringData).toEqual({ GH_TOKEN: "ghp_rotated" });
+        return jsonResponse(amaCredential("vaultcred_user_variables", "vaultver_user_variables_2"), 200);
+      }
       if (url === "https://ama.test/api/v1/vaults/vault_maintainer_board/credentials?limit=100" && method === "GET") {
-        return jsonResponse({ data: [amaCredentialListItem("vaultcred_maintainer", "ak-variables", ["AK_API_KEY"])] });
+        return jsonResponse({
+          data: [
+            amaCredentialListItem("vaultcred_maintainer", "ak-variables", ["AK_API_KEY"]),
+            ...(userVariablesCreated ? [amaCredentialListItem("vaultcred_user_variables", "user-variables", ["FEATURE_FLAG", "GH_TOKEN"])] : []),
+          ],
+        });
       }
       if (url === "https://ama.test/api/v1/memory-stores" && method === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
@@ -799,6 +826,7 @@ describe("routes", () => {
       expect(memoryStoreRequests).toHaveLength(1);
       expect(memoryRequests).toHaveLength(0);
       expect(sessionSecretRequests).toHaveLength(1);
+      expect(userVariableRequests).toHaveLength(0);
       expect(triggerRequests).toHaveLength(2);
       expect(triggerRequests.map((request) => request.spec.source.type).sort()).toEqual(["http", "schedule"]);
       expect(triggerRequests[0].spec.template.metadata.labels).toEqual({ maintainerId: maintainer.id });
@@ -856,6 +884,66 @@ describe("routes", () => {
         api_key_id: expect.any(String),
       });
       expect(maintainerApiKey).toEqual(expect.any(String));
+
+      const variablesBeforeRes = await apiRequest(
+        "GET",
+        `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/variables`,
+        undefined,
+        userToken,
+      );
+      expect(variablesBeforeRes.status).toBe(200);
+      await expect(variablesBeforeRes.json()).resolves.toMatchObject({ data: [], credential_id: null, updated_at: null });
+
+      const emptyVariablesRes = await apiRequest(
+        "PUT",
+        `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/variables`,
+        { variables: {} },
+        userToken,
+      );
+      expect(emptyVariablesRes.status).toBe(400);
+      await expect(emptyVariablesRes.json()).resolves.toMatchObject({ error: { message: "variables must contain at least one key" } });
+
+      const variablesRes = await apiRequest(
+        "PUT",
+        `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/variables`,
+        { variables: { GH_TOKEN: "ghp_secret", FEATURE_FLAG: "true" } },
+        userToken,
+      );
+      expect(variablesRes.status).toBe(200);
+      await expect(variablesRes.json()).resolves.toMatchObject({
+        data: [{ name: "FEATURE_FLAG" }, { name: "GH_TOKEN" }],
+        credential_id: "vaultcred_user_variables",
+      });
+      expect(userVariableRequests).toHaveLength(1);
+      const variableSyncRequests = updateRequests.slice(-2);
+      expect(variableSyncRequests.map((request) => request.triggerId).sort()).toEqual(["http_maintainer", "sched_maintainer"]);
+      for (const request of variableSyncRequests) {
+        expect(request.body.spec.template.spec.envFrom).toEqual([
+          {
+            type: "secret",
+            secretRef: amaCredentialSecretRef("vault_maintainer_board", "vaultcred_maintainer"),
+          },
+          {
+            type: "secret",
+            secretRef: amaCredentialSecretRef("vault_maintainer_board", "vaultcred_user_variables"),
+          },
+        ]);
+      }
+      expect(fetchMock.mock.calls.map(([request]) => reqUrl(request as RequestInfo | URL)).some((url) => url.includes("/api/v1/sessions"))).toBe(
+        false,
+      );
+
+      const updateRequestCountAfterFirstVariablesSave = updateRequests.length;
+      const rotatedVariablesRes = await apiRequest(
+        "PUT",
+        `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/variables`,
+        { variables: { GH_TOKEN: "ghp_rotated" } },
+        userToken,
+      );
+      expect(rotatedVariablesRes.status).toBe(200);
+      expect(userVariableUpdateRequests).toHaveLength(1);
+      expect(updateRequests).toHaveLength(updateRequestCountAfterFirstVariablesSave);
+
       const { publicKey } = (await crypto.subtle.generateKey({ name: "Ed25519" } as any, true, ["sign", "verify"])) as CryptoKeyPair;
       const pubJwk = await crypto.subtle.exportKey("jwk", publicKey);
       const maintainerSessionId = crypto.randomUUID();
@@ -940,6 +1028,10 @@ describe("routes", () => {
                   {
                     type: "secret",
                     secretRef: amaCredentialSecretRef("vault_maintainer_board", "vaultcred_maintainer"),
+                  },
+                  {
+                    type: "secret",
+                    secretRef: amaCredentialSecretRef("vault_maintainer_board", "vaultcred_user_variables"),
                   },
                 ],
               },

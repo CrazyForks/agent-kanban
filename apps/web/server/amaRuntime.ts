@@ -32,7 +32,6 @@ export type AmaResourceRef = Record<string, unknown>;
 export interface AmaRuntimeSecretRef {
   vaultId: string;
   credentialId: string;
-  versionId?: string | null;
   items?: AmaSecretItem[];
 }
 
@@ -113,8 +112,16 @@ export interface AmaSessionSecretInput {
 
 export interface AmaSessionSecret {
   credentialId: string;
-  activeVersionId: string;
   secretRef: string;
+}
+
+export interface AmaVaultCredentialSecretInput {
+  projectId: string;
+  vaultId: string;
+  credentialId: string;
+  referenceName?: string;
+  secretData: Record<string, string>;
+  metadata?: Record<string, unknown>;
 }
 
 interface AmaLinkedAccountRow {
@@ -315,6 +322,7 @@ export interface AmaVaultCredential {
   name: string;
   dataKeys: string[];
   state: string;
+  updatedAt: string | null;
 }
 
 export interface AmaEnvironmentInput {
@@ -402,18 +410,15 @@ function toRuntimeName(runtime: string): RuntimeName {
   return runtime as RuntimeName;
 }
 
-function credentialVersionSecretRef(entry: Pick<AmaRuntimeSecretEnvRef, "vaultId" | "credentialId" | "versionId">): string {
+function credentialSecretRef(entry: Pick<AmaRuntimeSecretEnvRef, "vaultId" | "credentialId">): string {
   if (!entry.vaultId) throw new Error(`AMA secret env reference for credential ${entry.credentialId} is missing vaultId`);
   const vaultId = encodeURIComponent(entry.vaultId);
   const credentialId = encodeURIComponent(entry.credentialId);
-  if (entry.versionId) {
-    return `ama://vaults/${vaultId}/credentials/${credentialId}/versions/${encodeURIComponent(entry.versionId)}`;
-  }
   return `ama://vaults/${vaultId}/credentials/${credentialId}`;
 }
 
 export function amaCredentialSecretRef(vaultId: string, credentialId: string): string {
-  return credentialVersionSecretRef({ vaultId, credentialId });
+  return credentialSecretRef({ vaultId, credentialId });
 }
 
 function toAmaEnvFrom(entries: AmaRuntimeSecretEnvRef[]): EnvFromEntry[] {
@@ -422,7 +427,7 @@ function toAmaEnvFrom(entries: AmaRuntimeSecretEnvRef[]): EnvFromEntry[] {
       ({
         type: "secret",
         ...(entry.name !== undefined ? { name: entry.name } : {}),
-        secretRef: credentialVersionSecretRef(entry),
+        secretRef: credentialSecretRef(entry),
         ...(entry.key !== undefined ? { key: entry.key } : {}),
       }) as EnvFromEntry,
   );
@@ -443,7 +448,7 @@ function toAmaRuntimeResources(
         name,
         type: "git_repository",
         url: `https://github.com/${resource.owner}/${resource.repo}.git`,
-        ...(gitCredentialSecret ? { secretRef: credentialVersionSecretRef(gitCredentialSecret) } : {}),
+        ...(gitCredentialSecret ? { secretRef: credentialSecretRef(gitCredentialSecret) } : {}),
         ...(gitCredentialSecret?.items ? { items: gitCredentialSecret.items } : {}),
       });
       volumeMounts.push({ name, mountPath: `/workspace/repos/github.com/${resource.owner}/${resource.repo}` });
@@ -636,6 +641,7 @@ export async function listAmaVaultCredentials(env: Env, ownerId: string, project
     id: credential.metadata.uid,
     name: credential.metadata.name,
     state: credential.status.phase,
+    updatedAt: credential.metadata.updatedAt,
     dataKeys: credential.status.activeVersion?.spec.dataKeys ?? [],
   }));
 }
@@ -775,13 +781,27 @@ export async function createAmaSessionSecret(env: Env, ownerId: string, input: A
       metadata: input.metadata ?? {},
     },
   });
-  if (!credential.status.activeVersionId) {
-    throw new Error("AMA vault credential response did not include activeVersionId");
-  }
   return {
     credentialId: credential.metadata.uid,
-    activeVersionId: credential.status.activeVersionId,
-    secretRef: credentialVersionSecretRef({ vaultId: input.vaultId, credentialId: credential.metadata.uid }),
+    secretRef: credentialSecretRef({ vaultId: input.vaultId, credentialId: credential.metadata.uid }),
+  };
+}
+
+export async function updateAmaVaultCredentialSecret(env: Env, ownerId: string, input: AmaVaultCredentialSecretInput): Promise<AmaSessionSecret> {
+  if (Object.keys(input.secretData).length === 0) {
+    throw new Error("AMA vault credential secret requires at least one secret data key");
+  }
+  const client = await createAmaClient(env, ownerId, input.projectId);
+  const credential = await withAmaErrorDetails("update vault credential secret", () =>
+    client.vaults.updateCredentialSecret(input.vaultId, input.credentialId, {
+      stringData: input.secretData,
+      referenceName: input.referenceName,
+      metadata: input.metadata ?? {},
+    }),
+  );
+  return {
+    credentialId: credential.metadata.uid,
+    secretRef: credentialSecretRef({ vaultId: input.vaultId, credentialId: credential.metadata.uid }),
   };
 }
 
@@ -817,9 +837,16 @@ export async function readAmaSessionUsageTotals(
   return records === 0 ? null : totals;
 }
 
-export async function revokeAmaVaultCredential(env: Env, ownerId: string, projectId: string, vaultId: string, credentialId: string): Promise<void> {
+export async function revokeAmaVaultCredential(
+  env: Env,
+  ownerId: string,
+  projectId: string,
+  vaultId: string,
+  credentialId: string,
+  reason = "AK agent session closed",
+): Promise<void> {
   const client = await createAmaClient(env, ownerId, projectId);
-  await client.vaults.updateCredential(vaultId, credentialId, { state: "revoked", revokeReason: "AK agent session closed" });
+  await client.vaults.updateCredential(vaultId, credentialId, { state: "revoked", revokeReason: reason });
 }
 
 export async function sendAmaSessionMessage(

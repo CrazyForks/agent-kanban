@@ -167,6 +167,21 @@ export function useBoardMaintainerMemories(boardId: string | undefined, maintain
   return { memories: data.data, pagination: data.pagination, loading, error, refresh: refetch };
 }
 
+export function useBoardMaintainerVariables(boardId: string | undefined, maintainerId: string | undefined) {
+  const {
+    data = { data: [], credential_id: null, updated_at: null },
+    isLoading: loading,
+    refetch,
+    error,
+  } = useQuery({
+    queryKey: ["board-maintainer-variables", boardId, maintainerId],
+    queryFn: () => api.boards.maintainerVariables(boardId!, maintainerId!),
+    enabled: !!boardId && !!maintainerId,
+  });
+
+  return { variables: data.data, credentialId: data.credential_id, updatedAt: data.updated_at, loading, error, refresh: refetch };
+}
+
 export function useCreateBoardMaintainer(boardId: string) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -194,6 +209,17 @@ export function useDeleteBoardMaintainer(boardId: string) {
     mutationFn: (maintainerId: string) => api.boards.deleteMaintainer(boardId, maintainerId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["board-maintainers", boardId] });
+    },
+  });
+}
+
+export function useUpdateBoardMaintainerVariables(boardId: string | undefined, maintainerId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (variables: Record<string, string>) => api.boards.updateMaintainerVariables(boardId!, maintainerId!, { variables }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["board-maintainer-variables", boardId, maintainerId] });
+      queryClient.invalidateQueries({ queryKey: ["board-maintainer-sessions", maintainerId] });
     },
   });
 }

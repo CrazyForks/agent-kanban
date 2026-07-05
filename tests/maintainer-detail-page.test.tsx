@@ -19,6 +19,8 @@ const useBoardMaintainer = vi.fn();
 const useBoardMaintainerRuns = vi.fn();
 const useBoardMaintainerSessions = vi.fn();
 const useBoardMaintainerMemories = vi.fn();
+const useBoardMaintainerVariables = vi.fn();
+const useUpdateBoardMaintainerVariables = vi.fn();
 
 vi.mock("../apps/web/src/hooks/useBoard", () => ({
   useBoard: (...args: unknown[]) => useBoard(...args),
@@ -26,6 +28,8 @@ vi.mock("../apps/web/src/hooks/useBoard", () => ({
   useBoardMaintainerRuns: (...args: unknown[]) => useBoardMaintainerRuns(...args),
   useBoardMaintainerSessions: (...args: unknown[]) => useBoardMaintainerSessions(...args),
   useBoardMaintainerMemories: (...args: unknown[]) => useBoardMaintainerMemories(...args),
+  useBoardMaintainerVariables: (...args: unknown[]) => useBoardMaintainerVariables(...args),
+  useUpdateBoardMaintainerVariables: (...args: unknown[]) => useUpdateBoardMaintainerVariables(...args),
 }));
 
 function renderMaintainerDetail() {
@@ -148,6 +152,16 @@ describe("MaintainerDetailPage", () => {
         },
       ],
     });
+    useBoardMaintainerVariables.mockReturnValue({
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      variables: [{ name: "GH_TOKEN" }],
+    });
+    useUpdateBoardMaintainerVariables.mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    });
   });
 
   it("renders maintainer sessions and memory file contents", () => {
@@ -155,6 +169,7 @@ describe("MaintainerDetailPage", () => {
 
     expect(screen.getByRole("heading", { name: "Board maintainer" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Sessions\s*1/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Variables\s*1/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /session_1/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /saltbo\/slink Issue #42/ })).toHaveAttribute("href", "https://github.com/saltbo/slink/issues/42");
     expect(screen.queryByText("run_duplicate")).not.toBeInTheDocument();
@@ -175,6 +190,9 @@ describe("MaintainerDetailPage", () => {
 
     fireEvent.click(screen.getByText("notes/2026-06-08.md"));
     expect(screen.getByText("Follow up later.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Variables/ }));
+    expect(screen.getByText("GH_TOKEN")).toBeInTheDocument();
   });
 
   it("opens a maintainer session chat drawer from the sessions table", () => {

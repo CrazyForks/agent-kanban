@@ -66,6 +66,8 @@ const ROUTE_RULES: { method: string; pattern: RegExp; rule: RouteRule }[] = [
   { method: "PATCH", pattern: /^\/api\/boards\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
   { method: "DELETE", pattern: /^\/api\/boards\/[^/]+$/, rule: { allow: ["user", "agent:leader"] } },
   { method: "POST", pattern: /^\/api\/boards\/[^/]+\/maintainers$/, rule: { allow: ["user", "agent:leader"] } },
+  { method: "GET", pattern: /^\/api\/boards\/[^/]+\/maintainers\/[^/]+\/variables$/, rule: { allow: ["user", "agent:leader"] } },
+  { method: "PUT", pattern: /^\/api\/boards\/[^/]+\/maintainers\/[^/]+\/variables$/, rule: { allow: ["user", "agent:leader"] } },
   {
     method: "POST",
     pattern: /^\/api\/boards\/[^/]+\/maintainers\/[^/]+\/sessions$/,

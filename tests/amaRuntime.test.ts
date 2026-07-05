@@ -210,7 +210,6 @@ describe("AMA runtime adapter", () => {
       }),
     ).resolves.toEqual({
       credentialId: "vaultcred_123",
-      activeVersionId: "vaultver_123",
       secretRef: "ama://vaults/vault_123/credentials/vaultcred_123",
     });
   });

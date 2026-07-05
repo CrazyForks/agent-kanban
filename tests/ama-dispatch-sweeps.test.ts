@@ -1400,28 +1400,6 @@ describe("amaRuntime vault credential helpers", () => {
     expect(revokeCalls).toHaveLength(1);
     expect(revokeCalls[0].body).toMatchObject({ state: "revoked", revokeReason: "AK agent session closed" });
   });
-
-  it("createAmaSessionSecret throws when vault credential response is missing activeVersionId", async () => {
-    const { createAmaSessionSecret } = await import("../apps/web/server/amaRuntime");
-
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = reqUrl(input);
-      if (url === "https://ama.test/api/v1/vaults/vault_noversion/credentials")
-        // Credential response missing activeVersionId
-        return jsonResponse(amaCredential("cred_noversion"), 201);
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(
-      createAmaSessionSecret(makeEnv(), OWNER, {
-        projectId: "project_test",
-        vaultId: "vault_noversion",
-        name: "test-secret",
-        secretValue: "secret-value",
-      }),
-    ).rejects.toThrow("AMA vault credential response did not include activeVersionId");
-  });
 });
 
 // ─── 6e. listAmaAgents and listAmaEnvironments ────────────────────────────────

@@ -1,19 +1,31 @@
 import { AK_ANNOTATION_KEY_SOURCE_EVENT, AK_ANNOTATION_KEY_SOURCE_URL, AK_LABEL_KEY_GITHUB_SUBJECT } from "@agent-kanban/shared";
-import { ArrowLeft, ExternalLink, FileText, MessageSquare, RefreshCw, X } from "lucide-react";
+import { ArrowLeft, ExternalLink, FileText, KeyRound, MessageSquare, Pencil, RefreshCw, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Link, useParams } from "react-router-dom";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
+import { toast } from "sonner";
 import { AmaSessionChat } from "../components/ChatPanel";
 import { Header } from "../components/Header";
 import { formatRelative } from "../components/TaskDetailFields";
 import { Button } from "../components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import { Label } from "../components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "../components/ui/sheet";
 import { Skeleton } from "../components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
-import { useBoard, useBoardMaintainer, useBoardMaintainerMemories, useBoardMaintainerRuns, useBoardMaintainerSessions } from "../hooks/useBoard";
+import { Textarea } from "../components/ui/textarea";
+import {
+  useBoard,
+  useBoardMaintainer,
+  useBoardMaintainerMemories,
+  useBoardMaintainerRuns,
+  useBoardMaintainerSessions,
+  useBoardMaintainerVariables,
+  useUpdateBoardMaintainerVariables,
+} from "../hooks/useBoard";
 
 interface MaintainerRun {
   id: string;
@@ -35,6 +47,10 @@ interface MaintainerMemory {
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+}
+
+interface MaintainerVariable {
+  name: string;
 }
 
 interface MaintainerSession {
@@ -67,8 +83,16 @@ export function MaintainerDetailPage() {
   const { runs, loading: runsLoading, refresh: refreshRuns } = useBoardMaintainerRuns(boardId, maintainerId);
   const { sessions, loading: sessionsLoading, refresh: refreshSessions } = useBoardMaintainerSessions(maintainerId);
   const { memories, loading: memoriesLoading, error: memoriesError, refresh: refreshMemories } = useBoardMaintainerMemories(boardId, maintainerId);
+  const {
+    variables,
+    loading: variablesLoading,
+    error: variablesError,
+    refresh: refreshVariables,
+  } = useBoardMaintainerVariables(boardId, maintainerId);
+  const updateVariables = useUpdateBoardMaintainerVariables(boardId, maintainerId);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedSession, setSelectedSession] = useState<MaintainerSession | null>(null);
+  const [variablesDialogOpen, setVariablesDialogOpen] = useState(false);
 
   useEffect(() => {
     if (memories.length === 0) {
@@ -86,7 +110,16 @@ export function MaintainerDetailPage() {
   const selectedMemory = memories.find((memory: MaintainerMemory) => memory.path === selectedPath) ?? null;
 
   async function refreshAll() {
-    await Promise.all([refreshMaintainer(), refreshSessions(), refreshRuns(), refreshMemories()]);
+    await Promise.all([refreshMaintainer(), refreshSessions(), refreshRuns(), refreshMemories(), refreshVariables()]);
+  }
+
+  async function saveVariables(nextVariables: Record<string, string>) {
+    try {
+      await updateVariables.mutateAsync(nextVariables);
+      setVariablesDialogOpen(false);
+    } catch (error) {
+      toast.error((error as Error).message || "Failed to save variables");
+    }
   }
 
   return (
@@ -140,6 +173,10 @@ export function MaintainerDetailPage() {
               Memory
               <span className="ml-1 text-content-tertiary">{memories.length}</span>
             </TabsTrigger>
+            <TabsTrigger value="variables" className="px-3 font-mono text-xs">
+              Variables
+              <span className="ml-1 text-content-tertiary">{variables.length}</span>
+            </TabsTrigger>
             <TabsTrigger value="activity" className="px-3 font-mono text-xs">
               Activity
               <span className="ml-1 text-content-tertiary">{runs.length}</span>
@@ -162,6 +199,15 @@ export function MaintainerDetailPage() {
             />
           </TabsContent>
 
+          <TabsContent value="variables">
+            <VariablesPanel
+              variables={variables as MaintainerVariable[]}
+              loading={variablesLoading}
+              error={variablesError}
+              onEdit={() => setVariablesDialogOpen(true)}
+            />
+          </TabsContent>
+
           <TabsContent value="activity">
             <ActivityPanel runs={runs as MaintainerRun[]} loading={runsLoading} onOpenSession={setSelectedSession} />
           </TabsContent>
@@ -171,6 +217,13 @@ export function MaintainerDetailPage() {
         maintainerName={maintainer.agent_id ?? maintainer.id}
         session={selectedSession}
         onOpenChange={(open) => !open && setSelectedSession(null)}
+      />
+      <VariablesDialog
+        open={variablesDialogOpen}
+        variables={variables as MaintainerVariable[]}
+        saving={updateVariables.isPending}
+        onOpenChange={setVariablesDialogOpen}
+        onSave={saveVariables}
       />
     </div>
   );
@@ -252,6 +305,204 @@ function SessionsPanel({
       </Table>
     </div>
   );
+}
+
+function VariablesPanel({
+  variables,
+  loading,
+  error,
+  onEdit,
+}: {
+  variables: MaintainerVariable[];
+  loading: boolean;
+  error: unknown;
+  onEdit: () => void;
+}) {
+  if (loading) {
+    return (
+      <div className="space-y-2">
+        <Skeleton className="h-12 w-full" />
+        <Skeleton className="h-12 w-full" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border border-error/40 bg-error/10 px-3 py-3 text-sm text-error">
+        {(error as Error).message || "Failed to load variables"}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="font-mono text-xs font-medium uppercase tracking-[0.08em] text-content-secondary">User variables</h2>
+          <p className="mt-1 text-xs text-content-tertiary">Stored in the user-variables credential.</p>
+        </div>
+        <Button type="button" variant="outline" size="sm" onClick={onEdit}>
+          <Pencil data-icon="inline-start" />
+          Edit
+        </Button>
+      </div>
+
+      {variables.length === 0 ? (
+        <button
+          type="button"
+          onClick={onEdit}
+          className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-surface-secondary px-3 py-8 text-sm text-content-tertiary transition-colors hover:border-accent/40 hover:text-content-secondary"
+        >
+          <KeyRound className="size-4" />
+          No user variables.
+        </button>
+      ) : (
+        <div className="overflow-hidden rounded-lg border border-border bg-surface-secondary">
+          <Table>
+            <TableHeader>
+              <TableRow className="border-border bg-surface-secondary hover:bg-surface-secondary">
+                <TableHead className="px-3 py-2 font-mono text-[11px] uppercase tracking-[0.08em] text-content-tertiary">Name</TableHead>
+                <TableHead className="px-3 py-2 font-mono text-[11px] uppercase tracking-[0.08em] text-content-tertiary">Value</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {variables.map((variable) => (
+                <TableRow key={variable.name} className="border-border hover:bg-surface-tertiary">
+                  <TableCell className="px-3 py-2 font-mono text-xs text-content-primary">{variable.name}</TableCell>
+                  <TableCell className="px-3 py-2 font-mono text-xs text-content-tertiary">secret</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VariablesDialog({
+  open,
+  variables,
+  saving,
+  onOpenChange,
+  onSave,
+}: {
+  open: boolean;
+  variables: MaintainerVariable[];
+  saving: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSave: (variables: Record<string, string>) => Promise<void>;
+}) {
+  const [envText, setEnvText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setEnvText("");
+    setError(null);
+  }, [open]);
+
+  async function submit() {
+    try {
+      const nextVariables = parseEnvText(envText);
+      setError(null);
+      await onSave(nextVariables);
+    } catch (err) {
+      setError((err as Error).message || "Invalid variables");
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-xl" showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle>User variables</DialogTitle>
+          <DialogDescription>Values are write-only. Saving updates the user-variables credential.</DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-3">
+          {variables.length > 0 ? (
+            <div className="rounded-lg border border-border bg-surface-secondary px-3 py-2">
+              <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-content-tertiary">Current keys</div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {variables.map((variable) => (
+                  <span
+                    key={variable.name}
+                    className="rounded border border-border bg-surface-primary px-1.5 py-0.5 font-mono text-[11px] text-content-secondary"
+                  >
+                    {variable.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          <div className="grid gap-2">
+            <Label htmlFor="maintainer-user-variables">Variables</Label>
+            <Textarea
+              id="maintainer-user-variables"
+              value={envText}
+              onChange={(event) => setEnvText(event.target.value)}
+              spellCheck={false}
+              className="min-h-48 font-mono text-xs"
+              placeholder={"GH_TOKEN=...\nFEATURE_FLAG=true"}
+            />
+          </div>
+
+          {error ? <p className="text-sm text-error">{error}</p> : null}
+        </div>
+
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={submit} disabled={saving}>
+            {saving ? "Saving..." : "Save"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+const ENV_VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function parseEnvText(text: string): Record<string, string> {
+  const variables: Record<string, string> = {};
+  const lines = text.split(/\r?\n/);
+  for (const [index, rawLine] of lines.entries()) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const assignment = line.startsWith("export ") ? line.slice("export ".length).trim() : line;
+    const separator = assignment.indexOf("=");
+    if (separator <= 0) {
+      throw new Error(`Line ${index + 1} must be NAME=value`);
+    }
+    const name = assignment.slice(0, separator).trim();
+    const rawValue = assignment.slice(separator + 1).trim();
+    if (!ENV_VARIABLE_NAME_PATTERN.test(name)) {
+      throw new Error(`Invalid variable name on line ${index + 1}`);
+    }
+    if (Object.hasOwn(variables, name)) {
+      throw new Error(`Duplicate variable ${name}`);
+    }
+    const value = unquoteEnvValue(rawValue);
+    if (!value) {
+      throw new Error(`${name} cannot be empty`);
+    }
+    variables[name] = value;
+  }
+  if (Object.keys(variables).length === 0) {
+    throw new Error("At least one variable is required");
+  }
+  return variables;
+}
+
+function unquoteEnvValue(value: string): string {
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) return value.slice(1, -1);
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1);
+  return value;
 }
 
 function MaintainerSessionDrawer({
