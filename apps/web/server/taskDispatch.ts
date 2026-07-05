@@ -157,7 +157,7 @@ export async function dispatchTaskToAma(
       },
       metadata: { akSessionId: sessionIdentity.sessionId, ...(githubCloneCredential?.metadata ?? {}) },
     });
-    await setAmaAgentSessionSecretRef(db, sessionIdentity.sessionId, secret.secretRef, secret.credentialId);
+    await setAmaAgentSessionSecretRef(db, sessionIdentity.sessionId, secret.secretRef);
 
     dispatch = await createAmaTaskSession(env, ownerId, {
       projectId: amaProjectId,
@@ -615,16 +615,12 @@ async function collectAkAgentSessionUsage(db: D1, env: Env, akSessionId: string)
 async function revokeAkAgentSessionSecret(db: D1, env: Env, akSessionId: string): Promise<void> {
   if (!isAmaRuntimeConfigured(env)) return;
   const session = await getAmaAgentSession(db, akSessionId);
-  if (!session?.secret_ref && !session?.secret_credential_id) return;
+  if (!session?.secret_ref) return;
   const projectId = await resolveAmaProjectId(db, env, session.owner_id);
-  const identity = session.secret_ref ? credentialIdentityFromSecretRef(session.secret_ref) : null;
-  if (identity) {
-    await revokeAmaVaultCredential(env, session.owner_id, projectId, identity.vaultId, identity.credentialId);
-  } else if (session.secret_credential_id) {
-    const vaultId = await resolveAmaSessionSecretVaultId(db, env, session.owner_id);
-    await revokeAmaVaultCredential(env, session.owner_id, projectId, vaultId, session.secret_credential_id);
-  }
-  await setAmaAgentSessionSecretRef(db, akSessionId, null, null);
+  const identity = credentialIdentityFromSecretRef(session.secret_ref);
+  if (!identity) throw new Error(`Invalid AMA session secret_ref for session ${akSessionId}`);
+  await revokeAmaVaultCredential(env, session.owner_id, projectId, identity.vaultId, identity.credentialId);
+  await setAmaAgentSessionSecretRef(db, akSessionId, null);
 }
 
 function credentialIdentityFromSecretRef(secretRef: string): { vaultId: string; credentialId: string } | null {

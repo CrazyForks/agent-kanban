@@ -872,15 +872,15 @@ describe("routes", () => {
         delegation_proof: expect.any(String),
       });
       const maintainerSession = await env.DB.prepare(
-        "SELECT agent_id, ama_session_id, status, secret_credential_id FROM ama_agent_sessions WHERE id = ? AND owner_id = ?",
+        "SELECT agent_id, ama_session_id, status, secret_ref FROM ama_agent_sessions WHERE id = ? AND owner_id = ?",
       )
         .bind(maintainerSessionId, userTokenOwnerId)
-        .first<{ agent_id: string; ama_session_id: string; status: string; secret_credential_id: string | null }>();
+        .first<{ agent_id: string; ama_session_id: string; status: string; secret_ref: string | null }>();
       expect(maintainerSession).toEqual({
         agent_id: maintainerAgent.id,
         ama_session_id: "ama_maintainer_session_1",
         status: "active",
-        secret_credential_id: null,
+        secret_ref: null,
       });
       const maintainerKeyBoardsRes = await apiRequest("GET", "/api/boards", undefined, maintainerApiKey!);
       expect(maintainerKeyBoardsRes.status).toBe(403);
