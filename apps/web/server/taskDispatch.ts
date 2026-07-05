@@ -372,8 +372,7 @@ export async function amaRuntimeSecretEnvForCredentialNames(
   credentialNames: string[],
 ) {
   const credentials = await listAmaVaultCredentials(env, ownerId, projectId, vaultId);
-  const entries: { name: string; vaultId: string; credentialId: string; key: string }[] = [];
-  const envNames = new Set<string>();
+  const entries: { vaultId: string; credentialId: string }[] = [];
   for (const credentialName of credentialNames) {
     const matches = credentials.filter((credential) => credential.state === "active" && credential.name === credentialName);
     if (matches.length > 1) {
@@ -381,13 +380,7 @@ export async function amaRuntimeSecretEnvForCredentialNames(
     }
     const credential = matches[0];
     if (!credential) continue;
-    for (const key of credential.dataKeys) {
-      if (envNames.has(key)) {
-        throw new Error(`AMA vault ${vaultId} projects duplicate runtime environment variable ${key}`);
-      }
-      envNames.add(key);
-      entries.push({ name: key, vaultId, credentialId: credential.id, key });
-    }
+    entries.push({ vaultId, credentialId: credential.id });
   }
   return entries;
 }

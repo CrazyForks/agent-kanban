@@ -557,9 +557,7 @@ describe("routes", () => {
         expect(spec.envFrom).toEqual([
           {
             type: "secret",
-            name: "AK_API_KEY",
             secretRef: amaCredentialSecretRef("vault_maintainer_board", "vaultcred_maintainer"),
-            key: "AK_API_KEY",
           },
         ]);
         expect(spec.promptTemplate).not.toContain("maintainer-org/maintainer-repo");
@@ -941,9 +939,7 @@ describe("routes", () => {
                 envFrom: [
                   {
                     type: "secret",
-                    name: "AK_API_KEY",
                     secretRef: amaCredentialSecretRef("vault_maintainer_board", "vaultcred_maintainer"),
-                    key: "AK_API_KEY",
                   },
                 ],
               },

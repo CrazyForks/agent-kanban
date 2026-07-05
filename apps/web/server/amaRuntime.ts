@@ -37,7 +37,7 @@ export interface AmaRuntimeSecretRef {
 }
 
 export interface AmaRuntimeSecretEnvRef extends AmaRuntimeSecretRef {
-  name: string;
+  name?: string;
   key?: string;
 }
 
@@ -417,12 +417,15 @@ export function amaCredentialSecretRef(vaultId: string, credentialId: string): s
 }
 
 function toAmaEnvFrom(entries: AmaRuntimeSecretEnvRef[]): EnvFromEntry[] {
-  return entries.map((entry) => ({
-    type: "secret",
-    name: entry.name,
-    secretRef: credentialVersionSecretRef(entry),
-    key: entry.key ?? "value",
-  }));
+  return entries.map(
+    (entry) =>
+      ({
+        type: "secret",
+        ...(entry.name !== undefined ? { name: entry.name } : {}),
+        secretRef: credentialVersionSecretRef(entry),
+        ...(entry.key !== undefined ? { key: entry.key } : {}),
+      }) as EnvFromEntry,
+  );
 }
 
 type VolumeWithSecretItems = Volume & { items?: AmaSecretItem[] };
