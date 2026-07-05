@@ -277,7 +277,7 @@ export async function listAgents(db: D1, ownerId: string, filters: AgentListFilt
       WHERE assigned_to IS NOT NULL
       GROUP BY assigned_to
     ) tc ON tc.assigned_to = a.id
-    WHERE a.owner_id = ?
+    WHERE a.owner_id = ? AND COALESCE(a.version, 'latest') = 'latest'
   `;
   const binds: unknown[] = [runtimeCutoff, ownerId];
   if (filters.kind) {

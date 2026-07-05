@@ -43,6 +43,40 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
+type ListedAgent = {
+  id: string;
+  username: string;
+  version: string | null;
+  soul: string | null;
+  role: string | null;
+  kind: string;
+};
+
+function isListedAgent(value: unknown): value is ListedAgent {
+  if (!value || typeof value !== "object") return false;
+  return (
+    "id" in value &&
+    typeof value.id === "string" &&
+    "username" in value &&
+    typeof value.username === "string" &&
+    "version" in value &&
+    (typeof value.version === "string" || value.version === null) &&
+    "soul" in value &&
+    (typeof value.soul === "string" || value.soul === null) &&
+    "role" in value &&
+    (typeof value.role === "string" || value.role === null) &&
+    "kind" in value &&
+    typeof value.kind === "string"
+  );
+}
+
+async function readListedAgents(res: Response): Promise<ListedAgent[]> {
+  const body: unknown = await res.json();
+  expect(Array.isArray(body)).toBe(true);
+  if (!Array.isArray(body) || !body.every(isListedAgent)) throw new Error("Expected /api/agents to return listed agents");
+  return body;
+}
+
 function amaCredential(id: string, activeVersionId?: string) {
   return { metadata: { uid: id }, spec: {}, status: { activeVersionId } };
 }
@@ -1671,6 +1705,28 @@ describe("routes", () => {
     const body = (await res.json()) as any[];
     expect(body.map((agent) => agent.username)).toContain("maintainer-filter-agent");
     expect(body.map((agent) => agent.username)).not.toContain("ordinary-filter-agent");
+  });
+
+  it("GET /api/agents returns only the latest row for versioned usernames", async () => {
+    const username = `latest-list-${randomUUID().slice(0, 8)}`;
+    const createRes = await apiRequest("POST", "/api/agents", { username, runtime: "codex", role: "board-maintainer", soul: "historical" }, apiKey);
+    expect(createRes.status).toBe(201);
+    const updateRes = await apiRequest("POST", "/api/agents", { username, runtime: "codex", role: "board-maintainer", soul: "latest" }, apiKey);
+    expect(updateRes.status).toBe(201);
+
+    const agentsRes = await apiRequest("GET", "/api/agents", undefined, apiKey);
+    expect(agentsRes.status).toBe(200);
+    const agents = await readListedAgents(agentsRes);
+    expect(agents.filter((agent) => agent.username === username)).toEqual([
+      expect.objectContaining({ kind: "worker", role: "board-maintainer", soul: "latest", version: "latest" }),
+    ]);
+
+    const maintainerRes = await apiRequest("GET", "/api/agents?kind=worker&maintainer=true", undefined, apiKey);
+    expect(maintainerRes.status).toBe(200);
+    const maintainers = await readListedAgents(maintainerRes);
+    expect(maintainers.filter((agent) => agent.username === username)).toEqual([
+      expect.objectContaining({ kind: "worker", role: "board-maintainer", soul: "latest", version: "latest" }),
+    ]);
   });
 
   it("GET /api/agents uses AMA runner load and capabilities as runtime availability source", async () => {
