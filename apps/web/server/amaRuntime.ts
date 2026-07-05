@@ -455,12 +455,11 @@ function toAmaRuntimeResources(
     }
     if (resource.type === "memory_store" && typeof resource.storeId === "string") {
       const name = index === 0 ? "memory" : `memory-${index + 1}`;
-      const readOnly = resource.access === "read_only";
+      const readOnly = resource.readOnly === true;
       volumes.push({
         name,
         type: "memory",
         memoryRef: `ama://memories/${encodeURIComponent(resource.storeId)}`,
-        access: readOnly ? "read_only" : "read_write",
       });
       volumeMounts.push({ name, mountPath: `/workspace/.ama/memory-stores/${encodeURIComponent(resource.storeId)}`, readOnly });
     }

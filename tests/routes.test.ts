@@ -566,7 +566,7 @@ describe("routes", () => {
         expect(spec.agentId).toBe("ama_agent_maintainer");
         expect(spec.skills).toBeUndefined();
         expect(spec.environmentId).toBeUndefined();
-        expect(spec.volumes).toEqual([{ name: "memory", type: "memory", memoryRef: "ama://memories/mem_maintainer", access: "read_write" }]);
+        expect(spec.volumes).toEqual([{ name: "memory", type: "memory", memoryRef: "ama://memories/mem_maintainer" }]);
         expect(spec.volumeMounts).toEqual([{ name: "memory", mountPath: "/workspace/.ama/memory-stores/mem_maintainer", readOnly: false }]);
         expect(spec.env).toMatchObject({
           AK_WORKER: "1",
@@ -1015,7 +1015,7 @@ describe("routes", () => {
               spec: {
                 agentId: "ama_agent_maintainer",
                 runtime: "codex",
-                volumes: [{ name: "memory", type: "memory", memoryRef: "ama://memories/mem_maintainer", access: "read_write" }],
+                volumes: [{ name: "memory", type: "memory", memoryRef: "ama://memories/mem_maintainer" }],
                 volumeMounts: [{ name: "memory", mountPath: "/workspace/.ama/memory-stores/mem_maintainer", readOnly: false }],
                 env: {
                   AK_WORKER: "1",

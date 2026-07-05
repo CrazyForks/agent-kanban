@@ -2092,7 +2092,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     description: `Persistent memory for AK board ${boardId} maintainer.`,
     metadata: { purpose: "ak-board-maintainer", boardId, agentId: maintainerAgentId },
   });
-  const resourceRefs = [{ type: "memory_store", storeId: memoryStore.id, access: "read_write" }];
+  const resourceRefs = [{ type: "memory_store", storeId: memoryStore.id, readOnly: false }];
   const schedule = await createAmaScheduledAgentTrigger(c.env, ownerId, {
     projectId: amaProjectId,
     agentId: amaAgent.id,
@@ -2297,9 +2297,7 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
     AK_VARIABLES_CREDENTIAL_NAME,
     USER_VARIABLES_CREDENTIAL_NAME,
   ]);
-  const resourceRefs = maintainer.ama_memory_store_id
-    ? [{ type: "memory_store", storeId: maintainer.ama_memory_store_id, access: "read_write" }]
-    : [];
+  const resourceRefs = maintainer.ama_memory_store_id ? [{ type: "memory_store", storeId: maintainer.ama_memory_store_id, readOnly: false }] : [];
   const maintainerSessionMetadata = maintainerAmaSessionMetadata(maintainer.id);
   const schedule = await updateAmaScheduledAgentTrigger(c.env, ownerId, amaProjectId, maintainer.ama_schedule_id, {
     agentId: amaAgent.id,
