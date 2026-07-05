@@ -90,7 +90,6 @@ export async function ensureAmaOwnerIntegration(db: D1, env: Env, ownerId: strin
         name: "Session secrets",
         description: "Session credentials used by runtime sessions.",
         scope: "project",
-        metadata: { purpose: "session-secrets" },
       });
 
   return await upsertAmaOwnerIntegration(db, {

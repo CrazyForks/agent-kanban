@@ -525,10 +525,9 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/vaults" && method === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         boardVaultRequests.push(body);
-        expect(body.metadata).toMatchObject({
-          name: `${maintainerBoard.name} variables`,
+        expect(body.metadata).toEqual({
+          name: `ak-boarder-${maintainerBoard.id}`,
           description: `Runtime variables for AK board ${maintainerBoard.id}.`,
-          boardId: maintainerBoard.id,
         });
         expect(body.spec).toEqual({ scope: "project" });
         return jsonResponse(amaVault("vault_maintainer_board"), 201);
@@ -578,7 +577,7 @@ describe("routes", () => {
       if (url === "https://ama.test/api/v1/memory-stores" && method === "POST") {
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
         memoryStoreRequests.push(body);
-        expect(body.metadata.name).toMatch(new RegExp(`^${maintainerBoard.name} maintainer .+ memory$`));
+        expect(body.metadata.name).toBe(`ak-boarder-${maintainerBoard.id}`);
         return jsonResponse(amaMemoryStore("mem_maintainer", body.metadata.name), 201);
       }
       if (url === "https://ama.test/api/v1/memory-stores/mem_maintainer/memories" && method === "POST") {
@@ -592,7 +591,9 @@ describe("routes", () => {
         const template = body.spec.template;
         const spec = template.spec;
         const labels = template.metadata.labels;
-        expect(body.metadata.name).toMatch(new RegExp(`^${maintainerBoard.name} maintainer .+`));
+        expect(body.metadata.name).toBe(
+          body.spec.source.type === "http" ? `ak-boarder-${maintainerBoard.id}-http` : `ak-boarder-${maintainerBoard.id}-schedule`,
+        );
         expect(labels).toEqual({ maintainerId: expect.any(String) });
         expect(template.metadata.annotations).toEqual({
           [AMA_ANNOTATION_KEY_IDLE_TIMEOUT_SECONDS]: String(MAINTAINER_SESSION_IDLE_TIMEOUT_SECONDS),
@@ -625,7 +626,7 @@ describe("routes", () => {
         expect(spec.promptTemplate).not.toContain("Maintainer instructions:");
         expect(spec.promptTemplate).not.toContain("Do not use pre-existing gh login state or human GitHub tokens");
         if (body.spec.source.type === "http") {
-          expect(body.metadata.name).toMatch(new RegExp(`^${maintainerBoard.name} maintainer .+ GitHub events$`));
+          expect(body.metadata.name).toBe(`ak-boarder-${maintainerBoard.id}-http`);
           expect(spec.promptTemplate).toContain("{% if .ama.run.session_reused == false %}");
           expect(spec.promptTemplate).toContain("# AK Maintainer GitHub Event");
           expect(spec.promptTemplate).toContain("# GitHub Event");

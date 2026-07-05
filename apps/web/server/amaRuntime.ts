@@ -243,7 +243,6 @@ export interface AmaMemoryStoreInput {
   projectId: string;
   name: string;
   description?: string;
-  metadata?: Record<string, unknown>;
 }
 
 export interface AmaMemoryStoreMemory {
@@ -310,7 +309,6 @@ export interface AmaVaultInput {
   name: string;
   description?: string;
   scope: "project" | "organization";
-  metadata?: Record<string, unknown>;
 }
 
 export interface AmaVault {
@@ -623,7 +621,6 @@ export async function createAmaVault(env: Env, ownerId: string, input: AmaVaultI
   const vault = await withAmaErrorDetails("create vault", () =>
     client.vaults.create({
       metadata: {
-        ...(input.metadata ?? {}),
         name: input.name,
         description: input.description ?? null,
       },

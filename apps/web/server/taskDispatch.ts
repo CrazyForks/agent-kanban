@@ -52,6 +52,18 @@ const AK_AGENT_KEY_DATA_KEY = "AK_AGENT_KEY";
 const GH_USERNAME_DATA_KEY = "GH_USERNAME";
 const GH_TOKEN_DATA_KEY = "GH_TOKEN";
 
+export function boardMaintainerResourceName(boardId: string): string {
+  return `ak-boarder-${boardId}`;
+}
+
+export function boardMaintainerScheduleTriggerName(boardId: string): string {
+  return `${boardMaintainerResourceName(boardId)}-schedule`;
+}
+
+export function boardMaintainerHttpTriggerName(boardId: string): string {
+  return `${boardMaintainerResourceName(boardId)}-http`;
+}
+
 export async function dispatchTaskToAma(
   db: D1,
   env: Env,
@@ -413,10 +425,9 @@ async function resolveTaskSecretVault(
   }
   const vault = await createAmaVault(env, ownerId, {
     projectId,
-    name: `${maintainer.board_name} variables`,
+    name: boardMaintainerResourceName(boardId),
     description: `Runtime variables for AK board ${boardId}.`,
     scope: "project",
-    metadata: { boardId },
   });
   await setBoardMaintainerVaultId(db, ownerId, boardId, maintainer.id, vault.id);
   return { vaultId: vault.id, boardScoped: true };

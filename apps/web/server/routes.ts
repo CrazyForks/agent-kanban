@@ -155,6 +155,9 @@ import {
   amaRuntimeName,
   amaRuntimeSecretEnvForCredentialNames,
   apiUrl,
+  boardMaintainerHttpTriggerName,
+  boardMaintainerResourceName,
+  boardMaintainerScheduleTriggerName,
   clearAmaDispatchClaim,
   createAmaAgentForAkProfile,
   dispatchTaskToAma,
@@ -2064,7 +2067,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     memoryEnabled: true,
   });
   const maintainerId = newLongId();
-  const triggerName = `${board.name} maintainer ${maintainerId}`;
+  const resourceName = boardMaintainerResourceName(board.id);
   const maintainerSessionMetadata = maintainerAmaSessionMetadata(maintainerId);
   const boardVault = await createBoardMaintainerVault(c.env, ownerId, amaProjectId, board);
   const maintainerKey = await createMaintainerApiKeySecret({
@@ -2088,16 +2091,15 @@ api.post("/api/boards/:id/maintainers", async (c) => {
   ]);
   const memoryStore = await createAmaMemoryStore(c.env, ownerId, {
     projectId: amaProjectId,
-    name: `${triggerName} memory`,
+    name: resourceName,
     description: `Persistent memory for AK board ${boardId} maintainer.`,
-    metadata: { purpose: "ak-board-maintainer", boardId, agentId: maintainerAgentId },
   });
   const resourceRefs = [{ type: "memory_store", storeId: memoryStore.id, readOnly: false }];
   const schedule = await createAmaScheduledAgentTrigger(c.env, ownerId, {
     projectId: amaProjectId,
     agentId: amaAgent.id,
     runtime: amaRuntime,
-    name: triggerName,
+    name: boardMaintainerScheduleTriggerName(board.id),
     promptTemplate: boardMaintainerScheduledPrompt(boardId),
     intervalSeconds,
     status: maintainerScheduledStatus(maintainerStatus, heartbeatEnabled),
@@ -2110,7 +2112,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     projectId: amaProjectId,
     agentId: amaAgent.id,
     runtime: amaRuntime,
-    name: `${triggerName} GitHub events`,
+    name: boardMaintainerHttpTriggerName(board.id),
     promptTemplate: boardMaintainerHttpPrompt(boardId),
     status: maintainerStatus,
     resourceRefs,
@@ -2647,10 +2649,9 @@ async function syncMaintainerSecretEnvRefs(env: Env, ownerId: string, amaProject
 async function createBoardMaintainerVault(env: Env, ownerId: string, amaProjectId: string, board: { id: string; name: string }) {
   return await createAmaVault(env, ownerId, {
     projectId: amaProjectId,
-    name: `${board.name} variables`,
+    name: boardMaintainerResourceName(board.id),
     description: `Runtime variables for AK board ${board.id}.`,
     scope: "project",
-    metadata: { boardId: board.id },
   });
 }
 
@@ -2702,7 +2703,7 @@ async function createMaintainerApiKeySecret(input: {
     body: {
       configId: "maintainer",
       userId: input.ownerId,
-      name: `Board maintainer ${input.maintainerId}`,
+      name: boardMaintainerResourceName(input.boardId),
       permissions: MAINTAINER_API_KEY_PERMISSIONS,
       metadata: {
         boardId: input.boardId,
