@@ -1,8 +1,10 @@
 ---
 name: ak-task
 description: |
-  Full task lifecycle: create → assign → monitor → review → reject/complete.
-  Use when asked to add a feature, fix a bug, create a task, 加个功能, or 修个 bug.
+  Run the Agent Kanban task lifecycle: create, assign, monitor, review, and
+  reject or complete. Use only when the user explicitly asks for AK Task,
+  Agent Kanban, an AK task, or delegation through an AK board. Do not use for
+  ordinary feature implementation, bug fixing, or generic task creation.
 argument-hint: "<feature or bug description>"
 ---
 

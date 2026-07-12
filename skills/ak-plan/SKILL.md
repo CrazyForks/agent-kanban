@@ -1,10 +1,11 @@
 ---
 name: ak-plan
 description: |
-  Plan and execute a project — either a new version of an existing project, or a
-  brand new product from scratch. Analyzes gaps, creates board with tasks and
-  dependencies, assigns to agents. Use when asked to plan a version, build a
-  product, create a project, or 规划版本.
+  Plan and execute a project through Agent Kanban boards, tasks, dependencies,
+  and workers. Use only when the user explicitly asks for AK Plan, Agent
+  Kanban planning, an AK project plan, or project execution through an AK
+  board. Do not use for ordinary project planning, product development,
+  version planning, or project scaffolding.
 argument-hint: "<version-or-name> [goals]"
 ---
 

@@ -30,6 +30,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "jsdom",
+    maxWorkers: 4,
     include: ["**/*.test.{ts,tsx}"],
     coverage: {
       provider: "v8",
