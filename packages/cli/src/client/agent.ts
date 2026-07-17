@@ -33,10 +33,11 @@ export class AgentClient extends ApiClient {
   }
 
   protected async authorize(): Promise<string> {
+    const now = Math.floor(Date.now() / 1000);
     const jwt = await new SignJWT({ sub: this.sessionId, aid: this.agentId, jti: randomUUID(), aud: this.baseUrl })
       .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
-      .setIssuedAt()
-      .setExpirationTime("60s")
+      .setIssuedAt(now - 30)
+      .setExpirationTime(now + 60)
       .sign(this.privateKey);
     return `Bearer ${jwt}`;
   }

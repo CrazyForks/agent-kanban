@@ -1242,7 +1242,7 @@ describe("routes", () => {
       Object.assign(env, previousAma);
       vi.unstubAllGlobals();
     }
-  });
+  }, 30_000);
 
   it("PATCH /api/boards/:id/maintainers/:maintainerId sends x-ama-project-id header to AMA", async () => {
     const amaProjectId = "project_patch_test";

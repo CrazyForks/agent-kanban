@@ -280,7 +280,7 @@ wait_session_stopped() {
       return 0
     fi
     state="$(task_session_state "$session_id")"
-    if [[ "$state" == stopped* ]]; then
+    if [[ "$state" == stopped* || "$state" == closed* ]]; then
       return 0
     fi
     sleep 2

@@ -284,6 +284,16 @@ describe("isPidAlive", () => {
     // PID 4194304 is beyond the Linux kernel's pid_max and will always be dead.
     expect(isPidAlive(4194304)).toBe(false);
   });
+
+  it("treats EPERM as an existing process", () => {
+    vi.spyOn(process, "kill").mockImplementation(() => {
+      const error = new Error("operation not permitted") as NodeJS.ErrnoException;
+      error.code = "EPERM";
+      throw error;
+    });
+
+    expect(isPidAlive(12345)).toBe(true);
+  });
 });
 
 // ── clearAllSessions ─────────────────────────────────────────────────────────

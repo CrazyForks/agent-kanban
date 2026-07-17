@@ -33,6 +33,7 @@
     "@openai/codex-sdk": "^0.118.0",
     "@types/node": "^25.5.2",
     "@types/ws": "^8.18.1",
+    "node-gyp": "^11.4.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3"
   }

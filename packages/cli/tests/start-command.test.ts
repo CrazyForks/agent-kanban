@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
@@ -61,9 +61,8 @@ vi.mock("../src/paths.js", async () => {
 });
 
 const { clearAllSessions } = await import("../src/session/store.js");
-const { registerRestartCommand, registerStartCommand, registerStatusCommand, registerStopCommand, registerLogsCommand } = await import(
-  "../src/commands/start.js"
-);
+const { readLastLogLines, registerRestartCommand, registerStartCommand, registerStatusCommand, registerStopCommand, registerLogsCommand } =
+  await import("../src/commands/start.js");
 const stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
 
@@ -190,7 +189,7 @@ describe("start runtime command", () => {
         "5",
         "--allow-unsafe-process",
       ],
-      expect.objectContaining({ detached: true }),
+      expect.objectContaining({ detached: true, windowsHide: true }),
     );
 
     // Verify invocation order: device login first, then run-mode detached spawn
@@ -1026,219 +1025,137 @@ describe("logs command", () => {
     expect(logSpy).toHaveBeenCalledWith("No daemon logs found");
   });
 
-  it("spawns tail when a log file exists (non-follow mode)", async () => {
+  it("prints the requested final lines without spawning tail", async () => {
     const logsDir = join(testSessionsDir, "logs");
     mkdirSync(logsDir, { recursive: true });
-    writeFileSync(join(logsDir, "daemon.log"), "log line\n");
-
-    // Tail uses spawn internally — we need .on to avoid crash
-    spawnMock.mockReturnValue({ pid: 12345, unref: vi.fn(), on: vi.fn() });
+    writeFileSync(join(logsDir, "daemon.log"), "first\nsecond\nthird\n");
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     const program = new Command();
     registerLogsCommand(program);
-    // We don't await the exit handler — just verify spawn was called
-    program.parseAsync(["logs"], { from: "user" });
+    await program.parseAsync(["logs", "--lines", "2"], { from: "user" });
 
-    // Give commander time to invoke the action synchronously
-    await new Promise((r) => setImmediate(r));
-
-    expect(spawnMock).toHaveBeenCalledWith("tail", expect.arrayContaining(["-n", "50"]), expect.objectContaining({ stdio: "inherit" }));
+    expect(stdoutSpy).toHaveBeenCalledWith("second\nthird\n");
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
-  it("spawns tail in follow mode and polls the log file after tail exits", async () => {
+  it("prints initial lines and starts the native follower immediately in follow mode", async () => {
     const logsDir = join(testSessionsDir, "logs");
     mkdirSync(logsDir, { recursive: true });
     const logFile = join(logsDir, "daemon.log");
-    writeFileSync(logFile, "log line\n");
-
-    // Capture the exit callback so we can trigger followLogFile
-    let exitCallback: ((code: number | null) => void) | undefined;
-    spawnMock.mockReturnValue({
-      pid: 12345,
-      unref: vi.fn(),
-      on: vi.fn((event: string, cb: (code: number | null) => void) => {
-        if (event === "exit") exitCallback = cb;
-      }),
+    writeFileSync(logFile, "first\nsecond\n");
+    let pollCallback: (() => void) | undefined;
+    vi.spyOn(globalThis, "setInterval").mockImplementation((callback: any) => {
+      pollCallback = callback;
+      return 1 as any;
     });
+    vi.spyOn(process, "on").mockImplementation(() => process);
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     const program = new Command();
     registerLogsCommand(program);
-    program.parseAsync(["logs", "--follow"], { from: "user" });
+    await program.parseAsync(["logs", "--follow", "--lines", "1"], { from: "user" });
 
-    await new Promise((r) => setImmediate(r));
+    expect(stdoutSpy).toHaveBeenCalledWith("second\n");
+    expect(pollCallback).toBeTypeOf("function");
+    expect(spawnMock).not.toHaveBeenCalled();
 
-    expect(spawnMock).toHaveBeenCalledWith("tail", expect.arrayContaining(["-n", "50"]), expect.objectContaining({ stdio: "inherit" }));
-
-    // Trigger the exit handler to enter followLogFile
-    if (exitCallback) {
-      // Capture the interval callback so we can invoke it manually
-      let pollCallback: (() => void) | undefined;
-      const realSetInterval = globalThis.setInterval;
-      const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation((cb: any, _delay?: any) => {
-        pollCallback = cb;
-        return realSetInterval(() => {}, 1_000_000) as any;
-      });
-
-      const signalHandlers: Record<string, () => void> = {};
-      const processOnSpy = vi.spyOn(process, "on").mockImplementation((event: any, cb: any) => {
-        signalHandlers[event] = cb;
-        return process;
-      });
-
-      const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-
-      exitCallback(0);
-
-      expect(setIntervalSpy).toHaveBeenCalled();
-
-      // Poll once — log file exists with content, reads initial bytes
-      if (pollCallback) pollCallback();
-      // Write more content and poll again to exercise the size>offset branch
-      writeFileSync(logFile, "log line\nmore content\n");
-      if (pollCallback) pollCallback();
-
-      // Invoke signal handlers to cover SIGINT/SIGTERM exit paths
-      const exitSpy = vi.spyOn(process, "exit").mockImplementation((_code?: any) => {
-        throw new Error("exit");
-      });
-      if (signalHandlers.SIGINT) {
-        try {
-          signalHandlers.SIGINT();
-        } catch {
-          /* expected */
-        }
-      }
-      if (signalHandlers.SIGTERM) {
-        try {
-          signalHandlers.SIGTERM();
-        } catch {
-          /* expected */
-        }
-      }
-
-      exitSpy.mockRestore();
-      stdoutSpy.mockRestore();
-      setIntervalSpy.mockRestore();
-      processOnSpy.mockRestore();
-    }
+    writeFileSync(logFile, "first\nsecond\nthird\n");
+    pollCallback?.();
+    expect(stdoutSpy).toHaveBeenCalledWith(Buffer.from("third\n"));
   });
 
-  it("handles inode rotation in followLogFile poll (rotated log file)", async () => {
+  it("reads final lines natively with CRLF and without a trailing newline", () => {
+    const logsDir = join(testSessionsDir, "logs");
+    mkdirSync(logsDir, { recursive: true });
+    const logFile = join(logsDir, "daemon.log");
+    writeFileSync(logFile, "first\r\nsecond\r\nthird");
+
+    expect(readLastLogLines(logFile, 2)).toBe("second\r\nthird");
+    expect(readLastLogLines(logFile, 0)).toBe("");
+    expect(() => readLastLogLines(logFile, -1)).toThrow("--lines must be a non-negative integer");
+  });
+
+  it("prints a divider and the new file contents after log rotation", async () => {
     const logsDir = join(testSessionsDir, "logs");
     mkdirSync(logsDir, { recursive: true });
     const logFile = join(logsDir, "daemon.log");
     writeFileSync(logFile, "initial content\n");
-
-    let exitCallback: ((code: number | null) => void) | undefined;
-    spawnMock.mockReturnValue({
-      pid: 12345,
-      unref: vi.fn(),
-      on: vi.fn((event: string, cb: (code: number | null) => void) => {
-        if (event === "exit") exitCallback = cb;
-      }),
+    let pollCallback: (() => void) | undefined;
+    vi.spyOn(globalThis, "setInterval").mockImplementation((callback: any) => {
+      pollCallback = callback;
+      return 1 as any;
     });
+    vi.spyOn(process, "on").mockImplementation(() => process);
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     const program = new Command();
     registerLogsCommand(program);
-    program.parseAsync(["logs", "--follow"], { from: "user" });
-    await new Promise((r) => setImmediate(r));
+    await program.parseAsync(["logs", "--follow"], { from: "user" });
 
-    if (exitCallback) {
-      let pollCallback: (() => void) | undefined;
-      const realSetInterval = globalThis.setInterval;
-      vi.spyOn(globalThis, "setInterval").mockImplementation((cb: any, _delay?: any) => {
-        pollCallback = cb;
-        return realSetInterval(() => {}, 1_000_000) as any;
-      });
-      vi.spyOn(process, "on").mockImplementation((_event: any, _cb: any) => process);
-      const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    expect(pollCallback).toBeTypeOf("function");
+    renameSync(logFile, `${logFile}.1`);
+    writeFileSync(logFile, "new content after rotation\n");
+    pollCallback?.();
 
-      exitCallback(0);
-
-      // First poll establishes inode; statSync reads the existing file
-      if (pollCallback) pollCallback();
-
-      // Simulate rotation: delete the old file and create a new one with a different inode
-      rmSync(logFile);
-      writeFileSync(logFile, "new content after rotation\n");
-
-      // Poll again — inode mismatch triggers rotation branch
-      if (pollCallback) pollCallback();
-
-      expect(stdoutSpy).toHaveBeenCalled();
-      stdoutSpy.mockRestore();
-    }
+    expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining("daemon restarted"));
+    expect(stdoutSpy).toHaveBeenCalledWith(Buffer.from("new content after rotation\n"));
   });
 
-  it("handles missing log file gracefully at followLogFile initialization", async () => {
+  it("recovers when the log disappears before follower initialization", async () => {
     const logsDir = join(testSessionsDir, "logs");
     mkdirSync(logsDir, { recursive: true });
-    // Create the log file so the logs command accepts the path
     const logFile = join(logsDir, "daemon.log");
-    writeFileSync(logFile, "");
-
-    let exitCallback: ((code: number | null) => void) | undefined;
-    spawnMock.mockReturnValue({
-      pid: 12345,
-      unref: vi.fn(),
-      on: vi.fn((event: string, cb: (code: number | null) => void) => {
-        if (event === "exit") exitCallback = cb;
-      }),
+    writeFileSync(logFile, "initial\n");
+    let pollCallback: (() => void) | undefined;
+    vi.spyOn(globalThis, "setInterval").mockImplementation((callback: any) => {
+      pollCallback = callback;
+      return 1 as any;
+    });
+    vi.spyOn(process, "on").mockImplementation(() => process);
+    let firstWrite = true;
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => {
+      if (firstWrite) {
+        firstWrite = false;
+        rmSync(logFile);
+      }
+      return true;
     });
 
     const program = new Command();
     registerLogsCommand(program);
-    program.parseAsync(["logs", "--follow"], { from: "user" });
-    await new Promise((r) => setImmediate(r));
+    await expect(program.parseAsync(["logs", "--follow"], { from: "user" })).resolves.toBeDefined();
 
-    if (exitCallback) {
-      // Delete the log file BEFORE calling the exit callback so statSync in init fails
-      rmSync(logFile);
-
-      vi.spyOn(globalThis, "setInterval").mockReturnValue(0 as any);
-      vi.spyOn(process, "on").mockImplementation((_event: any, _cb: any) => process);
-
-      // Should not throw even though statSync fails at init
-      expect(() => exitCallback!(0)).not.toThrow();
-    }
+    expect(pollCallback).toBeTypeOf("function");
+    writeFileSync(logFile, "created after initialization\n");
+    expect(() => pollCallback?.()).not.toThrow();
+    expect(stdoutSpy).toHaveBeenCalledWith(Buffer.from("created after initialization\n"));
   });
 
-  it("handles statSync failure gracefully in followLogFile poll", async () => {
+  it("survives a missing file during polling and reads it after recreation", async () => {
     const logsDir = join(testSessionsDir, "logs");
     mkdirSync(logsDir, { recursive: true });
     const logFile = join(logsDir, "daemon.log");
     writeFileSync(logFile, "content\n");
-
-    let exitCallback: ((code: number | null) => void) | undefined;
-    spawnMock.mockReturnValue({
-      pid: 12345,
-      unref: vi.fn(),
-      on: vi.fn((event: string, cb: (code: number | null) => void) => {
-        if (event === "exit") exitCallback = cb;
-      }),
+    let pollCallback: (() => void) | undefined;
+    vi.spyOn(globalThis, "setInterval").mockImplementation((callback: any) => {
+      pollCallback = callback;
+      return 1 as any;
     });
+    vi.spyOn(process, "on").mockImplementation(() => process);
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     const program = new Command();
     registerLogsCommand(program);
-    program.parseAsync(["logs", "--follow"], { from: "user" });
-    await new Promise((r) => setImmediate(r));
+    await program.parseAsync(["logs", "--follow"], { from: "user" });
 
-    if (exitCallback) {
-      let pollCallback: (() => void) | undefined;
-      const realSetInterval = globalThis.setInterval;
-      vi.spyOn(globalThis, "setInterval").mockImplementation((cb: any, _delay?: any) => {
-        pollCallback = cb;
-        return realSetInterval(() => {}, 1_000_000) as any;
-      });
-      vi.spyOn(process, "on").mockImplementation((_event: any, _cb: any) => process);
+    expect(pollCallback).toBeTypeOf("function");
+    rmSync(logFile);
+    expect(() => pollCallback?.()).not.toThrow();
 
-      exitCallback(0);
-
-      // Delete the log file before polling so statSync throws inside poll
-      rmSync(logFile);
-
-      // Poll should not throw — the catch block swallows it
-      if (pollCallback) expect(() => pollCallback!()).not.toThrow();
-    }
+    writeFileSync(logFile, "recreated\n");
+    expect(() => pollCallback?.()).not.toThrow();
+    expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining("daemon restarted"));
+    expect(stdoutSpy).toHaveBeenCalledWith(Buffer.from("recreated\n"));
   });
 });

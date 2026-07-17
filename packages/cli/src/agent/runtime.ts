@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { getWindowsProcessAncestry } from "./windowsProcessTree.js";
 
 interface RuntimeSpec {
   /** Environment variables set by the runtime when it spawns subprocesses. */
@@ -7,13 +8,13 @@ interface RuntimeSpec {
 }
 
 const RUNTIMES: Record<string, RuntimeSpec> = {
-  claude: { envVars: ["CLAUDECODE"], commandPattern: /(^|\/)claude(\s|$)/ },
-  codex: { envVars: ["CODEX_CI"], commandPattern: /(^|\/)codex(\s|$)/ },
-  gemini: { envVars: ["GEMINI_CLI"], commandPattern: /(^|\/)gemini(\s|$)/ },
-  copilot: { envVars: ["COPILOT_CLI"], commandPattern: /(^|\/)copilot(\s|$)/ },
+  claude: { envVars: ["CLAUDECODE"], commandPattern: /(^|[\\/])claude(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]@anthropic-ai[\\/]claude-code[\\/]/i },
+  codex: { envVars: ["CODEX_CI"], commandPattern: /(^|[\\/])codex(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]@openai[\\/]codex[\\/]/i },
+  gemini: { envVars: ["GEMINI_CLI"], commandPattern: /(^|[\\/])gemini(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]@google[\\/]gemini-cli[\\/]/i },
+  copilot: { envVars: ["COPILOT_CLI"], commandPattern: /(^|[\\/])copilot(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]@github[\\/]copilot[\\/]/i },
   hermes: {
     envVars: ["HERMES_INTERACTIVE", "HERMES_SESSION_KEY"],
-    commandPattern: /(^|\/)hermes(\s|$)|(^|\s)hermes_cli\.main(\s|$)/,
+    commandPattern: /(^|[\\/])hermes(?:\.exe|\.cmd)?(?=["\s]|$)|(^|\s)hermes_cli\.main(\s|$)/i,
   },
 };
 
@@ -48,6 +49,13 @@ function readProcess(pid: number): { ppid: number; command: string } | null {
 export function findRuntimeAncestorPid(runtime: string): number | null {
   const pattern = RUNTIMES[runtime]?.commandPattern;
   if (!pattern) return null;
+  if (process.platform === "win32") {
+    for (const info of getWindowsProcessAncestry(process.ppid)) {
+      const command = info.commandLine || info.executable || "";
+      if (pattern.test(command)) return info.pid;
+    }
+    return null;
+  }
   let pid = process.ppid;
   for (let i = 0; i < 32 && pid > 1; i++) {
     const info = readProcess(pid);

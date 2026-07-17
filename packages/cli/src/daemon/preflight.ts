@@ -1,5 +1,5 @@
-import { spawnSync } from "node:child_process";
 import { platform } from "node:os";
+import { resolveExecutable } from "../executable.js";
 import { getAvailableProviders } from "../providers/registry.js";
 
 interface BinaryDep {
@@ -48,7 +48,7 @@ const REQUIRED_BINARIES: BinaryDep[] = [
 ];
 
 function isOnPath(command: string): boolean {
-  return spawnSync("which", [command], { stdio: "ignore" }).status === 0;
+  return resolveExecutable(command) !== null;
 }
 
 function hintFor(dep: BinaryDep): string {

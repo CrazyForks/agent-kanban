@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock node:fs so readFileSync never touches disk (gemini reads system prompt file, codex reads auth)
@@ -16,6 +17,10 @@ vi.mock("node:child_process", () => ({
   execSync: vi.fn().mockImplementation(() => {
     throw new Error("missing");
   }),
+}));
+
+vi.mock("../src/executable.js", () => ({
+  resolveExecutable: vi.fn().mockReturnValue(null),
 }));
 
 // Mock logger to suppress output
@@ -61,6 +66,7 @@ vi.mock("@openai/codex-sdk", () => ({
 
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ThreadEvent } from "@openai/codex-sdk";
+import { resolveExecutable } from "../src/executable.js";
 import { claudeProvider, mapSDKMessage } from "../src/providers/claude.js";
 import { codexProvider, mapThreadEvent } from "../src/providers/codex.js";
 import {
@@ -88,6 +94,7 @@ beforeEach(async () => {
   vi.mocked(childProcess.execSync).mockImplementation(() => {
     throw new Error("missing");
   });
+  vi.mocked(resolveExecutable).mockReturnValue(null);
 });
 
 // ---------------------------------------------------------------------------
@@ -651,8 +658,7 @@ describe("codexProvider.execute — handle shape", () => {
 describe("codexProvider.execute — thread selection", () => {
   it("calls startThread when resume is false or absent", async () => {
     const { Codex } = await import("@openai/codex-sdk");
-    const childProcess = await import("node:child_process");
-    vi.mocked(childProcess.execSync).mockReturnValueOnce("/opt/homebrew/bin/codex\n" as any);
+    vi.mocked(resolveExecutable).mockReturnValueOnce("/opt/homebrew/bin/codex");
     const startThreadSpy = vi.fn().mockReturnValue({
       runStreamed: vi.fn().mockResolvedValue({ events: (async function* () {})() }),
     });
@@ -1176,11 +1182,11 @@ describe("geminiProvider.resolveGeminiCommand", () => {
 
   it("uses the Volta package bin when installed", async () => {
     const fsModule = await import("node:fs");
-    vi.mocked(fsModule.existsSync).mockImplementation((path) => String(path).endsWith("/tools/image/packages/@google/gemini-cli/bin/gemini"));
+    const voltaHome = join("Users", "saltbo", ".volta");
+    const voltaPackageBin = join(voltaHome, "tools", "image", "packages", "@google", "gemini-cli", "bin", "gemini");
+    vi.mocked(fsModule.existsSync).mockImplementation((path) => path === voltaPackageBin);
 
-    expect(resolveGeminiCommand({ VOLTA_HOME: "/Users/saltbo/.volta" })).toBe(
-      "/Users/saltbo/.volta/tools/image/packages/@google/gemini-cli/bin/gemini",
-    );
+    expect(resolveGeminiCommand({ VOLTA_HOME: voltaHome })).toBe(voltaPackageBin);
   });
 });
 

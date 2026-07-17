@@ -2,15 +2,15 @@
 /**
  * Unit tests for checkDaemonDependencies() and assertDaemonDependencies().
  *
- * spawnSync and getAvailableProviders are mocked so tests never touch the real
+ * resolveExecutable and getAvailableProviders are mocked so tests never touch the real
  * filesystem or PATH — they control exactly which binaries appear present.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// ── Mock node:child_process BEFORE importing the module under test ─────────────
-vi.mock("node:child_process", () => ({
-  spawnSync: vi.fn(),
+// ── Mock executable resolution BEFORE importing the module under test ──────────
+vi.mock("../src/executable.js", () => ({
+  resolveExecutable: vi.fn(),
 }));
 
 // ── Mock node:os so we can control the platform branch in hintFor() ───────────
@@ -24,39 +24,29 @@ vi.mock("../src/providers/registry.js", () => ({
 }));
 
 // ── Import mocks and module under test AFTER vi.mock declarations ─────────────
-import { spawnSync } from "node:child_process";
 import { platform } from "node:os";
 import { assertDaemonDependencies, checkDaemonDependencies } from "../src/daemon/preflight.js";
+import { resolveExecutable } from "../src/executable.js";
 import { getAvailableProviders } from "../src/providers/registry.js";
 
 const mockPlatform = vi.mocked(platform);
 
-const mockSpawnSync = vi.mocked(spawnSync);
+const mockResolveExecutable = vi.mocked(resolveExecutable);
 const mockGetAvailableProviders = vi.mocked(getAvailableProviders);
 
-/** Make spawnSync return status 0 (binary present) for all commands by default. */
+/** Make every dependency resolve by default. */
 function allBinariesPresent() {
-  mockSpawnSync.mockReturnValue({ status: 0 } as any);
+  mockResolveExecutable.mockImplementation((command) => `/usr/bin/${command}`);
 }
 
-/** Make spawnSync return status 1 for a specific command name, status 0 for others. */
+/** Make one command fail resolution. */
 function missingBinary(missing: string) {
-  mockSpawnSync.mockImplementation((_cmd: string, args?: readonly string[]) => {
-    if (Array.isArray(args) && args[0] === missing) {
-      return { status: 1 } as any;
-    }
-    return { status: 0 } as any;
-  });
+  mockResolveExecutable.mockImplementation((command) => (command === missing ? null : `/usr/bin/${command}`));
 }
 
-/** Make spawnSync return status 1 for multiple command names. */
+/** Make multiple commands fail resolution. */
 function missingBinaries(...missing: string[]) {
-  mockSpawnSync.mockImplementation((_cmd: string, args?: readonly string[]) => {
-    if (Array.isArray(args) && missing.includes(args[0])) {
-      return { status: 1 } as any;
-    }
-    return { status: 0 } as any;
-  });
+  mockResolveExecutable.mockImplementation((command) => (missing.includes(command) ? null : `/usr/bin/${command}`));
 }
 
 beforeEach(() => {

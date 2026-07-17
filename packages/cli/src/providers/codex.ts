@@ -1,10 +1,10 @@
-import { execSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { BashArgs, ReadArgs } from "@agent-kanban/shared";
 import { ToolName } from "@agent-kanban/shared";
 import type { ThreadEvent } from "@openai/codex-sdk";
+import { resolveExecutable } from "../executable.js";
 import type {
   AgentEvent,
   AgentHandle,
@@ -77,12 +77,7 @@ function calcCost(model: string, inputTokens: number, cachedInputTokens: number,
 }
 
 function resolveCodexPath(): string | undefined {
-  try {
-    const path = execSync("which codex", { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    return path || undefined;
-  } catch {
-    return undefined;
-  }
+  return resolveExecutable("codex") ?? undefined;
 }
 
 function resolveCodexModel(opts: ExecuteOpts): string | undefined {

@@ -115,6 +115,7 @@ describe("daemon smoke script", () => {
     expect(waitSessionStopped).toContain('session_id="$(task_runtime_binding "$task_id")"');
     expect(waitSessionStopped).toContain('state="$(task_session_state "$session_id")"');
     expect(waitSessionStopped).not.toContain('task_session_state "$task_id"');
+    expect(waitSessionStopped).toContain('"$state" == stopped* || "$state" == closed*');
 
     expect(script).toContain(
       'session still active after completion timeout (state=$(task_runtime_state "$task_id"), binding=$(task_runtime_binding "$task_id"))',

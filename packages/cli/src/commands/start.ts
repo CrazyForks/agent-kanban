@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import {
   closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -24,6 +25,7 @@ import { generateDeviceId } from "../device.js";
 import { resolveMachineName } from "../machineName.js";
 import { DAEMON_STATE_FILE, LOGS_DIR, PID_FILE, SESSIONS_DIR, STATE_DIR } from "../paths.js";
 import { getAvailableProviders } from "../providers/registry.js";
+import { isPidAlive } from "../session/store.js";
 import { getVersion } from "../version.js";
 
 const MAX_LOG_ARCHIVES = 5;
@@ -82,13 +84,10 @@ function rotateLogs(): void {
 
 function readDaemonPid(): number | null {
   if (!existsSync(PID_FILE)) return null;
-  const pid = parseInt(readFileSync(PID_FILE, "utf-8").trim(), 10);
-  try {
-    process.kill(pid, 0);
-    return pid;
-  } catch {
-    return null;
-  }
+  const raw = readFileSync(PID_FILE, "utf-8").trim();
+  if (!/^[1-9]\d*$/.test(raw)) return null;
+  const pid = Number(raw);
+  return isPidAlive(pid) ? pid : null;
 }
 
 function readDaemonState(): DaemonState | null {
@@ -320,7 +319,7 @@ async function startAmaRunner(opts: Record<string, unknown>) {
   ensureRunnerLogin(runner.path, opts.amaOrigin as string, env);
   const args = amaRunnerArgs(opts);
   const logFd = openSync(logFile, "a");
-  const child = spawn(runner.path, args, { detached: true, stdio: ["ignore", logFd, logFd], env });
+  const child = spawn(runner.path, args, { detached: true, stdio: ["ignore", logFd, logFd], env, windowsHide: true });
   let pid: number;
   try {
     pid = await waitForSpawn(child, runner.path);
@@ -443,31 +442,8 @@ export function registerStopCommand(program: Command) {
         uptimeStr = formatUptime(new Date(state.startedAt).getTime());
       }
 
-      process.kill(pid, "SIGTERM");
-
-      // Wait for the process to actually exit (up to 10s)
-      const deadline = Date.now() + 10_000;
-      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-      while (Date.now() < deadline) {
-        try {
-          process.kill(pid, 0);
-        } catch {
-          break; // Process exited
-        }
-        await sleep(200);
-      }
-
-      // Check if it's still alive
-      let alive = false;
-      try {
-        process.kill(pid, 0);
-        alive = true;
-      } catch {
-        // dead — good
-      }
-
-      if (alive) {
-        process.kill(pid, "SIGKILL");
+      const forceKilled = await stopRunner(pid);
+      if (forceKilled) {
         console.log(`● Machine runner force-killed (PID ${pid}, SIGTERM timed out)`);
       } else {
         console.log(`● Machine runner stopped (PID ${pid})`);
@@ -539,29 +515,8 @@ export function registerRestartCommand(program: Command) {
       // Stop existing runtime if running
       const pid = readDaemonPid();
       if (pid) {
-        process.kill(pid, "SIGTERM");
-
-        const deadline = Date.now() + 10_000;
-        const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-        while (Date.now() < deadline) {
-          try {
-            process.kill(pid, 0);
-          } catch {
-            break;
-          }
-          await sleep(200);
-        }
-
-        let alive = false;
-        try {
-          process.kill(pid, 0);
-          alive = true;
-        } catch {
-          // dead — good
-        }
-
-        if (alive) {
-          process.kill(pid, "SIGKILL");
+        const forceKilled = await stopRunner(pid);
+        if (forceKilled) {
           console.log(`● Machine runner force-killed (PID ${pid})`);
         } else {
           console.log(`● Machine runner stopped (PID ${pid})`);
@@ -605,14 +560,74 @@ export function registerRestartCommand(program: Command) {
 const LOG_DIVIDER = "\n──────────────────────── daemon restarted ────────────────────────\n\n";
 const FOLLOW_POLL_MS = 500;
 
+async function stopRunner(pid: number): Promise<boolean> {
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return false;
+    if (code === "EPERM") throw new Error(`Cannot stop Machine runner PID ${pid}: permission denied`);
+    throw error;
+  }
+
+  const deadline = Date.now() + 10_000;
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  while (Date.now() < deadline && isPidAlive(pid)) await sleep(200);
+  if (!isPidAlive(pid)) return false;
+
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EPERM") {
+      throw new Error(`Cannot force-stop Machine runner PID ${pid}: permission denied`);
+    }
+    throw error;
+  }
+  return true;
+}
+
+export function readLastLogLines(logFile: string, lineCount: number): string {
+  if (!Number.isInteger(lineCount) || lineCount < 0) throw new Error("--lines must be a non-negative integer");
+  if (lineCount === 0) return "";
+  const fd = openSync(logFile, "r");
+  try {
+    const size = fstatSync(fd).size;
+    let position = size;
+    let newlineCount = 0;
+    const chunks: Buffer[] = [];
+    while (position > 0 && newlineCount <= lineCount) {
+      const length = Math.min(64 * 1024, position);
+      position -= length;
+      const chunk = Buffer.allocUnsafe(length);
+      let bytesRead = 0;
+      while (bytesRead < length) {
+        const count = readSync(fd, chunk, bytesRead, length - bytesRead, position + bytesRead);
+        if (count === 0) break;
+        bytesRead += count;
+      }
+      if (bytesRead < length) throw new Error(`Could not read ${logFile}`);
+      chunks.unshift(chunk);
+      for (const byte of chunk) if (byte === 10) newlineCount++;
+    }
+    const content = Buffer.concat(chunks).toString("utf-8");
+    const trailingNewline = content.endsWith("\n");
+    const lines = content.split("\n");
+    if (trailingNewline) lines.pop();
+    const selected = lines.slice(-lineCount).join("\n");
+    return selected ? `${selected}${trailingNewline ? "\n" : ""}` : "";
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function followLogFile(logFile: string): void {
-  let currentInode: number | null = null;
+  let currentIdentity: string | null = null;
   let currentOffset = 0;
 
   // Initialise inode/offset from current file end
   try {
     const stat = statSync(logFile);
-    currentInode = stat.ino;
+    currentIdentity = `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
     currentOffset = stat.size;
   } catch {
     // File may not exist yet; will pick it up on first poll
@@ -621,22 +636,35 @@ function followLogFile(logFile: string): void {
   const poll = (): void => {
     try {
       const stat = statSync(logFile);
+      const identity = `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
 
-      if (currentInode !== null && stat.ino !== currentInode) {
+      if (currentIdentity !== null && (identity !== currentIdentity || stat.size < currentOffset)) {
         // File was rotated — new daemon.log created
         process.stdout.write(LOG_DIVIDER);
         currentOffset = 0;
       }
 
-      currentInode = stat.ino;
+      currentIdentity = identity;
 
       if (stat.size > currentOffset) {
         const fd = openSync(logFile, "r");
-        const buf = Buffer.alloc(stat.size - currentOffset);
-        readSync(fd, buf, 0, buf.length, currentOffset);
-        closeSync(fd);
-        process.stdout.write(buf);
-        currentOffset = stat.size;
+        try {
+          const size = fstatSync(fd).size;
+          if (size < currentOffset) {
+            currentOffset = 0;
+          }
+          const buf = Buffer.alloc(size - currentOffset);
+          let bytesRead = 0;
+          while (bytesRead < buf.length) {
+            const count = readSync(fd, buf, bytesRead, buf.length - bytesRead, currentOffset + bytesRead);
+            if (count === 0) break;
+            bytesRead += count;
+          }
+          if (bytesRead > 0) process.stdout.write(buf.subarray(0, bytesRead));
+          currentOffset += bytesRead;
+        } finally {
+          closeSync(fd);
+        }
       }
     } catch {
       // File temporarily absent during rotation — retry next tick
@@ -668,12 +696,11 @@ export function registerLogsCommand(program: Command) {
       }
 
       if (opts.follow) {
-        // Print last N lines via tail, then hand off to our inode-aware follower
-        const init = spawn("tail", ["-n", String(opts.lines), logFile], { stdio: "inherit" });
-        init.on("exit", () => followLogFile(logFile));
+        const lines = Number(opts.lines);
+        process.stdout.write(readLastLogLines(logFile, lines));
+        followLogFile(logFile);
       } else {
-        const tail = spawn("tail", ["-n", String(opts.lines), logFile], { stdio: "inherit" });
-        tail.on("exit", (code) => process.exit(code ?? 0));
+        process.stdout.write(readLastLogLines(logFile, Number(opts.lines)));
       }
     });
 }
