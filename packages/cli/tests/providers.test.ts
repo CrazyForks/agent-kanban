@@ -18,6 +18,10 @@ vi.mock("node:child_process", () => ({
   }),
 }));
 
+vi.mock("../src/executable.js", () => ({
+  resolveExecutable: vi.fn().mockReturnValue(null),
+}));
+
 // Mock logger to suppress output
 vi.mock("../src/logger.js", () => ({
   createLogger: () => ({
@@ -61,6 +65,7 @@ vi.mock("@openai/codex-sdk", () => ({
 
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ThreadEvent } from "@openai/codex-sdk";
+import { resolveExecutable } from "../src/executable.js";
 import { claudeProvider, mapSDKMessage } from "../src/providers/claude.js";
 import { codexProvider, mapThreadEvent } from "../src/providers/codex.js";
 import {
@@ -88,6 +93,7 @@ beforeEach(async () => {
   vi.mocked(childProcess.execSync).mockImplementation(() => {
     throw new Error("missing");
   });
+  vi.mocked(resolveExecutable).mockReturnValue(null);
 });
 
 // ---------------------------------------------------------------------------
@@ -651,8 +657,7 @@ describe("codexProvider.execute — handle shape", () => {
 describe("codexProvider.execute — thread selection", () => {
   it("calls startThread when resume is false or absent", async () => {
     const { Codex } = await import("@openai/codex-sdk");
-    const childProcess = await import("node:child_process");
-    vi.mocked(childProcess.execSync).mockReturnValueOnce("/opt/homebrew/bin/codex\n" as any);
+    vi.mocked(resolveExecutable).mockReturnValueOnce("/opt/homebrew/bin/codex");
     const startThreadSpy = vi.fn().mockReturnValue({
       runStreamed: vi.fn().mockResolvedValue({ events: (async function* () {})() }),
     });

@@ -1,5 +1,5 @@
-import { execSync } from "node:child_process";
 import { type AgentRuntime, normalizeRuntime } from "@agent-kanban/shared";
+import { resolveExecutable } from "../executable.js";
 import { type AcpRuntimeConfig, createAcpProvider } from "./acp.js";
 import { claudeProvider } from "./claude.js";
 import { codexProvider } from "./codex.js";
@@ -41,14 +41,9 @@ export function getProvider(name: AgentRuntime): AgentProvider {
 }
 
 export function getAvailableProviders(): AgentProvider[] {
-  return [...providers.values()].filter((p) => {
-    const command = RUNTIME_COMMANDS[p.name];
-    try {
-      execSync(`which ${command}`, { stdio: "ignore" });
-      return true;
-    } catch {
-      return false;
-    }
+  return [...providers.values()].filter((provider) => {
+    const command = RUNTIME_COMMANDS[provider.name];
+    return command ? resolveExecutable(command) !== null : false;
   });
 }
 

@@ -8,6 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { decodeJwt } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── Persistent mock factories (re-applied after every resetModules) ──────────
@@ -126,6 +127,7 @@ beforeEach(() => {
 
 afterEach(() => {
   clearAkEnv();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -179,6 +181,35 @@ describe("AgentClient.fromEnv", () => {
     process.env.AK_AGENT_KEY = JSON.stringify(privJwk);
     process.env.AK_API_URL = "https://example.com";
     expect(await AgentClient.fromEnv()).toBeInstanceOf(AgentClient);
+  });
+});
+
+describe("AgentClient JWT timestamps", () => {
+  it("backdates iat by 30 seconds while exp remains 60 seconds after signing time", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-17T12:00:00.000Z"));
+    const { AgentClient } = await import("../src/client/index.js");
+    const privateKeyJwk = await makePrivKeyJwk();
+    const privateKey = await crypto.subtle.importKey("jwk", privateKeyJwk, { name: "Ed25519" } as any, false, ["sign"]);
+    const client = new AgentClient("https://api.example.com", "agent-1", "session-1", privateKey);
+    let authorization = "";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        authorization = new Headers(init?.headers).get("Authorization") ?? "";
+        return new Response(JSON.stringify({ id: "agent-1" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+
+    await client.getAgent("agent-1");
+
+    const payload = decodeJwt(authorization.replace(/^Bearer /, ""));
+    const now = Math.floor(Date.now() / 1000);
+    expect(payload.iat).toBe(now - 30);
+    expect(payload.exp).toBe(now + 60);
   });
 });
 

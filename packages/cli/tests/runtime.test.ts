@@ -11,9 +11,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── Mock child_process before any imports touch it ────────────────────────────
 const mockExecFileSync = vi.fn<[string, string[], object], string>();
+const mockGetWindowsProcessAncestry = vi.fn();
 
 vi.mock("node:child_process", () => ({
   execFileSync: mockExecFileSync,
+}));
+
+vi.mock("../src/agent/windowsProcessTree.js", () => ({
+  getWindowsProcessAncestry: mockGetWindowsProcessAncestry,
 }));
 
 // Import after mocks are registered
@@ -44,6 +49,7 @@ beforeEach(() => {
 
 afterEach(() => {
   clearRuntimeEnv();
+  vi.restoreAllMocks();
 });
 
 // ── detectRuntime ─────────────────────────────────────────────────────────────
@@ -174,6 +180,39 @@ describe("findRuntimeAncestorPid — happy paths", () => {
     // e.g. "not-claude" should NOT match "claude" pattern
     mockExecFileSync.mockReturnValueOnce(psLine(2, "not-claude")).mockReturnValueOnce(psLine(1, "/sbin/init"));
     expect(findRuntimeAncestorPid("claude")).toBeNull();
+  });
+});
+
+describe("findRuntimeAncestorPid — Windows ancestry", () => {
+  it("uses the native process ancestry instead of ps and matches a Node-hosted Codex CLI", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    mockGetWindowsProcessAncestry.mockReturnValue([
+      {
+        pid: 4100,
+        ppid: 4000,
+        executable: "node.exe",
+        commandLine: "node.exe C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js",
+      },
+      { pid: 4000, ppid: 100, executable: "pwsh.exe", commandLine: "pwsh.exe" },
+    ]);
+
+    expect(findRuntimeAncestorPid("codex")).toBe(4100);
+    expect(mockGetWindowsProcessAncestry).toHaveBeenCalledWith(process.ppid);
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the executable name when command line access is unavailable", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    mockGetWindowsProcessAncestry.mockReturnValue([{ pid: 5100, ppid: 5000, executable: "claude.cmd", commandLine: null }]);
+
+    expect(findRuntimeAncestorPid("claude")).toBe(5100);
+  });
+
+  it("returns null when no Windows ancestor matches the requested runtime", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    mockGetWindowsProcessAncestry.mockReturnValue([{ pid: 6100, ppid: 6000, executable: "node.exe", commandLine: "node.exe unrelated.js" }]);
+
+    expect(findRuntimeAncestorPid("gemini")).toBeNull();
   });
 });
 

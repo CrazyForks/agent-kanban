@@ -5,7 +5,38 @@ on:
     tags: ["v*"]
 
 jobs:
+  native-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter agent-kanban exec node-gyp rebuild --directory native/process-tree --release
+      - name: Stage native addon
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force native-artifact
+          Copy-Item packages/cli/native/process-tree/build/Release/process_tree.node native-artifact/process-tree.node
+      - name: Load native addon on Node 22
+        shell: pwsh
+        run: node -e "const addon=require('./native-artifact/process-tree.node'); const rows=addon.getProcessAncestry(process.pid,32); const first=rows[0]; if (first?.pid !== process.pid || first.ppid !== process.ppid || !first.commandLine?.includes('ak-native-smoke-210') || rows.length < 2) process.exit(1)" ak-native-smoke-210
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Load native addon on Node 24
+        shell: pwsh
+        run: node -e "const addon=require('./native-artifact/process-tree.node'); const rows=addon.getProcessAncestry(process.pid,32); const first=rows[0]; if (first?.pid !== process.pid || first.ppid !== process.ppid || !first.commandLine?.includes('ak-native-smoke-210') || rows.length < 2) process.exit(1)" ak-native-smoke-210
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ak-process-tree-win32-x64
+          path: native-artifact/process-tree.node
+
   publish-cli:
+    needs: native-windows
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -28,6 +59,11 @@ jobs:
 
       - run: pnpm --filter @agent-kanban/shared build
       - run: pnpm --filter agent-kanban build
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ak-process-tree-win32-x64
+          path: packages/cli/dist/native/win32-x64
 
       - name: Publish to npm
         working-directory: packages/cli

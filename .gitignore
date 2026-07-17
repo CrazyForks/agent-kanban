@@ -7,6 +7,7 @@ dist/
 # Build output
 packages/shared/dist/
 packages/cli/dist/
+packages/cli/native/process-tree/build/
 
 # IDE
 .idea/
