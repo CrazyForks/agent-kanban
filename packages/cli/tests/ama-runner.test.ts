@@ -15,6 +15,11 @@ vi.mock("../src/paths.js", async () => {
   return { ...actual, BIN_DIR: binDir, DATA_DIR: testDir };
 });
 
+vi.mock("node:os", async () => {
+  const actual = await vi.importActual<typeof import("node:os")>("node:os");
+  return { ...actual, platform: () => "darwin", arch: () => "arm64" };
+});
+
 // Mutable probe config so the version stub tracks whatever AMA_RUNNER_VERSION
 // the source exports. The object reference is captured at mock-factory time;
 // values are written after the real module is imported below.

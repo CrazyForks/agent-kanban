@@ -1,5 +1,6 @@
 // @vitest-environment node
 
+import { join } from "node:path";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -227,7 +228,7 @@ describe("auth git command", () => {
 
     await makeProgram().parseAsync(["auth", "git", "repo-1"], { from: "user" });
 
-    expect(mockConfigureGithubAuth).toHaveBeenCalledWith("ghs_repo_token", { homeDir: "/tmp/ak-workspace/.home" });
+    expect(mockConfigureGithubAuth).toHaveBeenCalledWith("ghs_repo_token", { homeDir: join("/tmp/ak-workspace", ".home") });
   });
 
   it("refuses worker GitHub auth when the worker home is not isolated", async () => {

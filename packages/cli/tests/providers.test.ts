@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock node:fs so readFileSync never touches disk (gemini reads system prompt file, codex reads auth)
@@ -1181,11 +1182,11 @@ describe("geminiProvider.resolveGeminiCommand", () => {
 
   it("uses the Volta package bin when installed", async () => {
     const fsModule = await import("node:fs");
-    vi.mocked(fsModule.existsSync).mockImplementation((path) => String(path).endsWith("/tools/image/packages/@google/gemini-cli/bin/gemini"));
+    const voltaHome = join("Users", "saltbo", ".volta");
+    const voltaPackageBin = join(voltaHome, "tools", "image", "packages", "@google", "gemini-cli", "bin", "gemini");
+    vi.mocked(fsModule.existsSync).mockImplementation((path) => path === voltaPackageBin);
 
-    expect(resolveGeminiCommand({ VOLTA_HOME: "/Users/saltbo/.volta" })).toBe(
-      "/Users/saltbo/.volta/tools/image/packages/@google/gemini-cli/bin/gemini",
-    );
+    expect(resolveGeminiCommand({ VOLTA_HOME: voltaHome })).toBe(voltaPackageBin);
   });
 });
 

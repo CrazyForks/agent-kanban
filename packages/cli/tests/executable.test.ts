@@ -15,15 +15,16 @@ afterEach(() => {
 });
 
 describe("resolveExecutable", () => {
-  it("resolves an executable from a later PATH entry on POSIX", () => {
+  it("resolves an executable from a later PATH entry", () => {
     const first = join(testDir, "first");
     const second = join(testDir, "second");
     mkdirSync(first, { recursive: true });
     mkdirSync(second, { recursive: true });
-    const executable = join(second, "codex");
+    const command = process.platform === "win32" ? "codex.exe" : "codex";
+    const executable = join(second, command);
     writeFileSync(executable, "#!/bin/sh\n", { mode: 0o755 });
 
-    expect(resolveExecutable("codex", { PATH: `${first}${delimiter}${second}` })).toBe(executable);
+    expect(resolveExecutable(command, { PATH: `${first}${delimiter}${second}` })).toBe(executable);
   });
 
   it("honors PATHEXT and resolves npm command shims on Windows", () => {

@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // ── Mock child_process before any imports touch it ────────────────────────────
 const mockExecFileSync = vi.fn<[string, string[], object], string>();
 const mockGetWindowsProcessAncestry = vi.fn();
+let platformSpy: ReturnType<typeof vi.spyOn>;
 
 vi.mock("node:child_process", () => ({
   execFileSync: mockExecFileSync,
@@ -45,6 +46,7 @@ function clearRuntimeEnv() {
 beforeEach(() => {
   clearRuntimeEnv();
   vi.clearAllMocks();
+  platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
 });
 
 afterEach(() => {
@@ -185,7 +187,7 @@ describe("findRuntimeAncestorPid — happy paths", () => {
 
 describe("findRuntimeAncestorPid — Windows ancestry", () => {
   it("uses the native process ancestry instead of ps and matches a Node-hosted Codex CLI", () => {
-    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    platformSpy.mockReturnValue("win32");
     mockGetWindowsProcessAncestry.mockReturnValue([
       {
         pid: 4100,
@@ -202,14 +204,14 @@ describe("findRuntimeAncestorPid — Windows ancestry", () => {
   });
 
   it("falls back to the executable name when command line access is unavailable", () => {
-    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    platformSpy.mockReturnValue("win32");
     mockGetWindowsProcessAncestry.mockReturnValue([{ pid: 5100, ppid: 5000, executable: "claude.cmd", commandLine: null }]);
 
     expect(findRuntimeAncestorPid("claude")).toBe(5100);
   });
 
   it("returns null when no Windows ancestor matches the requested runtime", () => {
-    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    platformSpy.mockReturnValue("win32");
     mockGetWindowsProcessAncestry.mockReturnValue([{ pid: 6100, ppid: 6000, executable: "node.exe", commandLine: "node.exe unrelated.js" }]);
 
     expect(findRuntimeAncestorPid("gemini")).toBeNull();
