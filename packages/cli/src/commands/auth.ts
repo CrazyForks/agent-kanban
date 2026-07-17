@@ -165,9 +165,6 @@ export function registerAuthCommand(program: Command) {
           identity = null;
         }
         if (identity) {
-          console.log("Type:        leader");
-          console.log(`Runtime:     ${runtime}`);
-          console.log(`Agent ID:    ${identity.agent_id}`);
           const leaderPid = findRuntimeAncestorPid(runtime);
           let apiUrl: string | null = null;
           try {
@@ -186,7 +183,11 @@ export function registerAuthCommand(program: Command) {
                     isPidAlive(leaderPid),
                 )
               : null;
-          if (session) console.log(`Session ID:  ${session.sessionId}`);
+          if (!session) throw new Error(missingAuthSessionMessage(runtime));
+          console.log("Type:        leader");
+          console.log(`Runtime:     ${runtime}`);
+          console.log(`Agent ID:    ${identity.agent_id}`);
+          console.log(`Session ID:  ${session.sessionId}`);
           console.log(`Name:        ${identity.name}`);
           console.log(`Fingerprint: ${identity.fingerprint}`);
           return;

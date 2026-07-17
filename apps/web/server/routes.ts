@@ -4,6 +4,7 @@ import {
   type AgentTaint,
   AMA_ANNOTATION_KEY_IDLE_TIMEOUT_SECONDS,
   AMA_BACKFILL_FAILED_TAINT_KEY,
+  type AnyAgentRuntime,
   type CreateAgentInput,
   type CreateSubagentInput,
   findInvalidSkillRef,
@@ -12,6 +13,7 @@ import {
   isBoardType,
   isValidAgentRole,
   isValidUsername,
+  LEADER_AGENT_RUNTIMES,
   MAINTAINER_HEARTBEAT_DEFAULT_INTERVAL_SECONDS,
   MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS,
   MAINTAINER_SESSION_IDLE_TIMEOUT_SECONDS,
@@ -279,10 +281,20 @@ function assertSubagentRuntime(runtime: string, subagents: string[] | null | und
   }
 }
 
-function assertValidAgentRuntime(runtime: string | undefined): void {
+function assertValidAgentRuntime(runtime: string | undefined, kind: "worker" | "leader" = "worker"): void {
   if (runtime === undefined) return;
-  if (!AGENT_RUNTIMES.includes(runtime as any)) {
-    throw new HTTPException(400, { message: `Invalid runtime "${runtime}". Must be one of: ${AGENT_RUNTIMES.join(", ")}` });
+  const runtimes = kind === "leader" ? LEADER_AGENT_RUNTIMES : AGENT_RUNTIMES;
+  if (!runtimes.includes(runtime as never)) {
+    throw new HTTPException(400, { message: `Invalid ${kind} runtime "${runtime}". Must be one of: ${runtimes.join(", ")}` });
+  }
+}
+
+function assertKnownAgentRuntime(runtime: string | undefined): void {
+  if (runtime === undefined) return;
+  if (![...AGENT_RUNTIMES, ...LEADER_AGENT_RUNTIMES].includes(runtime as never)) {
+    throw new HTTPException(400, {
+      message: `Invalid runtime "${runtime}". Must be one of: ${[...new Set([...AGENT_RUNTIMES, ...LEADER_AGENT_RUNTIMES])].join(", ")}`,
+    });
   }
 }
 
@@ -300,10 +312,11 @@ async function assertAmaAssignableWorkerRuntime(db: D1, env: Env, ownerId: strin
   if (hasNoScheduleTaint(agent.taints)) {
     throw new HTTPException(409, { message: "Agent is tainted NoSchedule and cannot be assigned normal tasks" });
   }
-  const runtimes = await availableAmaRuntimes(db, env, ownerId, agent.runtime);
-  if (!runtimes.has(agent.runtime)) {
+  const runtime = agent.runtime as AgentRuntime;
+  const runtimes = await availableAmaRuntimes(db, env, ownerId, runtime);
+  if (!runtimes.has(runtime)) {
     throw new HTTPException(409, {
-      message: `Runtime "${agent.runtime}" is not available on any AMA runner. Choose or create a worker that uses an available runtime.`,
+      message: `Runtime "${runtime}" is not available on any AMA runner. Choose or create a worker that uses an available runtime.`,
     });
   }
 }
@@ -1295,12 +1308,12 @@ api.get("/api/models", async (c) => {
 
 api.get("/api/agents", async (c) => {
   const role = c.req.query("role");
-  const runtime = c.req.query("runtime") as AgentRuntime | undefined;
+  const runtime = c.req.query("runtime") as AnyAgentRuntime | undefined;
   const available = parseOptionalBoolean(c.req.query("available"), "available");
   const maintainerOnly = parseOptionalBoolean(c.req.query("maintainer"), "maintainer");
   const amaRuntime = isAmaTaskDispatchConfigured(c.env);
   assertValidAgentRole(role);
-  assertValidAgentRuntime(runtime);
+  assertKnownAgentRuntime(runtime);
   const agents = await listAgents(c.env.DB, c.get("ownerId"), {
     kind: parseOptionalAgentKind(c.req.query("kind")),
     role,
@@ -1345,7 +1358,7 @@ api.post("/api/agents", async (c) => {
   if (!isValidUsername(body.username)) throw new HTTPException(400, { message: `Invalid username "${body.username}"` });
   assertValidAgentRole(body.role);
   assertValidHandoffRoles(body.handoff_to);
-  assertValidAgentRuntime(body.runtime);
+  assertValidAgentRuntime(body.runtime, body.kind ?? "worker");
   if (body.role && RESERVED_ROLES.has(body.role)) {
     throw new HTTPException(403, { message: `Role "${body.role}" is reserved for built-in agents` });
   }
@@ -1355,10 +1368,6 @@ api.post("/api/agents", async (c) => {
   assertSubagentRuntime(body.runtime, body.subagents);
   const ownerId = c.get("ownerId");
   const isWorker = (body.kind ?? "worker") === "worker";
-  // Worker agents are dispatch targets and need a backing AMA agent. Leaders
-  // only authenticate/review inside AK, so they do not mirror to AMA.
-  if (isWorker) await requireAmaConnected(c.env.DB, c.env, ownerId);
-  await assertRegisteredSubagents(c.env.DB, ownerId, body.subagents);
 
   const existingUsername = await c.env.DB.prepare("SELECT owner_id FROM agents WHERE username = ? LIMIT 1")
     .bind(body.username)
@@ -1366,8 +1375,29 @@ api.post("/api/agents", async (c) => {
   if (existingUsername && existingUsername.owner_id !== ownerId) {
     throw new HTTPException(409, { message: `Username "${body.username}" is already taken` });
   }
+  const latestIdentity = existingUsername
+    ? await c.env.DB.prepare(
+        "SELECT id, kind, public_key, private_key, fingerprint FROM agents WHERE username = ? AND owner_id = ? AND version = 'latest'",
+      )
+        .bind(body.username, ownerId)
+        .first<{ id: string; kind: "worker" | "leader"; public_key: string; private_key: string; fingerprint: string }>()
+    : null;
+  if (latestIdentity?.kind === "leader") {
+    throw new HTTPException(409, { message: "Leader agents cannot be modified" });
+  }
+  if (latestIdentity && latestIdentity.kind !== (body.kind ?? "worker")) {
+    throw new HTTPException(409, { message: "Agent kind cannot be changed" });
+  }
+
+  // Worker agents are dispatch targets and need a backing AMA agent. Leaders
+  // only authenticate/review inside AK, so they do not mirror to AMA.
+  if (isWorker) await requireAmaConnected(c.env.DB, c.env, ownerId);
+  await assertRegisteredSubagents(c.env.DB, ownerId, body.subagents);
+
   if (body.kind === "leader") {
-    const existingLeader = await c.env.DB.prepare("SELECT 1 FROM agents WHERE owner_id = ? AND runtime = ? AND kind = 'leader'")
+    const existingLeader = await c.env.DB.prepare(
+      "SELECT 1 FROM agents WHERE owner_id = ? AND runtime = ? AND kind = 'leader' AND version = 'latest'",
+    )
       .bind(ownerId, body.runtime)
       .first();
     if (existingLeader) {
@@ -1376,11 +1406,6 @@ api.post("/api/agents", async (c) => {
   }
 
   const email = agentEmail(body.username);
-  const latestIdentity = existingUsername
-    ? await c.env.DB.prepare("SELECT id, public_key, private_key, fingerprint FROM agents WHERE username = ? AND owner_id = ? AND version = 'latest'")
-        .bind(body.username, ownerId)
-        .first<{ id: string; public_key: string; private_key: string; fingerprint: string }>()
-    : null;
   const identity = latestIdentity
     ? {
         id: latestIdentity.id,
@@ -1434,13 +1459,14 @@ api.patch("/api/agents/:id", async (c) => {
   const existing = await getAgent(c.env.DB, c.req.param("id"), ownerId);
   if (!existing) throw new HTTPException(404, { message: "Agent not found" });
   if (existing.builtin) throw new HTTPException(403, { message: "Built-in agents cannot be modified" });
+  if (existing.kind === "leader") throw new HTTPException(403, { message: "Leader agents cannot be modified" });
   if (existing.version !== "latest") throw new HTTPException(409, { message: "Agent snapshots cannot be modified" });
   const body = await c.req.json();
   assertJsonObject(body, "agent update");
   const updates = body as Partial<CreateAgentInput>;
   assertValidAgentRole(updates.role);
   assertValidHandoffRoles(updates.handoff_to);
-  assertValidAgentRuntime(updates.runtime);
+  assertValidAgentRuntime(updates.runtime, existing.kind);
   assertValidSkillRefs(updates.skills);
   assertValidAgentTaints(updates.taints);
   assertSubagentList(updates.subagents);

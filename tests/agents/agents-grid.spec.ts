@@ -12,6 +12,7 @@ test.describe("Agents Page", () => {
 
     // Wait for the agent card grid to load
     await page.getByText("Quality Goalkeeper").first().waitFor({ state: "visible" });
+    await expect(page.getByText(/^\d+\/\d+ workers schedulable$/)).toBeVisible();
 
     // expect: Agents are displayed in a 3-column card grid
     const agentCard = page.getByRole("link", { name: /Quality Goalkeeper/ });
@@ -19,10 +20,12 @@ test.describe("Agents Page", () => {
 
     // expect: Each card shows the agent identicon (img), agent name, fingerprint badge, status indicator
     await expect(agentCard.getByRole("heading", { name: "Quality Goalkeeper" })).toBeVisible();
-    await expect(agentCard.getByText(/Offline|Online/)).toBeVisible();
+    await expect(agentCard.getByText(/^(?:Not schedulable|Schedulable)$/)).toBeVisible();
 
-    // expect: Stats strip with task count, token count, and cost
-    await expect(agentCard.getByText(/tasks/)).toBeVisible();
+    // expect: Stats strip with task state counts, token count, and cost
+    await expect(agentCard.getByText(/todo/)).toBeVisible();
+    await expect(agentCard.getByText(/progress/)).toBeVisible();
+    await expect(agentCard.getByText(/review/)).toBeVisible();
     await expect(agentCard.getByText(/tok/)).toBeVisible();
     await expect(agentCard.getByText(/\$/)).toBeVisible();
   });

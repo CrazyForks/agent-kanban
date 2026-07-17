@@ -18,7 +18,7 @@ const providers = new Map<AgentRuntime, AgentProvider>();
 const ACP_RUNTIMES: AcpRuntimeConfig[] = [{ runtime: "hermes", label: "Hermes", command: "hermes", args: ["acp"] }];
 
 /** Binary name used to detect availability per runtime */
-const RUNTIME_COMMANDS: Record<AgentRuntime, string> = {
+const RUNTIME_COMMANDS: Partial<Record<AgentRuntime, string>> = {
   claude: "claude",
   codex: "codex",
   gemini: "gemini",

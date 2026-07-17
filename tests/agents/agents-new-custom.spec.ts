@@ -22,7 +22,7 @@ test.describe("Agents Page", () => {
 
     // expect: Identity fieldset with Name, Role, Bio, Soul inputs is visible
     await expect(page.getByRole("group", { name: "Identity" })).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "Name" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Name", exact: true })).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Role" })).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Bio" })).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Soul" })).toBeVisible();

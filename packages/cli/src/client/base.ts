@@ -193,7 +193,7 @@ export abstract class ApiClient {
     role?: string;
     kind?: "worker" | "leader";
     handoff_to?: string[];
-    runtime: import("@agent-kanban/shared").AgentRuntime;
+    runtime: import("@agent-kanban/shared").AnyAgentRuntime;
     model?: string;
     skills?: string[];
     subagents?: string[];

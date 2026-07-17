@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process";
 import { mkdirSync, unlinkSync } from "node:fs";
 import { arch, platform, release } from "node:os";
-import type { MachineRuntime } from "@agent-kanban/shared";
+import { AGENT_RUNTIMES, type AgentRuntime, type MachineRuntime } from "@agent-kanban/shared";
 import { MachineClient } from "../client/index.js";
 import { getCredentials } from "../config.js";
 import { generateDeviceId } from "../device.js";
@@ -27,7 +27,10 @@ const logger = createLogger("daemon");
 
 async function fetchSessionHistory(sessionId: string): Promise<HistoryEvent[]> {
   const session = getSessionManager().read(sessionId);
-  const provider = session ? getProvider(session.runtime) : getProvider("claude");
+  if (session && !AGENT_RUNTIMES.includes(session.runtime as AgentRuntime)) {
+    throw new Error(`History is unavailable for leader runtime "${session.runtime}"`);
+  }
+  const provider = session ? getProvider(session.runtime as AgentRuntime) : getProvider("claude");
   return provider.getHistory(sessionId, session?.providerResumeToken);
 }
 

@@ -1,26 +1,52 @@
 import { execFileSync } from "node:child_process";
+import type { LeaderAgentRuntime } from "@agent-kanban/shared";
 import { getWindowsProcessAncestry } from "./windowsProcessTree.js";
 
 interface RuntimeSpec {
-  /** Environment variables set by the runtime when it spawns subprocesses. */
-  envVars: string[];
   commandPattern: RegExp;
 }
 
-const RUNTIMES: Record<string, RuntimeSpec> = {
-  claude: { envVars: ["CLAUDECODE"], commandPattern: /(^|[\\/])claude(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]@anthropic-ai[\\/]claude-code[\\/]/i },
-  codex: { envVars: ["CODEX_CI"], commandPattern: /(^|[\\/])codex(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]@openai[\\/]codex[\\/]/i },
-  gemini: { envVars: ["GEMINI_CLI"], commandPattern: /(^|[\\/])gemini(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]@google[\\/]gemini-cli[\\/]/i },
-  copilot: { envVars: ["COPILOT_CLI"], commandPattern: /(^|[\\/])copilot(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]@github[\\/]copilot[\\/]/i },
+const RUNTIMES: Record<LeaderAgentRuntime, RuntimeSpec> = {
+  claude: { commandPattern: /(^|[\\/])claude(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]@anthropic-ai[\\/]claude-code[\\/]/i },
+  codex: { commandPattern: /(^|[\\/])codex(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]@openai[\\/]codex[\\/]/i },
+  gemini: { commandPattern: /(^|[\\/])gemini(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]@google[\\/]gemini-cli[\\/]/i },
+  copilot: { commandPattern: /(^|[\\/])copilot(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]@github[\\/]copilot[\\/]/i },
   hermes: {
-    envVars: ["HERMES_INTERACTIVE", "HERMES_SESSION_KEY"],
     commandPattern: /(^|[\\/])hermes(?:\.exe|\.cmd)?(?=["\s]|$)|(^|\s)hermes_cli\.main(\s|$)/i,
   },
+  antigravity: { commandPattern: /(^|[\\/])agy(?:\.exe|\.cmd)?(?=["\s]|$)/i },
+  opencode: { commandPattern: /(^|[\\/])opencode(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]opencode-ai[\\/]opencode[\\/]/i },
+  cursor: { commandPattern: /(^|[\\/])cursor-agent(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]@cursor[\\/].*cursor-agent/i },
+  qwen: { commandPattern: /(^|[\\/])qwen(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]@qwen-code[\\/]qwen-code[\\/]/i },
+  goose: { commandPattern: /(^|[\\/])goose(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]aaif-goose[\\/]goose[\\/]/i },
+  amp: { commandPattern: /(^|[\\/])amp(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]@ampcode[\\/]cli[\\/]/i },
+  kiro: { commandPattern: /(^|[\\/])kiro-cli(?:\.exe|\.cmd|\.appimage)?(?=["\s]|$)/i },
+  pi: { commandPattern: /(^|[\\/])pi(?:\.exe|\.cmd)?(?=["\s]|$)|[\\/]pi-coding-agent[\\/]dist[\\/]cli\.js/i },
 };
 
-export function detectRuntime(): string | null {
-  for (const [name, { envVars }] of Object.entries(RUNTIMES)) {
-    if (envVars.some((envVar) => process.env[envVar])) return name;
+function hasEnvironmentVariable(name: string): boolean {
+  return process.env[name] !== undefined;
+}
+
+const ENVIRONMENT_DETECTORS: readonly [LeaderAgentRuntime, () => boolean][] = [
+  ["antigravity", () => hasEnvironmentVariable("ANTIGRAVITY_AGENT")],
+  ["opencode", () => hasEnvironmentVariable("OPENCODE")],
+  ["amp", () => process.env.AGENT === "amp"],
+  ["goose", () => process.env.AGENT === "goose" || hasEnvironmentVariable("GOOSE_TERMINAL")],
+  ["qwen", () => hasEnvironmentVariable("QWEN_CODE")],
+  ["cursor", () => hasEnvironmentVariable("CURSOR_AGENT")],
+  ["kiro", () => hasEnvironmentVariable("AGENT_DISPLAY_OUT") && hasEnvironmentVariable("AGENT_CONTEXT_OUT")],
+  ["pi", () => hasEnvironmentVariable("PI_CODING_AGENT")],
+  ["codex", () => hasEnvironmentVariable("CODEX_CI")],
+  ["copilot", () => hasEnvironmentVariable("COPILOT_CLI")],
+  ["gemini", () => hasEnvironmentVariable("GEMINI_CLI")],
+  ["claude", () => hasEnvironmentVariable("CLAUDECODE")],
+  ["hermes", () => hasEnvironmentVariable("HERMES_INTERACTIVE") || hasEnvironmentVariable("HERMES_SESSION_KEY")],
+];
+
+export function detectRuntime(): LeaderAgentRuntime | null {
+  for (const [runtime, matches] of ENVIRONMENT_DETECTORS) {
+    if (matches()) return runtime;
   }
   return null;
 }
@@ -39,15 +65,16 @@ function readProcess(pid: number): { ppid: number; command: string } | null {
 
 /**
  * Walk up the process ancestry from `ak` to find the long-lived agent runtime
- * process (claude/codex/gemini) that ultimately invoked us. Returns its PID, or
+ * process that ultimately invoked us. Returns its PID, or
  * null if no matching ancestor is found.
  *
- * Used to anchor leader sessions to a stable, long-lived PID instead of the
+ * Used only after environment-based runtime detection to anchor leader sessions
+ * to a stable, long-lived PID instead of the
  * ephemeral shell that spawned `ak` (which dies in milliseconds and causes the
  * daemon to immediately reap the session).
  */
 export function findRuntimeAncestorPid(runtime: string): number | null {
-  const pattern = RUNTIMES[runtime]?.commandPattern;
+  const pattern = RUNTIMES[runtime as LeaderAgentRuntime]?.commandPattern;
   if (!pattern) return null;
   if (process.platform === "win32") {
     for (const info of getWindowsProcessAncestry(process.ppid)) {

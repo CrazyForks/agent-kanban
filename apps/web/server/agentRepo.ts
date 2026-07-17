@@ -1,5 +1,5 @@
 import type { Agent, AgentStatus, AgentWithActivity, CreateAgentInput } from "@agent-kanban/shared";
-import { type AgentRuntime, BUILTIN_TEMPLATES, hasNoScheduleTaint, MACHINE_STALE_TIMEOUT_MS } from "@agent-kanban/shared";
+import { type AgentRuntime, type AnyAgentRuntime, BUILTIN_TEMPLATES, hasNoScheduleTaint, MACHINE_STALE_TIMEOUT_MS } from "@agent-kanban/shared";
 import { type D1, parseJsonFields } from "./db";
 import { addSubkey, getOrCreateRootKey } from "./gpgKeyRepo";
 import { runtimeReadyPredicateSql } from "./machineRepo";
@@ -14,7 +14,7 @@ const SESSION_UNION_SQL = `
 export type AgentListFilters = {
   kind?: "worker" | "leader";
   role?: string;
-  runtime?: AgentRuntime;
+  runtime?: AnyAgentRuntime;
   available?: boolean;
 };
 

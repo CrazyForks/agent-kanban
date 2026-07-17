@@ -1,6 +1,6 @@
-import { AGENT_RUNTIMES, type AgentRuntime, findInvalidSkillRef, RUNTIME_LABELS } from "@agent-kanban/shared";
+import { AGENT_RUNTIMES, type AnyAgentRuntime, findInvalidSkillRef, RUNTIME_LABELS } from "@agent-kanban/shared";
 import React, { useEffect, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { AgentIdenticon } from "../components/AgentIdenticon";
 import { Header } from "../components/Header";
 import { Button } from "../components/ui/button";
@@ -21,7 +21,7 @@ export function AgentEditPage() {
   const [bio, setBio] = useState("");
   const [soul, setSoul] = useState("");
   const [role, setRole] = useState("");
-  const [runtime, setRuntime] = useState<AgentRuntime>("claude");
+  const [runtime, setRuntime] = useState<AnyAgentRuntime>("claude");
   const [model, setModel] = useState("");
   const [skills, setSkills] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -60,6 +60,10 @@ export function AgentEditPage() {
         </div>
       </div>
     );
+  }
+
+  if (agent.kind === "leader") {
+    return <Navigate to={`/agents/${agent.id}`} replace />;
   }
 
   const previewColor = agentColor(agent.public_key || name.trim() || "preview");
@@ -165,11 +169,11 @@ export function AgentEditPage() {
                   <Select
                     value={runtime}
                     onValueChange={(v) => {
-                      if (v) setRuntime(v as AgentRuntime);
+                      if (v) setRuntime(v as AnyAgentRuntime);
                     }}
                   >
                     <SelectTrigger>
-                      <SelectValue>{(v: string) => RUNTIME_LABELS[v as AgentRuntime] ?? v}</SelectValue>
+                      <SelectValue>{(v: string) => RUNTIME_LABELS[v as AnyAgentRuntime] ?? v}</SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       {AGENT_RUNTIMES.map((r) => (

@@ -35,6 +35,15 @@ function psLine(ppid: number, command: string): string {
 // ── Environment cleanup ───────────────────────────────────────────────────────
 
 function clearRuntimeEnv() {
+  delete process.env.PI_CODING_AGENT;
+  delete process.env.ANTIGRAVITY_AGENT;
+  delete process.env.OPENCODE;
+  delete process.env.AGENT;
+  delete process.env.GOOSE_TERMINAL;
+  delete process.env.QWEN_CODE;
+  delete process.env.CURSOR_AGENT;
+  delete process.env.AGENT_DISPLAY_OUT;
+  delete process.env.AGENT_CONTEXT_OUT;
   delete process.env.CLAUDECODE;
   delete process.env.CODEX_CI;
   delete process.env.GEMINI_CLI;
@@ -61,41 +70,59 @@ describe("detectRuntime", () => {
     expect(detectRuntime()).toBeNull();
   });
 
-  it("returns 'claude' when CLAUDECODE is set", () => {
+  it.each([
+    ["ANTIGRAVITY_AGENT", "antigravity"],
+    ["OPENCODE", "opencode"],
+    ["GOOSE_TERMINAL", "goose"],
+    ["QWEN_CODE", "qwen"],
+    ["CURSOR_AGENT", "cursor"],
+    ["PI_CODING_AGENT", "pi"],
+    ["CODEX_CI", "codex"],
+    ["COPILOT_CLI", "copilot"],
+    ["GEMINI_CLI", "gemini"],
+    ["CLAUDECODE", "claude"],
+    ["HERMES_INTERACTIVE", "hermes"],
+    ["HERMES_SESSION_KEY", "hermes"],
+  ] as const)("recognizes empty %s as '%s'", (name, runtime) => {
+    process.env[name] = "";
+    expect(detectRuntime()).toBe(runtime);
+  });
+
+  it("returns 'goose' when AGENT=goose", () => {
+    process.env.AGENT = "goose";
+    expect(detectRuntime()).toBe("goose");
+  });
+
+  it("returns 'amp' when AGENT=amp", () => {
+    process.env.AGENT = "amp";
+    expect(detectRuntime()).toBe("amp");
+  });
+
+  it("does not recognize an unknown shared AGENT value", () => {
+    process.env.AGENT = "unknown";
+    expect(detectRuntime()).toBeNull();
+  });
+
+  it("prioritises AGENT=amp over CLAUDECODE", () => {
+    process.env.AGENT = "amp";
     process.env.CLAUDECODE = "1";
-    expect(detectRuntime()).toBe("claude");
+    expect(detectRuntime()).toBe("amp");
   });
 
-  it("returns 'codex' when CODEX_CI is set", () => {
-    process.env.CODEX_CI = "1";
-    expect(detectRuntime()).toBe("codex");
+  it("returns 'kiro' when both Kiro FIFO variables are set", () => {
+    process.env.AGENT_DISPLAY_OUT = "";
+    process.env.AGENT_CONTEXT_OUT = "";
+    expect(detectRuntime()).toBe("kiro");
+
+    delete process.env.AGENT_CONTEXT_OUT;
+    expect(detectRuntime()).toBeNull();
   });
 
-  it("returns 'gemini' when GEMINI_CLI is set", () => {
-    process.env.GEMINI_CLI = "1";
-    expect(detectRuntime()).toBe("gemini");
-  });
+  it("returns null when only a runtime process ancestor is present", () => {
+    mockExecFileSync.mockReturnValueOnce(psLine(1, "/usr/local/bin/opencode"));
 
-  it("returns 'copilot' when COPILOT_CLI is set", () => {
-    process.env.COPILOT_CLI = "1";
-    expect(detectRuntime()).toBe("copilot");
-  });
-
-  it("returns 'hermes' when HERMES_INTERACTIVE is set", () => {
-    process.env.HERMES_INTERACTIVE = "1";
-    expect(detectRuntime()).toBe("hermes");
-  });
-
-  it("returns 'hermes' when HERMES_SESSION_KEY is set", () => {
-    process.env.HERMES_SESSION_KEY = "agent:main:telegram:dm:527035525";
-    expect(detectRuntime()).toBe("hermes");
-  });
-
-  it("prioritises CLAUDECODE over CODEX_CI when both are set", () => {
-    process.env.CLAUDECODE = "1";
-    process.env.CODEX_CI = "1";
-    // Object.entries order follows insertion order of RUNTIME_ENV constant
-    expect(detectRuntime()).toBe("claude");
+    expect(detectRuntime()).toBeNull();
+    expect(mockExecFileSync).not.toHaveBeenCalled();
   });
 });
 
@@ -178,6 +205,39 @@ describe("findRuntimeAncestorPid — happy paths", () => {
     expect(findRuntimeAncestorPid("hermes")).toBe(process.ppid);
   });
 
+  it.each([
+    ["antigravity", "/opt/agy --prompt task"],
+    ["opencode", "/opt/opencode"],
+    ["cursor", "/opt/cursor-agent --print"],
+    ["qwen", "/opt/qwen --approval-mode auto-edit"],
+    ["goose", "/opt/goose session"],
+    ["amp", "/opt/amp --execute"],
+    ["kiro", "/opt/kiro-cli chat"],
+    ["pi", "/opt/pi --print"],
+  ] as const)("matches the %s runtime command", (runtime, command) => {
+    mockExecFileSync.mockReturnValueOnce(psLine(1, command));
+
+    expect(findRuntimeAncestorPid(runtime)).toBe(process.ppid);
+  });
+
+  it("matches the Pi package distribution entrypoint", () => {
+    mockExecFileSync.mockReturnValueOnce(psLine(1, "/usr/bin/node /workspace/node_modules/pi-coding-agent/dist/cli.js"));
+
+    expect(findRuntimeAncestorPid("pi")).toBe(process.ppid);
+  });
+
+  it("does not match Pi when pi is only a command-name substring", () => {
+    mockExecFileSync.mockReturnValueOnce(psLine(1, "/opt/pilot --print"));
+
+    expect(findRuntimeAncestorPid("pi")).toBeNull();
+  });
+
+  it.each(["/opt/antigravity --prompt task", "/opt/not-agy --prompt task"])("does not treat %s as the Antigravity CLI", (command) => {
+    mockExecFileSync.mockReturnValueOnce(psLine(1, command));
+
+    expect(findRuntimeAncestorPid("antigravity")).toBeNull();
+  });
+
   it("does not match a command where runtime name is a substring of another word", () => {
     // e.g. "not-claude" should NOT match "claude" pattern
     mockExecFileSync.mockReturnValueOnce(psLine(2, "not-claude")).mockReturnValueOnce(psLine(1, "/sbin/init"));
@@ -208,6 +268,27 @@ describe("findRuntimeAncestorPid — Windows ancestry", () => {
     mockGetWindowsProcessAncestry.mockReturnValue([{ pid: 5100, ppid: 5000, executable: "claude.cmd", commandLine: null }]);
 
     expect(findRuntimeAncestorPid("claude")).toBe(5100);
+  });
+
+  it("matches a new runtime from its Windows command shim", () => {
+    platformSpy.mockReturnValue("win32");
+    mockGetWindowsProcessAncestry.mockReturnValue([{ pid: 5200, ppid: 5000, executable: "cursor-agent.cmd", commandLine: null }]);
+
+    expect(findRuntimeAncestorPid("cursor")).toBe(5200);
+  });
+
+  it("matches the Antigravity Windows command shim", () => {
+    platformSpy.mockReturnValue("win32");
+    mockGetWindowsProcessAncestry.mockReturnValue([{ pid: 5300, ppid: 5000, executable: "agy.cmd", commandLine: null }]);
+
+    expect(findRuntimeAncestorPid("antigravity")).toBe(5300);
+  });
+
+  it("matches the Pi Windows command shim", () => {
+    platformSpy.mockReturnValue("win32");
+    mockGetWindowsProcessAncestry.mockReturnValue([{ pid: 5400, ppid: 5000, executable: "pi.cmd", commandLine: null }]);
+
+    expect(findRuntimeAncestorPid("pi")).toBe(5400);
   });
 
   it("returns null when no Windows ancestor matches the requested runtime", () => {

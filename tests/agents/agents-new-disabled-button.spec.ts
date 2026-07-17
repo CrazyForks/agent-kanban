@@ -20,7 +20,7 @@ test.describe("Agents Page", () => {
     await expect(createButton).toBeDisabled();
 
     // 3. Type any name in the Name field
-    await page.getByRole("textbox", { name: "Name" }).fill("TestAgent");
+    await page.getByRole("textbox", { name: "Name", exact: true }).fill("TestAgent");
 
     // expect: The 'Create agent' button becomes enabled
     await expect(createButton).toBeEnabled();

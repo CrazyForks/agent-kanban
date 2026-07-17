@@ -28,15 +28,15 @@ test.describe("Agents Page", () => {
     await expect(page.getByText("Establishes quality standards")).toBeVisible();
 
     // expect: Metadata (runtime, model, created time) is visible
-    await expect(page.getByText("claude")).toBeVisible();
+    await expect(page.getByText("claude", { exact: true })).toBeVisible();
     await expect(page.getByText("claude-opus-4-6")).toBeVisible();
     await expect(page.getByText(/Created/)).toBeVisible();
 
-    // expect: A telemetry strip shows TASKS, INPUT, OUTPUT, CACHE, COST stats
-    await expect(page.getByText("TASKS", { exact: true })).toBeVisible();
+    // expect: A telemetry strip shows task states, input tokens, and cost stats
+    await expect(page.getByText("TODO", { exact: true })).toBeVisible();
+    await expect(page.getByText("PROGRESS", { exact: true })).toBeVisible();
+    await expect(page.getByText("REVIEW", { exact: true })).toBeVisible();
     await expect(page.getByText("INPUT", { exact: true })).toBeVisible();
-    await expect(page.getByText("OUTPUT", { exact: true })).toBeVisible();
-    await expect(page.getByText("CACHE", { exact: true })).toBeVisible();
     await expect(page.getByText("COST", { exact: true })).toBeVisible();
 
     // expect: Tabs for 'Mission', 'Activity', and 'Sessions' are displayed below the hero card

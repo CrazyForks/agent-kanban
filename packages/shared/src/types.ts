@@ -157,6 +157,21 @@ export interface MachineWithAgents extends Machine {
 
 export type AgentKind = "worker" | "leader";
 export type AgentRuntime = "claude" | "codex" | "gemini" | "copilot" | "hermes" | "ama";
+export type LeaderAgentRuntime =
+  | "claude"
+  | "codex"
+  | "gemini"
+  | "copilot"
+  | "hermes"
+  | "antigravity"
+  | "opencode"
+  | "cursor"
+  | "qwen"
+  | "goose"
+  | "amp"
+  | "kiro"
+  | "pi";
+export type AnyAgentRuntime = AgentRuntime | LeaderAgentRuntime;
 export type AgentTaintEffect = "NoSchedule";
 
 export interface AgentStatus {
@@ -215,13 +230,37 @@ export function findInvalidSkillRef(skills: string[] | null | undefined): string
 
 export const AGENT_RUNTIMES: readonly AgentRuntime[] = ["claude", "codex", "gemini", "copilot", "hermes", "ama"] as const;
 
-export const RUNTIME_LABELS: Record<AgentRuntime, string> = {
+export const LEADER_AGENT_RUNTIMES: readonly LeaderAgentRuntime[] = [
+  "claude",
+  "codex",
+  "gemini",
+  "copilot",
+  "hermes",
+  "antigravity",
+  "opencode",
+  "cursor",
+  "qwen",
+  "goose",
+  "amp",
+  "kiro",
+  "pi",
+] as const;
+
+export const RUNTIME_LABELS: Record<AnyAgentRuntime, string> = {
   claude: "Claude Code",
   codex: "Codex CLI",
   gemini: "Gemini CLI",
   copilot: "GitHub Copilot",
   hermes: "Hermes",
   ama: "AMA Cloud",
+  antigravity: "Antigravity CLI",
+  opencode: "OpenCode",
+  cursor: "Cursor CLI",
+  qwen: "Qwen Code",
+  goose: "Goose",
+  amp: "Amp",
+  kiro: "Kiro CLI",
+  pi: "Pi Agent",
 };
 
 // Runtimes executed on AMA cloud sandboxes instead of machine-hosted runners.
@@ -254,7 +293,7 @@ export interface Agent {
   role: string | null;
   kind: AgentKind;
   handoff_to: string[] | null;
-  runtime: AgentRuntime;
+  runtime: AnyAgentRuntime;
   model: string | null;
   skills: string[] | null;
   subagents: string[] | null;
@@ -454,7 +493,7 @@ export interface CreateAgentInput {
   role?: string;
   kind?: AgentKind;
   handoff_to?: string[];
-  runtime: AgentRuntime;
+  runtime: AnyAgentRuntime;
   model?: string;
   skills?: string[];
   subagents?: string[];

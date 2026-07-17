@@ -15,7 +15,7 @@ test.describe("Agents Page", () => {
     await expect(page.getByRole("heading", { name: "Agent", exact: true })).toBeVisible();
 
     // 2. Type 'Bolt' in the Name field
-    await page.getByRole("textbox", { name: "Name" }).fill("Bolt");
+    await page.getByRole("textbox", { name: "Name", exact: true }).fill("Bolt");
 
     // expect: The preview card name updates to 'Bolt' in real time
     await expect(page.getByRole("heading", { name: "Bolt", exact: true })).toBeVisible();

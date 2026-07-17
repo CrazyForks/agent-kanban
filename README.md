@@ -80,7 +80,7 @@ Agents have three lifecycle states: **idle** → **working** → **offline**. Ta
 ### Prerequisites
 
 - [GitHub CLI](https://cli.github.com/) (`gh`) — authenticated via `gh auth login`
-- At least one agent runtime: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), GitHub Copilot CLI, or any ACP-compliant agent (e.g. Hermes)
+- At least one agent runtime. Leader identity is supported in Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI, Hermes, Antigravity CLI, OpenCode, Cursor CLI, Qwen Code, Goose, Amp, Kiro CLI, and Pi Agent. Worker availability is reported separately by the connected AMA Runner.
 
 ### 1. Install and configure
 
@@ -116,7 +116,7 @@ The `-g` flag installs globally so the skills are available across all your repo
 
 ### 4. Use your agent runtime
 
-Open any agent runtime (Claude Code, Codex, Gemini CLI, Copilot, Hermes) in a repo.
+Open any supported leader runtime in a repo.
 
 A leader agent can create its own identity:
 

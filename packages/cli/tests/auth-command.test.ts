@@ -144,18 +144,50 @@ describe("auth login command", () => {
 });
 
 describe("auth whoami command", () => {
-  it("shows a local leader identity for the current runtime", async () => {
+  it("rejects a local leader identity when the runtime PID is unavailable", async () => {
     mockDetectRuntime.mockReturnValue("codex");
     mockLoadIdentity.mockReturnValue({ agent_id: "agent-leader-1", name: "Codex Leader", fingerprint: "fp-1" });
 
-    await makeProgram().parseAsync(["auth", "whoami"], { from: "user" });
+    await expect(makeProgram().parseAsync(["auth", "whoami"], { from: "user" })).rejects.toThrow(leaderAuthGuidance("codex"));
 
-    expect(consoleLogSpy).toHaveBeenCalledWith("Type:        leader");
-    expect(consoleLogSpy).toHaveBeenCalledWith("Runtime:     codex");
-    expect(consoleLogSpy).toHaveBeenCalledWith("Agent ID:    agent-leader-1");
+    expect(mockFindRuntimeAncestorPid).toHaveBeenCalledWith("codex");
+    expect(mockListSessions).not.toHaveBeenCalled();
   });
 
-  it("shows a local leader session for the current runtime when present", async () => {
+  it("rejects a local leader identity when no matching session exists", async () => {
+    mockDetectRuntime.mockReturnValue("codex");
+    mockFindRuntimeAncestorPid.mockReturnValue(12345);
+    mockLoadIdentity.mockReturnValue({ agent_id: "agent-leader-1", name: "Codex Leader", fingerprint: "fp-1" });
+
+    await expect(makeProgram().parseAsync(["auth", "whoami"], { from: "user" })).rejects.toThrow(leaderAuthGuidance("codex"));
+
+    expect(mockListSessions).toHaveBeenCalledWith({ type: "leader" });
+    expect(mockIsPidAlive).not.toHaveBeenCalled();
+  });
+
+  it("rejects a matching leader session when its runtime PID is dead", async () => {
+    mockDetectRuntime.mockReturnValue("codex");
+    mockFindRuntimeAncestorPid.mockReturnValue(12345);
+    mockLoadIdentity.mockReturnValue({ agent_id: "agent-leader-1", name: "Codex Leader", fingerprint: "fp-1" });
+    mockListSessions.mockReturnValue([
+      {
+        type: "leader",
+        agentId: "agent-leader-1",
+        sessionId: "session-leader-1",
+        runtime: "codex",
+        pid: 12345,
+        apiUrl: "https://api.example.com",
+        startedAt: 0,
+        privateKeyJwk: {},
+      },
+    ]);
+
+    await expect(makeProgram().parseAsync(["auth", "whoami"], { from: "user" })).rejects.toThrow(leaderAuthGuidance("codex"));
+
+    expect(mockIsPidAlive).toHaveBeenCalledWith(12345);
+  });
+
+  it("shows a valid local leader session and its session ID", async () => {
     mockDetectRuntime.mockReturnValue("codex");
     mockFindRuntimeAncestorPid.mockReturnValue(12345);
     mockLoadIdentity.mockReturnValue({ agent_id: "agent-leader-1", name: "Codex Leader", fingerprint: "fp-1" });
@@ -175,6 +207,9 @@ describe("auth whoami command", () => {
 
     await makeProgram().parseAsync(["auth", "whoami"], { from: "user" });
 
+    expect(consoleLogSpy).toHaveBeenCalledWith("Type:        leader");
+    expect(consoleLogSpy).toHaveBeenCalledWith("Runtime:     codex");
+    expect(consoleLogSpy).toHaveBeenCalledWith("Agent ID:    agent-leader-1");
     expect(consoleLogSpy).toHaveBeenCalledWith("Session ID:  session-leader-1");
   });
 

@@ -1,10 +1,13 @@
 import {
+  AGENT_RUNTIMES,
   AGENT_STATUSES,
   deriveUsername,
   findInvalidSkillRef,
   isValidSkillRef,
   isValidUsername,
+  LEADER_AGENT_RUNTIMES,
   PRIORITIES,
+  RUNTIME_LABELS,
   STALE_TIMEOUT_MS,
   TASK_ACTIONS,
 } from "@agent-kanban/shared";
@@ -112,5 +115,39 @@ describe("shared constants", () => {
   it("PRIORITIES has 4 levels", () => {
     expect(PRIORITIES).toHaveLength(4);
     expect(PRIORITIES).toContain("urgent");
+  });
+
+  it("keeps worker runtimes separate from the broader leader runtime set", () => {
+    expect(AGENT_RUNTIMES).toEqual(["claude", "codex", "gemini", "copilot", "hermes", "ama"]);
+    expect(LEADER_AGENT_RUNTIMES).toEqual([
+      "claude",
+      "codex",
+      "gemini",
+      "copilot",
+      "hermes",
+      "antigravity",
+      "opencode",
+      "cursor",
+      "qwen",
+      "goose",
+      "amp",
+      "kiro",
+      "pi",
+    ]);
+    expect(LEADER_AGENT_RUNTIMES).not.toContain("ama");
+  });
+
+  it("defines display labels for every supported runtime", () => {
+    expect(Object.keys(RUNTIME_LABELS).sort()).toEqual([...new Set([...AGENT_RUNTIMES, ...LEADER_AGENT_RUNTIMES])].sort());
+    expect(RUNTIME_LABELS).toMatchObject({
+      antigravity: "Antigravity CLI",
+      opencode: "OpenCode",
+      cursor: "Cursor CLI",
+      qwen: "Qwen Code",
+      goose: "Goose",
+      amp: "Amp",
+      kiro: "Kiro CLI",
+      pi: "Pi Agent",
+    });
   });
 });

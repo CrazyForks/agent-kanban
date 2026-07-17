@@ -1,4 +1,4 @@
-import type { AgentRuntime } from "@agent-kanban/shared";
+import type { AgentRuntime, LeaderAgentRuntime } from "@agent-kanban/shared";
 import type { WorkspaceInfo } from "../types.js";
 
 export type SessionStatus = "active" | "rate_limited" | "in_review" | "completing" | "closed";
@@ -20,7 +20,7 @@ export interface SessionFile {
   type: "worker" | "leader";
   agentId: string;
   sessionId: string;
-  runtime: AgentRuntime;
+  runtime: AgentRuntime | LeaderAgentRuntime;
   startedAt: number;
   apiUrl: string;
   privateKeyJwk: JsonWebKey;

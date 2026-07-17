@@ -5,6 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   heartbeat: vi.fn(),
   registerMachine: vi.fn(),
+  getProvider: vi.fn(),
+  getHistory: vi.fn(),
+  sendHistory: vi.fn(),
+  warn: vi.fn(),
+  session: null as null | { runtime: string; providerResumeToken?: string },
+  historyHandler: null as null | ((sessionId: string, requestId: string) => void),
   capturedRateLimitSink: null as null | {
     onRateLimited: (runtime: string, resetAt: string) => void | Promise<void>;
     onRateLimitResumed: (runtime: string) => void;
@@ -18,7 +24,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 vi.mock("../src/logger.js", () => ({
-  createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
+  createLogger: () => ({ info: vi.fn(), warn: mocks.warn, error: vi.fn(), debug: vi.fn() }),
 }));
 
 vi.mock("../src/client/index.js", () => ({
@@ -57,11 +63,11 @@ vi.mock("../src/providers/registry.js", () => ({
       getHistory: vi.fn().mockResolvedValue([]),
     },
   ],
-  getProvider: () => ({ getHistory: vi.fn().mockResolvedValue([]) }),
+  getProvider: mocks.getProvider,
 }));
 
 vi.mock("../src/session/manager.js", () => ({
-  getSessionManager: () => ({ read: vi.fn().mockReturnValue(null) }),
+  getSessionManager: () => ({ read: vi.fn(() => mocks.session) }),
 }));
 
 vi.mock("../src/session/store.js", () => ({
@@ -98,9 +104,11 @@ vi.mock("../src/daemon/tunnel.js", () => ({
   TunnelClient: vi.fn().mockImplementation(() => ({
     connect: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn(),
-    onHistoryRequest: vi.fn(),
+    onHistoryRequest: vi.fn((handler) => {
+      mocks.historyHandler = handler;
+    }),
     onHumanMessage: vi.fn(),
-    sendHistory: vi.fn(),
+    sendHistory: mocks.sendHistory,
   })),
 }));
 
@@ -109,6 +117,10 @@ vi.mock("../src/daemon/usageCollector.js", () => ({
 }));
 
 import { startDaemon } from "../src/daemon/index.js";
+
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+}
 
 describe("daemon heartbeat runtime states", () => {
   let listeners: Partial<Record<NodeJS.Signals | "unhandledRejection", Array<(...args: never[]) => unknown>>>;
@@ -124,6 +136,14 @@ describe("daemon heartbeat runtime states", () => {
     mocks.heartbeat.mockReset();
     mocks.registerMachine.mockReset();
     mocks.registerMachine.mockResolvedValue({ id: "machine-1" });
+    mocks.getHistory.mockReset();
+    mocks.getHistory.mockResolvedValue([]);
+    mocks.getProvider.mockReset();
+    mocks.getProvider.mockReturnValue({ getHistory: mocks.getHistory });
+    mocks.sendHistory.mockReset();
+    mocks.warn.mockReset();
+    mocks.session = null;
+    mocks.historyHandler = null;
     mocks.capturedRateLimitSink = null;
     mocks.availability = null;
   });
@@ -197,5 +217,31 @@ describe("daemon heartbeat runtime states", () => {
         ],
       }),
     );
+  });
+
+  it("rejects history requests for leader-only runtimes before provider lookup", async () => {
+    mocks.session = { runtime: "opencode" };
+    await startDaemon({ maxConcurrent: 1, pollInterval: 5000 });
+
+    mocks.historyHandler!("leader-session", "request-1");
+    await flushMicrotasks();
+
+    expect(mocks.getProvider).not.toHaveBeenCalled();
+    expect(mocks.sendHistory).not.toHaveBeenCalled();
+    expect(mocks.warn).toHaveBeenCalledWith('History fetch failed for leader-s: History is unavailable for leader runtime "opencode"');
+  });
+
+  it("fetches worker runtime history from its provider", async () => {
+    const events = [{ timestamp: 1, event: { type: "message.user", text: "hello" } }];
+    mocks.session = { runtime: "codex", providerResumeToken: "resume-1" };
+    mocks.getHistory.mockResolvedValue(events);
+    await startDaemon({ maxConcurrent: 1, pollInterval: 5000 });
+
+    mocks.historyHandler!("worker-session", "request-2");
+    await flushMicrotasks();
+
+    expect(mocks.getProvider).toHaveBeenCalledWith("codex");
+    expect(mocks.getHistory).toHaveBeenCalledWith("worker-session", "resume-1");
+    expect(mocks.sendHistory).toHaveBeenCalledWith(events, "request-2", "worker-session");
   });
 });

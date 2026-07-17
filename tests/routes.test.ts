@@ -2169,6 +2169,56 @@ describe("routes", () => {
     expect(body.runtime).toBe("claude");
   });
 
+  it("POST /api/agents allows leader-only runtimes for leaders", async () => {
+    const res = await apiRequest(
+      "POST",
+      "/api/agents",
+      { name: "OpenCode Leader", username: "opencode-route-leader", runtime: "opencode", kind: "leader" },
+      apiKey,
+    );
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body).toMatchObject({ runtime: "opencode", kind: "leader" });
+  });
+
+  it("POST /api/agents allows Antigravity as a leader runtime", async () => {
+    const res = await apiRequest(
+      "POST",
+      "/api/agents",
+      { name: "Antigravity Leader", username: "antigravity-route-leader", runtime: "antigravity", kind: "leader" },
+      apiKey,
+    );
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body).toMatchObject({ runtime: "antigravity", kind: "leader" });
+  });
+
+  it("POST /api/agents allows Pi for leaders and rejects it for workers", async () => {
+    const leaderRes = await apiRequest(
+      "POST",
+      "/api/agents",
+      { name: "Pi Leader", username: "pi-route-leader", runtime: "pi", kind: "leader" },
+      apiKey,
+    );
+    expect(leaderRes.status).toBe(201);
+    expect(await leaderRes.json()).toMatchObject({ runtime: "pi", kind: "leader" });
+
+    const workerRes = await apiRequest("POST", "/api/agents", { username: "pi-route-worker", runtime: "pi" }, apiKey);
+    expect(workerRes.status).toBe(400);
+    const body = (await workerRes.json()) as any;
+    expect(body.error.message).toContain('Invalid worker runtime "pi"');
+  });
+
+  it("POST /api/agents rejects leader-only runtimes for workers", async () => {
+    const res = await apiRequest("POST", "/api/agents", { username: "opencode-route-worker", runtime: "opencode" }, apiKey);
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.error.message).toContain('Invalid worker runtime "opencode"');
+  });
+
   it("POST /api/agents requires username", async () => {
     const res = await apiRequest("POST", "/api/agents", { runtime: "claude" }, apiKey);
     expect(res.status).toBe(400);
@@ -2184,17 +2234,108 @@ describe("routes", () => {
     expect(res.status).toBe(400);
   });
 
+  it("POST /api/agents cannot update an existing leader by username", async () => {
+    const leader = await createTestAgent(env.DB, userId, {
+      name: "Immutable Goose Leader",
+      username: "immutable-goose-leader",
+      runtime: "goose",
+      kind: "leader",
+    });
+
+    const nameRes = await apiRequest(
+      "POST",
+      "/api/agents",
+      { name: "Mutated Goose Leader", username: leader.username, runtime: "goose", kind: "leader" },
+      apiKey,
+    );
+    expect(nameRes.status).toBe(409);
+    const nameBody = (await nameRes.json()) as any;
+    expect(nameBody.error.message).toBe("Leader agents cannot be modified");
+
+    const runtimeRes = await apiRequest(
+      "POST",
+      "/api/agents",
+      { name: "Immutable Goose Leader", username: leader.username, runtime: "cursor", kind: "leader" },
+      apiKey,
+    );
+    expect(runtimeRes.status).toBe(409);
+    const runtimeBody = (await runtimeRes.json()) as any;
+    expect(runtimeBody.error.message).toBe("Leader agents cannot be modified");
+
+    const persisted = await env.DB.prepare("SELECT name, kind, runtime FROM agents WHERE id = ? AND version = 'latest'")
+      .bind(leader.id)
+      .first<{ name: string; kind: string; runtime: string }>();
+    expect(persisted).toEqual({ name: "Immutable Goose Leader", kind: "leader", runtime: "goose" });
+
+    await env.DB.prepare("DELETE FROM agents WHERE id = ?").bind(leader.id).run();
+  });
+
+  it("POST /api/agents cannot replace an existing leader with a worker", async () => {
+    const leader = await createTestAgent(env.DB, userId, {
+      name: "Immutable Qwen Post Leader",
+      username: "immutable-qwen-post-leader",
+      runtime: "qwen",
+      kind: "leader",
+    });
+
+    const res = await apiRequest("POST", "/api/agents", { name: "Replacement Worker", username: leader.username, runtime: "codex" }, apiKey);
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as any;
+    expect(body.error.message).toBe("Leader agents cannot be modified");
+
+    const persisted = await env.DB.prepare("SELECT name, kind, runtime FROM agents WHERE id = ? AND version = 'latest'")
+      .bind(leader.id)
+      .first<{ name: string; kind: string; runtime: string }>();
+    expect(persisted).toEqual({ name: "Immutable Qwen Post Leader", kind: "leader", runtime: "qwen" });
+
+    await env.DB.prepare("DELETE FROM agents WHERE id = ?").bind(leader.id).run();
+  });
+
+  it("POST /api/agents cannot convert an existing worker into a leader", async () => {
+    const worker = await createTestAgent(env.DB, userId, {
+      name: "Stable Worker Kind",
+      username: "stable-worker-kind",
+      runtime: "codex",
+    });
+
+    const res = await apiRequest(
+      "POST",
+      "/api/agents",
+      { name: "Converted Leader", username: worker.username, runtime: "codex", kind: "leader" },
+      apiKey,
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as any;
+    expect(body.error.message).toBe("Agent kind cannot be changed");
+
+    const persisted = await env.DB.prepare("SELECT name, kind, runtime FROM agents WHERE id = ? AND version = 'latest'")
+      .bind(worker.id)
+      .first<{ name: string; kind: string; runtime: string }>();
+    expect(persisted).toEqual({ name: "Stable Worker Kind", kind: "worker", runtime: "codex" });
+  });
+
   it("POST /api/agents updates latest and snapshots the previous latest for an existing username", async () => {
-    const r1 = await apiRequest("POST", "/api/agents", { username: "dupe-agent", runtime: "claude" }, apiKey);
+    const r1 = await apiRequest("POST", "/api/agents", { name: "Worker Before Upsert", username: "dupe-agent", runtime: "claude" }, apiKey);
     expect(r1.status).toBe(201);
-    const r2 = await apiRequest("POST", "/api/agents", { username: "dupe-agent", runtime: "claude", soul: "second" }, apiKey);
+    const r2 = await apiRequest(
+      "POST",
+      "/api/agents",
+      { name: "Worker After Upsert", username: "dupe-agent", runtime: "claude", soul: "second" },
+      apiKey,
+    );
     expect(r2.status).toBe(201);
     const first = (await r1.json()) as any;
     const second = (await r2.json()) as any;
     expect(first.version).toBe("latest");
     expect(second.id).toBe(first.id);
     expect(second.version).toBe("latest");
+    expect(second).toMatchObject({ name: "Worker After Upsert", kind: "worker", runtime: "claude" });
     expect(second.soul).toBe("second");
+
+    const persisted = await env.DB.prepare("SELECT name, kind, runtime FROM agents WHERE id = ? AND version = 'latest'")
+      .bind(first.id)
+      .first<{ name: string; kind: string; runtime: string }>();
+    expect(persisted).toEqual({ name: "Worker After Upsert", kind: "worker", runtime: "claude" });
 
     const snapshots = await env.DB.prepare("SELECT version FROM agents WHERE username = ? AND version != 'latest'").bind("dupe-agent").all<any>();
     expect(snapshots.results).toHaveLength(1);
@@ -2435,7 +2576,49 @@ describe("routes", () => {
     const res = await apiRequest("PATCH", `/api/agents/${agentId}`, { runtime: "bogus" }, jwt);
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
-    expect(body.error.message).toContain('Invalid runtime "bogus"');
+    expect(body.error.message).toContain('Invalid worker runtime "bogus"');
+  });
+
+  it("PATCH /api/agents/:id rejects all leader edits without changing the database", async () => {
+    const leaderRes = await apiRequest(
+      "POST",
+      "/api/agents",
+      { name: "Immutable Qwen Leader", username: "qwen-route-leader", runtime: "qwen", kind: "leader" },
+      apiKey,
+    );
+    expect(leaderRes.status).toBe(201);
+    const leader = (await leaderRes.json()) as any;
+    const jwt = await signLeaderSessionJWT();
+
+    for (const update of [{ name: "Mutated Leader" }, { runtime: "cursor" }]) {
+      const res = await apiRequest("PATCH", `/api/agents/${leader.id}`, update, jwt);
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as any;
+      expect(body.error.message).toBe("Leader agents cannot be modified");
+    }
+
+    const persisted = await env.DB.prepare("SELECT name, runtime FROM agents WHERE id = ?")
+      .bind(leader.id)
+      .first<{ name: string; runtime: string }>();
+    expect(persisted).toEqual({ name: "Immutable Qwen Leader", runtime: "qwen" });
+  });
+
+  it("PATCH /api/agents/:id still allows worker edits", async () => {
+    const worker = await createTestAgent(env.DB, userId, {
+      name: "Editable Worker Before",
+      username: "editable-route-worker",
+      runtime: "codex",
+    });
+    const jwt = await signLeaderSessionJWT();
+
+    const res = await apiRequest("PATCH", `/api/agents/${worker.id}`, { name: "Editable Worker After" }, jwt);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ name: "Editable Worker After", runtime: "codex", kind: "worker" });
+
+    const persisted = await env.DB.prepare("SELECT name, runtime FROM agents WHERE id = ?")
+      .bind(worker.id)
+      .first<{ name: string; runtime: string }>();
+    expect(persisted).toEqual({ name: "Editable Worker After", runtime: "codex" });
   });
 
   it.each([null, "name-only", 7])("PATCH /api/agents/:id rejects %s JSON body", async (body) => {

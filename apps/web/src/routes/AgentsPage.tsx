@@ -1,4 +1,4 @@
-import { type AgentRuntime, type AgentWithActivity, RUNTIME_LABELS, type Subagent } from "@agent-kanban/shared";
+import { type AgentRuntime, type AgentWithActivity, type AnyAgentRuntime, RUNTIME_LABELS, type Subagent } from "@agent-kanban/shared";
 import { Bot, Cloud, Code2, Github, type LucideIcon, Sparkles, Terminal } from "lucide-react";
 import { Link } from "react-router-dom";
 import { AgentIdenticon } from "../components/AgentIdenticon";
@@ -8,7 +8,7 @@ import { useAgents, useSubagents } from "../hooks/useAgents";
 import { agentColor, agentColorRgb, agentFingerprint } from "../lib/agentIdentity";
 import { cn } from "../lib/utils";
 
-const runtimeMeta: Record<AgentRuntime, { icon: LucideIcon; tone: string }> = {
+const runtimeMeta: Partial<Record<AnyAgentRuntime, { icon: LucideIcon; tone: string }>> = {
   claude: { icon: Bot, tone: "text-content-secondary" },
   codex: { icon: Terminal, tone: "text-accent" },
   gemini: { icon: Sparkles, tone: "text-warning" },
@@ -33,7 +33,8 @@ export function AgentsPage() {
   const { agents, loading: agentsLoading } = useAgents();
   const { subagents, loading: subagentsLoading } = useSubagents();
   const latestAgents = (agents as AgentWithActivity[]).filter((agent) => agent.version === "latest");
-  const schedulable = latestAgents.filter((agent) => agent.status.schedulable).length;
+  const workers = latestAgents.filter((agent) => agent.kind === "worker");
+  const schedulable = workers.filter((agent) => agent.status.schedulable).length;
 
   return (
     <div className="min-h-screen bg-surface-primary">
@@ -44,7 +45,7 @@ export function AgentsPage() {
             <h1 className="text-2xl font-bold text-content-primary">Agents</h1>
             <div className="flex flex-wrap items-center gap-3 font-mono text-xs text-content-tertiary">
               <span>
-                {schedulable}/{latestAgents.length} schedulable
+                {schedulable}/{workers.length} workers schedulable
               </span>
               <span>{subagents.length} sub-agents</span>
             </div>
@@ -125,8 +126,8 @@ function EmptyState({ label, action, href }: { label: string; action?: string; h
   );
 }
 
-function RuntimeMeta({ runtime, model, available }: { runtime: AgentRuntime; model: string | null; available?: boolean }) {
-  const meta = runtimeMeta[runtime];
+function RuntimeMeta({ runtime, model, available }: { runtime: AnyAgentRuntime; model: string | null; available?: boolean }) {
+  const meta = runtimeMeta[runtime] ?? { icon: Terminal, tone: "text-content-tertiary" };
   const Icon = meta.icon;
 
   return (
@@ -145,8 +146,8 @@ function RuntimeMeta({ runtime, model, available }: { runtime: AgentRuntime; mod
   );
 }
 
-function RuntimeChip({ runtime, model }: { runtime: AgentRuntime; model: string }) {
-  const meta = runtimeMeta[runtime];
+function RuntimeChip({ runtime, model }: { runtime: AnyAgentRuntime; model: string }) {
+  const meta = runtimeMeta[runtime] ?? { icon: Terminal, tone: "text-content-tertiary" };
   const Icon = meta.icon;
 
   return (
@@ -159,6 +160,7 @@ function RuntimeChip({ runtime, model }: { runtime: AgentRuntime; model: string 
 }
 
 function AgentCard({ agent }: { agent: AgentWithActivity }) {
+  const isLeader = agent.kind === "leader";
   const schedulable = agent.status.schedulable;
   const tasks = agent.status.tasks;
   const color = agent.public_key ? agentColor(agent.public_key) : "#22D3EE";
@@ -176,8 +178,8 @@ function AgentCard({ agent }: { agent: AgentWithActivity }) {
     >
       <div className="h-[3px]" style={{ background: color }} />
       <div className="absolute right-3 top-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-primary/80 px-2 py-0.5">
-        <span className={cn("size-1.5 rounded-full", schedulable ? "bg-success" : "bg-content-tertiary")} />
-        <span className="font-mono text-[10px] text-content-tertiary">{schedulable ? "Schedulable" : "Not schedulable"}</span>
+        <span className={cn("size-1.5 rounded-full", isLeader ? "bg-accent" : schedulable ? "bg-success" : "bg-content-tertiary")} />
+        <span className="font-mono text-[10px] text-content-tertiary">{isLeader ? "Leader" : schedulable ? "Schedulable" : "Not schedulable"}</span>
       </div>
 
       <div className="flex flex-col items-center px-5 pb-4 pt-7 text-center">
@@ -212,7 +214,7 @@ function AgentCard({ agent }: { agent: AgentWithActivity }) {
         </div>
 
         <div className="mt-2 flex max-w-full justify-center">
-          <RuntimeMeta runtime={agent.runtime} model={agent.model} available={schedulable} />
+          <RuntimeMeta runtime={agent.runtime} model={agent.model} available={isLeader ? undefined : schedulable} />
         </div>
       </div>
       <div className="flex items-center justify-between gap-2 border-t border-border/60 px-4 py-3 font-mono text-[10px] text-content-tertiary">

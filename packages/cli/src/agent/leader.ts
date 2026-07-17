@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Agent, AgentRuntime } from "@agent-kanban/shared";
+import type { Agent, LeaderAgentRuntime } from "@agent-kanban/shared";
 import { missingAuthSessionMessage } from "../auth/guidance.js";
 import { AgentClient } from "../client/agent.js";
 import { type ApiClient, ApiError } from "../client/base.js";
@@ -9,7 +9,7 @@ import { isPidAlive, listSessions, removeSession, writeSession } from "../sessio
 import { loadIdentity, removeIdentity, type StoredIdentity, saveIdentity } from "./identity.js";
 import { detectRuntime, findRuntimeAncestorPid } from "./runtime.js";
 
-async function restoreIdentity(runtime: AgentRuntime, client: MachineClient): Promise<StoredIdentity | null> {
+async function restoreIdentity(runtime: LeaderAgentRuntime, client: MachineClient): Promise<StoredIdentity | null> {
   const agents = (await client.listAgents()) as Agent[];
   const leaders = agents.filter((agent) => agent.kind === "leader" && agent.runtime === runtime);
   if (leaders.length !== 1) return null;
@@ -19,7 +19,7 @@ async function restoreIdentity(runtime: AgentRuntime, client: MachineClient): Pr
   return identity;
 }
 
-async function hasValidLeaderAgent(client: MachineClient, agentId: string, runtime: AgentRuntime): Promise<boolean> {
+async function hasValidLeaderAgent(client: MachineClient, agentId: string, runtime: LeaderAgentRuntime): Promise<boolean> {
   try {
     const agent = (await client.getAgent(agentId)) as Agent;
     return agent.kind === "leader" && agent.runtime === runtime;
@@ -29,7 +29,7 @@ async function hasValidLeaderAgent(client: MachineClient, agentId: string, runti
   }
 }
 
-async function loadOrRestoreIdentity(runtime: AgentRuntime, client: MachineClient): Promise<StoredIdentity | null> {
+async function loadOrRestoreIdentity(runtime: LeaderAgentRuntime, client: MachineClient): Promise<StoredIdentity | null> {
   const local = loadIdentity(runtime);
   if (local) {
     if (await hasValidLeaderAgent(client, local.agent_id, runtime)) return local;
@@ -38,18 +38,18 @@ async function loadOrRestoreIdentity(runtime: AgentRuntime, client: MachineClien
   return restoreIdentity(runtime, client);
 }
 
-export async function getIdentity(runtime: AgentRuntime): Promise<StoredIdentity | null> {
+export async function getIdentity(runtime: LeaderAgentRuntime): Promise<StoredIdentity | null> {
   return loadOrRestoreIdentity(runtime, new MachineClient());
 }
 
-export async function createIdentity(input: { runtime: AgentRuntime; username: string; name?: string }): Promise<StoredIdentity> {
+export async function createIdentity(input: { runtime: LeaderAgentRuntime; username: string; name?: string }): Promise<StoredIdentity> {
   const existing = loadIdentity(input.runtime);
   if (existing) {
     throw new Error(`Identity for runtime "${input.runtime}" already exists.`);
   }
 
   const client = new MachineClient();
-  const payload: { username: string; name?: string; runtime: AgentRuntime; kind: "leader" } = {
+  const payload: { username: string; name?: string; runtime: LeaderAgentRuntime; kind: "leader" } = {
     username: input.username,
     runtime: input.runtime,
     kind: "leader",
@@ -62,7 +62,7 @@ export async function createIdentity(input: { runtime: AgentRuntime; username: s
   return identity;
 }
 
-export async function loginLeaderAgent(input: { runtime: AgentRuntime; username: string; name?: string }): Promise<{
+export async function loginLeaderAgent(input: { runtime: LeaderAgentRuntime; username: string; name?: string }): Promise<{
   identity: StoredIdentity;
   sessionId: string;
   reusedIdentity: boolean;
@@ -126,7 +126,7 @@ export async function createClient(): Promise<ApiClient> {
 
   if (cachedLeaderClient) return cachedLeaderClient;
 
-  const runtime = detectRuntime() as AgentRuntime | null;
+  const runtime = detectRuntime();
   if (!runtime) {
     throw new Error(missingAuthSessionMessage(runtime));
   }
