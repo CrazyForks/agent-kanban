@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { BIN_DIR, DATA_DIR } from "./paths.js";
 
 const AMA_RUNNER_REPOSITORY = "saltbo/any-managed-agents";
-export const AMA_RUNNER_VERSION = "0.5.15";
+export const AMA_RUNNER_VERSION = "0.6.0";
 const AMA_RUNNER_PATH = join(BIN_DIR, nodePlatform() === "win32" ? "ama-runner.exe" : "ama-runner");
 const LEGACY_RUNNER_INSTALL_DIR = join(DATA_DIR, "runners", "ama-runner");
 
@@ -22,16 +22,16 @@ export interface ResolvedAmaRunner {
   version: AmaRunnerVersionInfo | null;
 }
 
-function artifactPlatform(): { os: string; arch: string; rawExecutable: boolean } {
+function artifactPlatform(): { os: string; arch: string; archiveExtension: ".tar.gz" | ".zip" } {
   const os = nodePlatform();
   const arch = nodeArch();
   if (os === "win32") {
     if (arch !== "x64") throw new Error(`Unsupported AMA runner architecture on Windows: ${arch}`);
-    return { os: "windows", arch: "amd64", rawExecutable: true };
+    return { os: "windows", arch: "amd64", archiveExtension: ".zip" };
   }
   if (os !== "darwin" && os !== "linux") throw new Error(`Unsupported AMA runner platform: ${os}`);
-  if (arch === "arm64") return { os, arch: "arm64", rawExecutable: false };
-  if (arch === "x64") return { os, arch: "amd64", rawExecutable: false };
+  if (arch === "arm64") return { os, arch: "arm64", archiveExtension: ".tar.gz" };
+  if (arch === "x64") return { os, arch: "amd64", archiveExtension: ".tar.gz" };
   throw new Error(`Unsupported AMA runner architecture: ${arch}`);
 }
 
@@ -84,8 +84,8 @@ function cleanupLegacyInstalls(): void {
 }
 
 async function installAmaRunner(version: string, targetPath: string): Promise<void> {
-  const { os, arch, rawExecutable } = artifactPlatform();
-  const artifactName = `ama-runner-v${version}-${os}-${arch}${rawExecutable ? ".exe" : ".tar.gz"}`;
+  const { os, arch, archiveExtension } = artifactPlatform();
+  const artifactName = `ama-runner-v${version}-${os}-${arch}${archiveExtension}`;
   const baseUrl = releaseBaseUrl(version);
   const [archive, checksums] = await Promise.all([fetchBytes(`${baseUrl}/${artifactName}`), fetchText(`${baseUrl}/checksums.txt`)]);
   assertSha256(archive, expectedSha256(checksums, artifactName));
@@ -97,12 +97,31 @@ async function installAmaRunner(version: string, targetPath: string): Promise<vo
   try {
     const archivePath = join(tmpDir, artifactName);
     writeFileSync(archivePath, archive);
-    if (rawExecutable) {
+    if (archiveExtension === ".zip") {
+      const extract = spawnSync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          "& { Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force -ErrorAction Stop }",
+          archivePath,
+          tmpDir,
+        ],
+        { encoding: "utf-8", windowsHide: true },
+      );
+      if (extract.error || extract.status !== 0) {
+        throw new Error(
+          `Failed to extract AMA runner: ${extract.error?.message || extract.stderr || extract.stdout || `exit status ${extract.status}`}`,
+        );
+      }
+
+      const executablePath = join(tmpDir, "ama-runner.exe");
       const backupPath = join(tmpDir, "previous-ama-runner.exe");
       const hadPreviousRunner = existsSync(targetPath);
       if (hadPreviousRunner) renameSync(targetPath, backupPath);
       try {
-        renameSync(archivePath, targetPath);
+        renameSync(executablePath, targetPath);
       } catch (error) {
         if (hadPreviousRunner) renameSync(backupPath, targetPath);
         throw error;
