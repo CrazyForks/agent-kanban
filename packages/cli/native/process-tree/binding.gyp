@@ -8,7 +8,8 @@
         "VCCLCompilerTool": {
           "CompileAs": "1",
           "RuntimeLibrary": "0",
-          "AdditionalOptions": ["/std:c17"]
+          "AdditionalOptions!": ["-std:c++20"],
+          "LanguageStandard_C": "stdc17"
         }
       }
     }
