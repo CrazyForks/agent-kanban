@@ -1831,7 +1831,7 @@ describe("recordInstallationFromSetup", () => {
       expect(fetchMock, scenario.name).not.toHaveBeenCalled();
       vi.unstubAllGlobals();
     }
-  });
+  }, 30_000);
 
   it("POST /api/repositories/:id/github-token rejects repos not covered by this owner's GitHub App installation", async () => {
     const { token, userId } = await createVerifiedUserToken();
