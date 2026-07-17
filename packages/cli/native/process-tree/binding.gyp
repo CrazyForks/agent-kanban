@@ -6,7 +6,6 @@
       "defines": ["NAPI_VERSION=8", "WIN32_LEAN_AND_MEAN"],
       "msvs_settings": {
         "VCCLCompilerTool": {
-          "CompileAs": "1",
           "RuntimeLibrary": "0",
           "AdditionalOptions!": ["-std:c++20"],
           "LanguageStandard_C": "stdc17"
