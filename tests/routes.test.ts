@@ -1776,7 +1776,7 @@ describe("routes", () => {
               id: "runner_available",
               environmentId: "env_available",
               state: "active",
-              capabilities: ["runtime-provider-model:claude-code:*:claude-sonnet-4-6"],
+              runtimes: [{ runtime: "claude-code", models: ["claude-sonnet-4-6"], state: "ready" }],
               currentLoad: 0,
               maxConcurrent: 5,
               lastHeartbeatAt: new Date().toISOString(),
@@ -1791,7 +1791,7 @@ describe("routes", () => {
               id: "runner_full",
               environmentId: "env_full",
               state: "active",
-              capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
+              runtimes: [{ runtime: "codex", models: ["gpt-5.3-codex"], state: "ready" }],
               currentLoad: 2,
               maxConcurrent: 2,
               lastHeartbeatAt: new Date().toISOString(),
@@ -1852,7 +1852,7 @@ describe("routes", () => {
                 id: "runner_available",
                 environmentId: "env_available",
                 state: "active",
-                capabilities: ["runtime-provider-model:claude-code:*:claude-sonnet-4-6"],
+                runtimes: [{ runtime: "claude-code", models: ["claude-sonnet-4-6"], state: "ready" }],
                 currentLoad: 0,
                 maxConcurrent: 5,
                 lastHeartbeatAt: new Date().toISOString(),
@@ -1867,7 +1867,7 @@ describe("routes", () => {
                 id: "runner_full",
                 environmentId: "env_full",
                 state: "active",
-                capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
+                runtimes: [{ runtime: "codex", models: ["gpt-5.3-codex"], state: "ready" }],
                 currentLoad: 2,
                 maxConcurrent: 2,
                 lastHeartbeatAt: new Date().toISOString(),
@@ -2012,7 +2012,7 @@ describe("routes", () => {
       if (url === "https://auth.test/.well-known/openid-configuration") {
         return jsonResponse({ access_token: "oauth-token" });
       }
-      // gemini is a self-hosted runtime: model discovery goes directly to runner capabilities
+      // gemini is a self-hosted runtime: model discovery goes directly to runner runtime reports
       if (url === "https://ama.test/api/v1/runners?environmentId=env_models&limit=100") {
         return jsonResponse({
           data: [
@@ -2020,15 +2020,13 @@ describe("routes", () => {
               id: "runner_models_1",
               environmentId: "env_models",
               state: "active",
-              capabilities: [
-                "gemini",
-                "runtime-provider-model:gemini:google:gemini-3-pro",
-                // model segment is the remainder after the provider and may contain colons
-                "runtime-provider-model:gemini:*:models/gemini:exp",
-                // wildcard model declarations are not concrete models
-                "runtime-provider-model:gemini:*:*",
-                // other runtimes are ignored
-                "runtime-provider-model:codex:openai:gpt-5.3-codex",
+              runtimes: [
+                {
+                  runtime: "gemini",
+                  models: ["gemini-3-pro", "models/gemini:exp"],
+                  state: "ready",
+                },
+                { runtime: "codex", models: ["gpt-5.3-codex"], state: "ready" },
               ],
               currentLoad: 0,
               maxConcurrent: 2,
@@ -2038,8 +2036,15 @@ describe("routes", () => {
               id: "runner_models_2",
               environmentId: "env_models",
               state: "active",
-              // duplicate model declared by a second runner is deduped
-              capabilities: ["runtime-provider-model:gemini:openai:gemini-3-pro"],
+              // Limited runtimes remain discoverable, and duplicate models are deduped.
+              runtimes: [
+                {
+                  runtime: "gemini",
+                  models: ["gemini-3-pro"],
+                  state: "limited",
+                  detail: "Daily quota exhausted",
+                },
+              ],
               currentLoad: 2,
               maxConcurrent: 2,
               lastHeartbeatAt: new Date().toISOString(),
@@ -2048,7 +2053,7 @@ describe("routes", () => {
               id: "runner_models_offline",
               environmentId: "env_models",
               state: "draining",
-              capabilities: ["runtime-provider-model:gemini:google:offline-model"],
+              runtimes: [{ runtime: "gemini", models: ["offline-model"], state: "ready" }],
               currentLoad: 0,
               maxConcurrent: 2,
               lastHeartbeatAt: null,
@@ -2880,7 +2885,7 @@ describe("routes", () => {
               id: "runner_123",
               environmentId: "env_123",
               state: "active",
-              capabilities: ["runtime-provider-model:claude-code:anthropic:claude-sonnet-4-6"],
+              runtimes: [{ runtime: "claude-code", models: ["claude-sonnet-4-6"], state: "ready" }],
               currentLoad: 0,
               maxConcurrent: 1,
               lastHeartbeatAt: new Date().toISOString(),
@@ -3142,7 +3147,7 @@ describe("routes", () => {
               id: "runner_assign_failure",
               environmentId: "env_123",
               state: "active",
-              capabilities: ["codex"],
+              runtimes: [{ runtime: "codex", models: [], state: "ready" }],
               currentLoad: 0,
               maxConcurrent: 1,
               lastHeartbeatAt: new Date().toISOString(),
@@ -3225,7 +3230,7 @@ describe("routes", () => {
               id: "runner_release",
               environmentId: "env_release",
               state: "active",
-              capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
+              runtimes: [{ runtime: "codex", models: ["gpt-5.3-codex"], state: "ready" }],
               currentLoad: 0,
               maxConcurrent: 1,
               lastHeartbeatAt: new Date().toISOString(),
@@ -4326,7 +4331,14 @@ describe("routes", () => {
                 id: "runner_usage",
                 environmentId: "env_usage",
                 state: "active",
-                capabilities: ["codex"],
+                runtimes: [
+                  {
+                    runtime: "codex",
+                    models: ["gpt-5.3-codex"],
+                    state: "limited",
+                    detail: "Weekly quota nearly exhausted",
+                  },
+                ],
                 currentLoad: 2,
                 maxConcurrent: 5,
                 lastHeartbeatAt: new Date().toISOString(),
@@ -4346,6 +4358,7 @@ describe("routes", () => {
       expect(body.usage_info).toEqual(usageInfo);
       expect(body.active_session_count).toBe(2);
       expect(body.runner_capacity).toBe(5);
+      expect(body.runtimes).toContainEqual(expect.objectContaining({ name: "codex", status: "limited", detail: "Weekly quota nearly exhausted" }));
     } finally {
       Object.assign(env, previousAma);
       vi.unstubAllGlobals();
@@ -4391,7 +4404,7 @@ describe("routes", () => {
                 id: "runner_mixed_runtime",
                 environmentId: "env_mixed_runtime",
                 state: "active",
-                capabilities: ["codex"],
+                runtimes: [{ runtime: "codex", models: [], state: "ready", detail: "Codex CLI available" }],
                 currentLoad: 0,
                 maxConcurrent: 2,
                 lastHeartbeatAt: new Date(Date.now() - 10_000).toISOString(),

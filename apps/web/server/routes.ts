@@ -576,14 +576,8 @@ function machineWithLegacyRuntimeStatus<T extends MachineRecord | MachineWithAge
 function machineRuntimesFromAmaRunners(runners: AmaRunner[], checkedAt: string): MachineRuntime[] {
   const byRuntime = new Map<AgentRuntime, MachineRuntime>();
   for (const runner of runners) {
-    if (!runner.runtimeInventory || runner.runtimeInventory.length === 0) {
-      for (const runtime of machineRuntimesFromAmaCapabilities(runner.capabilities, checkedAt)) {
-        mergeMachineRuntime(byRuntime, runtime);
-      }
-      continue;
-    }
-    for (const entry of runner.runtimeInventory) {
-      const runtime = akRuntimeFromAmaCapability(entry.runtime);
+    for (const entry of runner.runtimes) {
+      const runtime = akRuntimeFromAmaRuntime(entry.runtime);
       const status = machineRuntimeStatusFromAmaState(entry.state);
       if (!runtime || !status) continue;
       mergeMachineRuntime(byRuntime, {
@@ -621,17 +615,7 @@ function machineRuntimeStatusFromAmaState(state: string): MachineRuntime["status
   return null;
 }
 
-function machineRuntimesFromAmaCapabilities(capabilities: string[], checkedAt: string): MachineRuntime[] {
-  const runtimes = new Set<AgentRuntime>();
-  for (const capability of capabilities) {
-    const runtime = akRuntimeFromAmaCapability(capability);
-    if (runtime) runtimes.add(runtime);
-  }
-  return AGENT_RUNTIMES.filter((runtime) => runtimes.has(runtime)).map((runtime) => ({ name: runtime, status: "ready", checked_at: checkedAt }));
-}
-
-function akRuntimeFromAmaCapability(capability: string): AgentRuntime | null {
-  const runtime = capability.startsWith("runtime-provider-model:") ? capability.split(":")[1] : capability;
+function akRuntimeFromAmaRuntime(runtime: string): AgentRuntime | null {
   if (runtime === "claude-code") return "claude";
   if (runtime === "codex" || runtime === "copilot") return runtime;
   return null;
@@ -642,7 +626,7 @@ function machineUsageInfoFromRunners(runners: AmaRunner[]): UsageInfo | null {
   let updatedAt = "";
   for (const runner of runners) {
     for (const usage of runner.runtimeUsage ?? []) {
-      const runtime = akRuntimeFromAmaCapability(usage.runtime);
+      const runtime = akRuntimeFromAmaRuntime(usage.runtime);
       if (!runtime) continue;
       for (const window of usage.windows) {
         windows.push({ runtime, label: window.label, utilization: window.utilization, resets_at: window.resetsAt });

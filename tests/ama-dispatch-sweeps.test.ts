@@ -209,7 +209,7 @@ function activeRunnerResponse(environmentId: string, runtime: string, load = 0, 
           id: `runner-${runtime}`,
           environmentId,
           state: "active",
-          capabilities: [`runtime-provider-model:${runtime}:*:*`],
+          runtimes: [{ runtime, models: [], state: "ready" }],
           currentLoad: load,
           maxConcurrent,
           lastHeartbeatAt: new Date().toISOString(),
@@ -373,50 +373,53 @@ describe("dispatchTaskToAma policy", () => {
 // ─── 1b. Model-precise dispatch gating ───────────────────────────────────────
 
 describe("amaRunnerCanRunRuntime model gating", () => {
-  function runner(capabilities: string[]) {
+  function runner(runtime: string, models: string[], state = "ready") {
     return {
       id: "runner_gating",
       environmentId: "env_gating",
       status: "active",
-      capabilities,
+      runtimes: [{ runtime, models, state }],
       currentLoad: 0,
       maxConcurrent: 1,
       lastHeartbeatAt: new Date().toISOString(),
     };
   }
 
-  it("matches a runner declaring the pinned model with wildcard or explicit provider", async () => {
+  it("matches a runner declaring the exact pinned model", async () => {
     const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
-    expect(amaRunnerCanRunRuntime(runner(["runtime-provider-model:codex:*:gpt-5.3-codex"]), "codex", "gpt-5.3-codex")).toBe(true);
-    expect(amaRunnerCanRunRuntime(runner(["runtime-provider-model:codex:openai:gpt-5.3-codex"]), "codex", "gpt-5.3-codex")).toBe(true);
+    expect(amaRunnerCanRunRuntime(runner("codex", ["gpt-5.3-codex"]), "codex", "gpt-5.3-codex")).toBe(true);
   });
 
-  it("matches a wildcard model declaration for any pinned model", async () => {
+  it("does not treat a wildcard string as matching a pinned model", async () => {
     const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
-    expect(amaRunnerCanRunRuntime(runner(["runtime-provider-model:codex:*:*"]), "codex", "gpt-5.3-codex")).toBe(true);
+    expect(amaRunnerCanRunRuntime(runner("codex", ["*"]), "codex", "gpt-5.3-codex")).toBe(false);
   });
 
   it("matches a pinned model that itself contains colons", async () => {
     const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
-    expect(amaRunnerCanRunRuntime(runner(["runtime-provider-model:codex:openai:vendor:model:v2"]), "codex", "vendor:model:v2")).toBe(true);
+    expect(amaRunnerCanRunRuntime(runner("codex", ["vendor:model:v2"]), "codex", "vendor:model:v2")).toBe(true);
   });
 
   it("rejects a runner declaring only a different model", async () => {
     const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
-    expect(amaRunnerCanRunRuntime(runner(["runtime-provider-model:codex:openai:gpt-5.2"]), "codex", "gpt-5.3-codex")).toBe(false);
+    expect(amaRunnerCanRunRuntime(runner("codex", ["gpt-5.2"]), "codex", "gpt-5.3-codex")).toBe(false);
   });
 
-  it("accepts a bare runtime capability as transitional fallback", async () => {
+  it("rejects a model-pinned self-hosted runtime with no reported models", async () => {
     const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
-    expect(amaRunnerCanRunRuntime(runner(["codex"]), "codex", "gpt-5.3-codex")).toBe(true);
-    expect(amaRunnerCanRunRuntime(runner(["codex", "runtime-provider-model:codex:openai:gpt-5.2"]), "codex", "gpt-5.3-codex")).toBe(true);
+    expect(amaRunnerCanRunRuntime(runner("codex", []), "codex", "gpt-5.3-codex")).toBe(false);
   });
 
-  it("keeps existing capability matching when no model is pinned", async () => {
+  it("checks only the ready runtime entry when no model is pinned", async () => {
     const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
-    expect(amaRunnerCanRunRuntime(runner(["runtime-provider-model:codex:openai:gpt-5.2"]), "codex")).toBe(true);
-    expect(amaRunnerCanRunRuntime(runner(["codex"]), "codex")).toBe(true);
-    expect(amaRunnerCanRunRuntime(runner(["claude-code"]), "codex")).toBe(false);
+    expect(amaRunnerCanRunRuntime(runner("codex", []), "codex")).toBe(true);
+    expect(amaRunnerCanRunRuntime(runner("claude-code", []), "codex")).toBe(false);
+    expect(amaRunnerCanRunRuntime(runner("codex", [], "limited"), "codex")).toBe(false);
+  });
+
+  it("allows AMA cloud models without requiring them in the runner model list", async () => {
+    const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
+    expect(amaRunnerCanRunRuntime(runner("ama", []), "ama", "anthropic/claude-haiku-4-5")).toBe(true);
   });
 });
 
@@ -441,7 +444,7 @@ describe("dispatchTaskToAma model-precise candidate selection", () => {
       .run();
   }
 
-  function runnersResponse(environmentId: string, capabilities: string[]) {
+  function runnersResponse(environmentId: string, runtime: string, models: string[]) {
     return jsonResponse(
       {
         data: [
@@ -449,7 +452,7 @@ describe("dispatchTaskToAma model-precise candidate selection", () => {
             id: `runner-${environmentId}`,
             environmentId,
             state: "active",
-            capabilities,
+            runtimes: [{ runtime, models, state: "ready" }],
             currentLoad: 0,
             maxConcurrent: 1,
             lastHeartbeatAt: new Date().toISOString(),
@@ -460,7 +463,7 @@ describe("dispatchTaskToAma model-precise candidate selection", () => {
     );
   }
 
-  it("prefers the environment whose runner declares the pinned model over a bare-capability one", async () => {
+  it("skips a model-mismatched environment and selects the exact-model environment", async () => {
     const { createBoard } = await import("../apps/web/server/boardRepo");
     const { createTask } = await import("../apps/web/server/taskRepo");
     const { dispatchTaskToAma } = await import("../apps/web/server/taskDispatch");
@@ -468,9 +471,9 @@ describe("dispatchTaskToAma model-precise candidate selection", () => {
     const owner = `model-prefer-owner-${randomUUID()}`;
     await seedUser(db, owner, `${owner}@test.local`);
     await configureAmaIntegration(owner);
-    // The bare-capability machine has the most recent heartbeat, so it is the
-    // first candidate; preference for the model-declaring runner must win.
-    await insertMachineEnvironment(owner, "bare", "claude", "env_prefer_bare", new Date().toISOString());
+    // The mismatched machine has the most recent heartbeat, so it is the first
+    // candidate; exact model matching must skip it.
+    await insertMachineEnvironment(owner, "mismatch", "claude", "env_prefer_mismatch", new Date().toISOString());
     await insertMachineEnvironment(owner, "model", "claude", "env_prefer_model", new Date(Date.now() - 60_000).toISOString());
 
     const board = await createBoard(db, owner, `model-prefer-board-${randomUUID()}`, "ops");
@@ -493,10 +496,10 @@ describe("dispatchTaskToAma model-precise candidate selection", () => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_123") return jsonResponse({ id: "project_123", name: "Workspace" }, 200);
-      if (url === "https://ama.test/api/v1/runners?environmentId=env_prefer_bare&limit=100")
-        return runnersResponse("env_prefer_bare", ["claude-code"]);
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_prefer_mismatch&limit=100")
+        return runnersResponse("env_prefer_mismatch", "claude-code", ["claude-sonnet-4-6"]);
       if (url === "https://ama.test/api/v1/runners?environmentId=env_prefer_model&limit=100")
-        return runnersResponse("env_prefer_model", ["runtime-provider-model:claude-code:anthropic:claude-opus-4-6"]);
+        return runnersResponse("env_prefer_model", "claude-code", ["claude-opus-4-6"]);
       if (url === "https://ama.test/api/v1/providers?limit=100")
         return jsonResponse({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }, 200);
       if (url === "https://ama.test/api/v1/providers/provider_claude/models/claude-opus-4-6") return jsonResponse({ id: "claude-opus-4-6" }, 200);
@@ -547,7 +550,7 @@ describe("dispatchTaskToAma model-precise candidate selection", () => {
       if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
       if (url === "https://ama.test/api/v1/projects/project_123") return jsonResponse({ id: "project_123", name: "Workspace" }, 200);
       if (url === "https://ama.test/api/v1/runners?environmentId=env_model_mismatch&limit=100")
-        return runnersResponse("env_model_mismatch", ["runtime-provider-model:claude-code:anthropic:claude-sonnet-4-6"]);
+        return runnersResponse("env_model_mismatch", "claude-code", ["claude-sonnet-4-6"]);
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1166,6 +1169,127 @@ describe("reconcileAmaBoundTasks", () => {
   });
 });
 
+describe("releaseStaleDispatchClaims", () => {
+  async function seedTodoDispatchClaim(input: { ownerId: string; sessionId?: string; dispatchResult: "dispatching" | null; updatedAt: string }) {
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createTask } = await import("../apps/web/server/taskRepo");
+    await seedUser(db, input.ownerId, `${input.ownerId}@test.local`);
+    await configureAmaIntegration(input.ownerId);
+    const board = await createBoard(db, input.ownerId, `stale-claim-board-${randomUUID()}`, "ops");
+    const agent = await createTestAgent(db, input.ownerId, {
+      name: `StaleClaimAgent-${randomUUID()}`,
+      username: `stale-claim-agent-${randomUUID()}`,
+      runtime: "claude",
+    });
+    const task = await createTask(db, input.ownerId, {
+      title: `Stale dispatch claim ${randomUUID()}`,
+      board_id: board.id,
+      assigned_to: agent.id,
+      skipRuntimeAvailability: true,
+      metadata: {
+        annotations: {
+          "runtime.source": "ama",
+          "ama.dispatch.result": input.dispatchResult,
+          ...(input.sessionId
+            ? {
+                "ama.sessionId": input.sessionId,
+                "ama.projectId": "project_123",
+                "ama.environmentId": "env_previous_dispatch",
+                agentSessionId: null,
+              }
+            : {}),
+        },
+      },
+    });
+    await db.prepare("UPDATE tasks SET updated_at = ? WHERE id = ?").bind(input.updatedAt, task.id).run();
+    return { task, agent };
+  }
+
+  it("tears down an old runtime binding before releasing its stale dispatch claim", async () => {
+    const { releaseStaleDispatchClaims } = await import("../apps/web/server/taskDispatch");
+    const ownerId = `stale-bound-claim-${randomUUID()}`;
+    const sessionId = `session_stale_bound_${randomUUID()}`;
+    const staleAt = new Date(Date.now() - 6 * 60_000).toISOString();
+    const { task } = await seedTodoDispatchClaim({ ownerId, sessionId, dispatchResult: "dispatching", updatedAt: staleAt });
+    let closeCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = reqUrl(input);
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
+      if (url === `https://ama.test/api/v1/sessions/${sessionId}` && reqMethod(input, init) === "PATCH") {
+        closeCalls += 1;
+        return jsonResponse(amaSession(sessionId, { phase: "closed" }), 200);
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await releaseStaleDispatchClaims(db, makeEnv());
+
+    const row = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(task.id).first<{ metadata: string }>();
+    const annotations = JSON.parse(row!.metadata ?? "{}").annotations ?? {};
+    expect(closeCalls).toBe(1);
+    expect(annotations["ama.sessionId"]).toBe(sessionId);
+    expect(annotations["ama.environmentId"]).toBeNull();
+    expect(annotations.agentSessionId).toBeNull();
+    expect(annotations["ama.dispatch.result"]).toBeNull();
+  });
+
+  it("refreshes a retry claim so an immediate stale sweep cannot close its historical session", async () => {
+    const { dispatchTaskToAma, releaseStaleDispatchClaims } = await import("../apps/web/server/taskDispatch");
+    const ownerId = `fresh-retry-claim-${randomUUID()}`;
+    const sessionId = `session_historical_${randomUUID()}`;
+    const staleAt = new Date(Date.now() - 6 * 60_000).toISOString();
+    const { task } = await seedTodoDispatchClaim({ ownerId, sessionId, dispatchResult: null, updatedAt: staleAt });
+    let historicalSessionCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = reqUrl(input);
+        if (url === `https://ama.test/api/v1/sessions/${sessionId}`) historicalSessionCalls += 1;
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    await expect(dispatchTaskToAma(db, makeEnv(), ownerId, task, { apiOrigin: "https://ak.test" })).rejects.toMatchObject({ status: 409 });
+
+    const claimedRow = await db
+      .prepare("SELECT metadata, updated_at FROM tasks WHERE id = ?")
+      .bind(task.id)
+      .first<{ metadata: string; updated_at: string }>();
+    const claimedAnnotations = JSON.parse(claimedRow!.metadata ?? "{}").annotations ?? {};
+    expect(claimedAnnotations["ama.dispatch.result"]).toBe("dispatching");
+    expect(Date.parse(claimedRow!.updated_at)).toBeGreaterThan(Date.parse(staleAt));
+
+    await releaseStaleDispatchClaims(db, makeEnv());
+
+    const sweptRow = await db
+      .prepare("SELECT metadata, updated_at FROM tasks WHERE id = ?")
+      .bind(task.id)
+      .first<{ metadata: string; updated_at: string }>();
+    const sweptAnnotations = JSON.parse(sweptRow!.metadata ?? "{}").annotations ?? {};
+    expect(historicalSessionCalls).toBe(0);
+    expect(sweptAnnotations["ama.sessionId"]).toBe(sessionId);
+    expect(sweptAnnotations["ama.dispatch.result"]).toBe("dispatching");
+    expect(sweptRow!.updated_at).toBe(claimedRow!.updated_at);
+  });
+
+  it("still releases an old dispatch claim that has no runtime session", async () => {
+    const { releaseStaleDispatchClaims } = await import("../apps/web/server/taskDispatch");
+    const ownerId = `stale-unbound-claim-${randomUUID()}`;
+    const staleAt = new Date(Date.now() - 6 * 60_000).toISOString();
+    const { task } = await seedTodoDispatchClaim({ ownerId, dispatchResult: "dispatching", updatedAt: staleAt });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await releaseStaleDispatchClaims(db, makeEnv());
+
+    const row = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(task.id).first<{ metadata: string }>();
+    const annotations = JSON.parse(row!.metadata ?? "{}").annotations ?? {};
+    expect(annotations["ama.dispatch.result"]).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 // ─── 4. detectAndReleaseStaleAll — AMA teardown ───────────────────────────────
 
 describe("detectAndReleaseStaleAll with AMA binding", () => {
@@ -1453,6 +1577,63 @@ describe("amaRuntime list helpers", () => {
     const result = await listAmaEnvironments(makeEnv(), OWNER);
     expect(result.data).toHaveLength(1);
     expect(result.data[0]).toMatchObject({ id: "env_1" });
+  });
+
+  it("listAmaRunners normalizes lifecycle state and preserves v0.7 runtime reports", async () => {
+    const { listAmaRunners } = await import("../apps/web/server/amaRuntime");
+    const runtimes = [
+      {
+        runtime: "claude-code",
+        models: ["claude-sonnet-4-6", "vendor:model:v2"],
+        state: "limited",
+        version: "2.1.0",
+        detail: "Daily quota exhausted",
+      },
+      { runtime: "codex", models: ["gpt-5.3-codex"], state: "ready" },
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = reqUrl(input);
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_v07&limit=100") {
+        return jsonResponse(
+          {
+            data: [
+              {
+                id: "runner_v07",
+                environmentId: "env_v07",
+                state: "active",
+                runtimes,
+                currentLoad: 1,
+                maxConcurrent: 3,
+                lastHeartbeatAt: "2026-07-18T12:00:00.000Z",
+                runtimeUsage: [],
+              },
+            ],
+            pagination: { limit: 100, hasMore: false, nextCursor: null },
+          },
+          200,
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await listAmaRunners(makeEnv(), OWNER, "project_123", "env_v07");
+
+    expect(result).toEqual({
+      data: [
+        {
+          id: "runner_v07",
+          environmentId: "env_v07",
+          status: "active",
+          currentLoad: 1,
+          maxConcurrent: 3,
+          lastHeartbeatAt: "2026-07-18T12:00:00.000Z",
+          runtimeUsage: [],
+          runtimes,
+        },
+      ],
+      pagination: { limit: 100, hasMore: false, nextCursor: null },
+    });
   });
 });
 

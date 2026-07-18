@@ -5,6 +5,7 @@ import {
   type Agent as SdkAgent,
   type MemoryStore as SdkMemoryStore,
   type MemoryStoreMemory as SdkMemoryStoreMemory,
+  type RunnerRuntime as SdkRunnerRuntime,
   type Session as SdkSession,
   type Trigger as SdkTrigger,
   type TriggerRun as SdkTriggerRun,
@@ -281,22 +282,16 @@ export interface AmaRuntimeUsage {
   runtime: string;
   windows: AmaRuntimeUsageWindow[];
 }
-export interface AmaRuntimeInventory {
-  runtime: string;
-  version?: string;
-  state: string;
-  detail?: string;
-}
+export type AmaRunnerRuntime = SdkRunnerRuntime;
 export interface AmaRunner {
   id: string;
   environmentId: string | null;
   status: string;
-  capabilities: string[];
   currentLoad: number;
   maxConcurrent: number;
   lastHeartbeatAt: string | null;
   runtimeUsage?: AmaRuntimeUsage[];
-  runtimeInventory?: AmaRuntimeInventory[];
+  runtimes: AmaRunnerRuntime[];
 }
 
 export interface AmaProject {
@@ -335,12 +330,12 @@ export interface AmaEnvironmentInput {
 // models.dev); a provider row's id IS its vendor slug, and an agent must pin a
 // real catalog vendor as its providerId. For cloud (ama) the vendor is encoded
 // in the model id, so it is derived per dispatch. For self-hosted CLIs the host
-// owns the model universe (the runner's declared capabilities gate it), so the
+// owns the model universe (the runner's structured runtime report gates it), so the
 // runtime's natural vendor is used as the pinned provider.
 const RUNTIME_PROVIDER_PROFILES: Record<string, { providerSlug: string; cloud?: boolean }> = {
   "claude-code": { providerSlug: "anthropic" },
   codex: { providerSlug: "openai" },
-  // Copilot's host runner declares its own models via runner capabilities; the
+  // Copilot's host runner declares its own models in its runtime report; the
   // pinned slug is AMA agent metadata for a runner-gated runtime, not a catalog
   // lookup key, so any real vendor satisfies it.
   copilot: { providerSlug: "openai" },
@@ -912,7 +907,7 @@ export interface AmaCatalogModel {
 // never hardcoded here). It is runtime-agnostic: every cloud model dispatches
 // the same way through the Workers AI binding. The caller filters/orders it for
 // the cloud (ama) runtime; self-hosted runtimes ignore it (their models come
-// from the runner's live capabilities).
+// from the runner's live runtime report).
 export async function listAmaCatalogModels(env: Env, ownerId: string): Promise<AmaCatalogModel[]> {
   const client = await createAmaClient(env, ownerId);
   // GET /api/v1/providers/models returns the entire catalog in one envelope
@@ -932,12 +927,11 @@ export async function listAmaRunners(env: Env, ownerId: string, projectId: strin
       id: runner.id,
       environmentId: runner.environmentId,
       status: runner.state,
-      capabilities: runner.capabilities,
       currentLoad: runner.currentLoad,
       maxConcurrent: runner.maxConcurrent,
       lastHeartbeatAt: runner.lastHeartbeatAt,
       runtimeUsage: runner.runtimeUsage,
-      runtimeInventory: runner.runtimeInventory,
+      runtimes: runner.runtimes,
     })),
     pagination: page.pagination,
   };

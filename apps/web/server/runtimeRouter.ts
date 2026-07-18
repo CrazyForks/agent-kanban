@@ -24,33 +24,12 @@ export function amaRunnerHeartbeatFresh(runner: AmaRunner, now = Date.now()): bo
 
 export function amaRunnerOwnsRuntime(runner: AmaRunner, runtime: string, model: string | null = null): boolean {
   if (runner.status !== "active" || !amaRunnerHeartbeatFresh(runner)) return false;
-
-  const inventory = runner.runtimeInventory ?? [];
-  if (inventory.length > 0 && !inventory.some((entry) => entry.runtime === runtime && (entry.state === "ready" || entry.state === "limited"))) {
-    return false;
-  }
-
-  const runtimeCapable = runner.capabilities.some(
-    (capability) => capability === runtime || capability.startsWith(`runtime-provider-model:${runtime}:`),
+  return runner.runtimes.some(
+    (entry) =>
+      entry.runtime === runtime &&
+      (entry.state === "ready" || entry.state === "limited") &&
+      (!model || runtime === "ama" || entry.models.includes(model)),
   );
-  if (!runtimeCapable) return false;
-  if (!model) return true;
-  return amaRunnerDeclaresModel(runner, runtime, model) || runner.capabilities.includes(runtime);
-}
-
-export function amaRunnerDeclaresModel(runner: AmaRunner, runtime: string, model: string): boolean {
-  return runner.capabilities.some((capability) => {
-    const declared = amaCapabilityModel(capability, runtime);
-    return declared === model || declared === "*";
-  });
-}
-
-export function amaCapabilityModel(capability: string, runtime: string): string | null {
-  const prefix = `runtime-provider-model:${runtime}:`;
-  if (!capability.startsWith(prefix)) return null;
-  const rest = capability.slice(prefix.length);
-  const separator = rest.indexOf(":");
-  return separator === -1 ? null : rest.slice(separator + 1);
 }
 
 export async function resolveRuntimeSourceAvailability(

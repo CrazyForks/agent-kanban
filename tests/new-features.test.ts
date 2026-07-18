@@ -197,7 +197,7 @@ describe("amaRunnerCanRunRuntime", () => {
       id: "runner-1",
       environmentId: "env-1",
       status: "active",
-      capabilities: ["claude-code"],
+      runtimes: [{ runtime: "claude-code", models: [], state: "ready" }],
       currentLoad: 0,
       maxConcurrent: 2,
       lastHeartbeatAt: new Date().toISOString(),
@@ -206,24 +206,24 @@ describe("amaRunnerCanRunRuntime", () => {
     expect(amaRunnerCanRunRuntime(runner, "claude-code")).toBe(true);
   });
 
-  it("returns false when runtime inventory reports the runtime as limited", async () => {
+  it("returns false when the runtime report marks the runtime as limited", async () => {
     const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
     const runner = {
       id: "runner-limited",
       environmentId: "env-limited",
       status: "active",
-      capabilities: ["runtime-provider-model:claude-code:anthropic:claude-sonnet-4-6"],
-      currentLoad: 0,
-      maxConcurrent: 2,
-      lastHeartbeatAt: new Date().toISOString(),
-      runtimeUsage: [],
-      runtimeInventory: [
+      runtimes: [
         {
           runtime: "claude-code",
+          models: ["claude-sonnet-4-6"],
           state: "limited",
           detail: "Claude Code quota usage unavailable",
         },
       ],
+      currentLoad: 0,
+      maxConcurrent: 2,
+      lastHeartbeatAt: new Date().toISOString(),
+      runtimeUsage: [],
     };
     expect(amaRunnerCanRunRuntime(runner, "claude-code")).toBe(false);
   });
@@ -234,7 +234,7 @@ describe("amaRunnerCanRunRuntime", () => {
       id: "runner-2",
       environmentId: "env-2",
       status: "offline",
-      capabilities: ["claude-code"],
+      runtimes: [{ runtime: "claude-code", models: [], state: "ready" }],
       currentLoad: 0,
       maxConcurrent: 2,
       lastHeartbeatAt: new Date().toISOString(),
@@ -248,7 +248,7 @@ describe("amaRunnerCanRunRuntime", () => {
       id: "runner-3",
       environmentId: "env-3",
       status: "active",
-      capabilities: ["claude-code"],
+      runtimes: [{ runtime: "claude-code", models: [], state: "ready" }],
       currentLoad: 1,
       maxConcurrent: 1,
       lastHeartbeatAt: new Date().toISOString(),
@@ -256,13 +256,13 @@ describe("amaRunnerCanRunRuntime", () => {
     expect(amaRunnerCanRunRuntime(runner, "claude-code")).toBe(false);
   });
 
-  it("returns false when runtime capability is not listed", async () => {
+  it("returns false when the runtime is not listed", async () => {
     const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
     const runner = {
       id: "runner-4",
       environmentId: "env-4",
       status: "active",
-      capabilities: ["codex"],
+      runtimes: [{ runtime: "codex", models: [], state: "ready" }],
       currentLoad: 0,
       maxConcurrent: 2,
       lastHeartbeatAt: new Date().toISOString(),
@@ -270,13 +270,13 @@ describe("amaRunnerCanRunRuntime", () => {
     expect(amaRunnerCanRunRuntime(runner, "claude-code")).toBe(false);
   });
 
-  it("returns true when capability matches via runtime-provider-model prefix", async () => {
+  it("returns true when a ready runtime entry matches", async () => {
     const { amaRunnerCanRunRuntime } = await import("../apps/web/server/taskDispatch");
     const runner = {
       id: "runner-5",
       environmentId: "env-5",
       status: "active",
-      capabilities: ["runtime-provider-model:claude-code:anthropic:claude-sonnet-4-6"],
+      runtimes: [{ runtime: "claude-code", models: ["claude-sonnet-4-6"], state: "ready" }],
       currentLoad: 0,
       maxConcurrent: 2,
       lastHeartbeatAt: new Date().toISOString(),
@@ -291,7 +291,7 @@ describe("amaRunnerCanRunRuntime", () => {
       id: "runner-6",
       environmentId: "env-6",
       status: "active",
-      capabilities: ["claude-code"],
+      runtimes: [{ runtime: "claude-code", models: [], state: "ready" }],
       currentLoad: 0,
       maxConcurrent: 2,
       lastHeartbeatAt: new Date().toISOString(),
@@ -312,7 +312,7 @@ describe("amaRunnerCanRunRuntime", () => {
       id: "runner-7",
       environmentId: "env-7",
       status: "active",
-      capabilities: ["claude-code"],
+      runtimes: [{ runtime: "claude-code", models: [], state: "ready" }],
       currentLoad: 0,
       maxConcurrent: 2,
       lastHeartbeatAt: new Date().toISOString(),
@@ -333,7 +333,7 @@ describe("amaRunnerCanRunRuntime", () => {
       id: "runner-8",
       environmentId: "env-8",
       status: "active",
-      capabilities: ["claude-code"],
+      runtimes: [{ runtime: "claude-code", models: [], state: "ready" }],
       currentLoad: 0,
       maxConcurrent: 2,
       lastHeartbeatAt: new Date().toISOString(),
@@ -354,7 +354,7 @@ describe("amaRunnerCanRunRuntime", () => {
       id: "runner-9",
       environmentId: "env-9",
       status: "active",
-      capabilities: ["claude-code"],
+      runtimes: [{ runtime: "claude-code", models: [], state: "ready" }],
       currentLoad: 0,
       maxConcurrent: 2,
       lastHeartbeatAt: new Date().toISOString(),
@@ -432,7 +432,7 @@ describe("amaRunnerCanRunRuntime", () => {
               id: "runner-quota",
               environmentId: "env_quota",
               state: "active",
-              capabilities: ["claude-code"],
+              runtimes: [{ runtime: "claude-code", models: [], state: "ready" }],
               currentLoad: 0,
               maxConcurrent: 2,
               lastHeartbeatAt: now,
@@ -908,7 +908,7 @@ describe("dispatchTaskToAma includes git identity env in runtimeEnv", () => {
               id: "runner-git",
               environmentId: "env_git",
               state: "active",
-              capabilities: ["claude-code"],
+              runtimes: [{ runtime: "claude-code", models: [], state: "ready" }],
               currentLoad: 0,
               maxConcurrent: 2,
               lastHeartbeatAt: new Date().toISOString(),

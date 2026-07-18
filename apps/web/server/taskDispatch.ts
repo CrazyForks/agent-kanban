@@ -37,7 +37,7 @@ import { createLogger } from "./logger";
 import { listMachineEnvironmentCandidatesForRuntime } from "./machineRepo";
 import { githubRepoRef } from "./repositoryRepo";
 import { taskRuntimeSource } from "./runtimeBinding";
-import { amaCapabilityModel, amaRunnerDeclaresModel, amaRunnerOwnsRuntime, amaRuntimeName } from "./runtimeRouter";
+import { amaRunnerOwnsRuntime, amaRuntimeName } from "./runtimeRouter";
 import { getSubagent } from "./subagentRepo";
 import { computeBlocked } from "./taskDeps";
 import { addTaskAction, getTask, releaseTask, updateTask } from "./taskRepo";
@@ -47,7 +47,7 @@ type Annotations = Record<string, unknown>;
 
 const logger = createLogger("taskDispatch");
 
-export { amaCapabilityModel, amaRunnerDeclaresModel, amaRuntimeName };
+export { amaRuntimeName };
 
 export const AK_VARIABLES_CREDENTIAL_NAME = "ak-variables";
 export const USER_VARIABLES_CREDENTIAL_NAME = "user-variables";
@@ -361,7 +361,7 @@ function amaAgentMemoryPolicy(enabled: boolean) {
 
 function amaSubagentProfile(subagent: NonNullable<Awaited<ReturnType<typeof getSubagent>>>) {
   return {
-    name: subagent.name,
+    name: subagent.username,
     description: subagent.bio ?? subagent.role ?? "",
     systemPrompt: subagent.soul ?? "",
     model: Object.values(subagent.models ?? {}).find((model): model is string => typeof model === "string") ?? null,
@@ -466,27 +466,20 @@ async function firstRunnableCandidate(
   amaRuntime: string,
   model: string | null,
 ): Promise<{ machineId: string; environmentId: string } | null> {
-  // Prefer an environment whose runner declares the pinned model; keep the
-  // first merely runtime-capable environment as a transitional fallback for
-  // runners that predate model declarations.
-  let fallback: { machineId: string; environmentId: string } | null = null;
   for (const candidate of candidates) {
     const runners = await listAmaRunners(env, ownerId, projectId, candidate.environmentId);
-    const runnable = runners.data.filter((runner) => amaRunnerCanRunRuntime(runner, amaRuntime, model));
-    if (runnable.length === 0) continue;
-    if (!model || runnable.some((runner) => amaRunnerDeclaresModel(runner, amaRuntime, model))) return candidate;
-    fallback ??= candidate;
+    if (runners.data.some((runner) => amaRunnerCanRunRuntime(runner, amaRuntime, model))) return candidate;
   }
-  return fallback;
+  return null;
 }
 
 export function amaRunnerCanRunRuntime(runner: AmaRunner, runtime: string, model: string | null = null): boolean {
   if (!amaRunnerOwnsRuntime(runner, runtime, model) || runner.currentLoad >= runner.maxConcurrent || runtimeQuotaExhausted(runner, runtime)) {
     return false;
   }
-  const inventory = runner.runtimeInventory ?? [];
-  if (inventory.length > 0 && !inventory.some((entry) => entry.runtime === runtime && entry.state === "ready")) return false;
-  return true;
+  return runner.runtimes.some(
+    (entry) => entry.runtime === runtime && entry.state === "ready" && (!model || runtime === "ama" || entry.models.includes(model)),
+  );
 }
 
 // Runners report provider quota windows in their heartbeat usage; dispatching
@@ -627,16 +620,19 @@ async function claimTaskDispatch(db: D1, taskId: string, options: { takeover?: b
     ? `(json_extract(metadata, '$.annotations."ama.dispatch.result"') IS NULL
         OR json_extract(metadata, '$.annotations."ama.dispatch.result"') = 'accepted')`
     : `json_extract(metadata, '$.annotations."ama.dispatch.result"') IS NULL`;
+  const claimedAt = new Date().toISOString();
   const result = await db
     .prepare(`
-      UPDATE tasks SET metadata = json_set(
-        json_set(COALESCE(metadata, '{}'), '$.annotations', json(COALESCE(json_extract(metadata, '$.annotations'), '{}'))),
-        '$.annotations."ama.dispatch.result"', 'dispatching',
-        '$.annotations."runtime.source"', 'ama'
-      )
+      UPDATE tasks SET
+        metadata = json_set(
+          json_set(COALESCE(metadata, '{}'), '$.annotations', json(COALESCE(json_extract(metadata, '$.annotations'), '{}'))),
+          '$.annotations."ama.dispatch.result"', 'dispatching',
+          '$.annotations."runtime.source"', 'ama'
+        ),
+        updated_at = ?
       WHERE id = ? AND status = 'todo' AND ${guard}
     `)
-    .bind(taskId)
+    .bind(claimedAt, taskId)
     .run();
   return (result.meta?.changes ?? 0) > 0;
 }
@@ -645,7 +641,7 @@ async function claimTaskDispatch(db: D1, taskId: string, options: { takeover?: b
 // and the task would never be swept again; release claims older than this.
 const STALE_DISPATCH_CLAIM_MS = 5 * 60_000;
 
-export async function releaseStaleDispatchClaims(db: D1): Promise<void> {
+export async function releaseStaleDispatchClaims(db: D1, env: Env): Promise<void> {
   const threshold = new Date(Date.now() - STALE_DISPATCH_CLAIM_MS).toISOString();
   const rows = await db
     .prepare(`
@@ -653,7 +649,6 @@ export async function releaseStaleDispatchClaims(db: D1): Promise<void> {
       JOIN boards b ON t.board_id = b.id
       WHERE t.status = 'todo' AND t.assigned_to IS NOT NULL
         AND json_extract(t.metadata, '$.annotations."ama.dispatch.result"') = 'dispatching'
-        AND json_extract(t.metadata, '$.annotations."ama.sessionId"') IS NULL
         AND t.updated_at < ?
     `)
     .bind(threshold)
@@ -661,7 +656,13 @@ export async function releaseStaleDispatchClaims(db: D1): Promise<void> {
   for (const row of rows.results) {
     const task = await getTask(db, row.id, row.owner_id);
     if (!task) continue;
-    await annotateTask(db, task, { "ama.dispatch.result": null });
+    const annotations = taskAnnotations(task);
+    const hasRuntimeBinding = Boolean(stringAnnotation(annotations, "ama.sessionId") || stringAnnotation(annotations, "agentSessionId"));
+    if (hasRuntimeBinding) {
+      await releaseTaskRuntimeBinding(db, env, row.owner_id, task, "runtime_error");
+    } else {
+      await annotateTask(db, task, { "ama.dispatch.result": null });
+    }
   }
 }
 

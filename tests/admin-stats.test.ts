@@ -339,7 +339,7 @@ describe("GET /api/admin/stats", () => {
                 id: "runner_admin_stats",
                 environmentId: "env_admin_stats",
                 state: "active",
-                capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
+                runtimes: [{ runtime: "codex", models: ["gpt-5.3-codex"], state: "ready" }],
                 currentLoad: 0,
                 maxConcurrent: 5,
                 lastHeartbeatAt: new Date().toISOString(),

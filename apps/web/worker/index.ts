@@ -30,7 +30,7 @@ export default {
           .catch((err) => logger.warn(`detectAndReleaseStaleAll failed: ${err}`))
           .then(() => reconcileAmaBoundTasks(env.DB, env))
           .catch((err) => logger.warn(`reconcileAmaBoundTasks failed: ${err}`))
-          .then(() => releaseStaleDispatchClaims(env.DB))
+          .then(() => releaseStaleDispatchClaims(env.DB, env))
           .catch((err) => logger.warn(`releaseStaleDispatchClaims failed: ${err}`))
           .then(() => routePendingTasks(env.DB, env))
           .catch((err) => logger.warn(`routePendingTasks failed: ${err}`))

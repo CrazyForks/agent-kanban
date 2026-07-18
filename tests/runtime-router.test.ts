@@ -80,8 +80,14 @@ function runnerFetch(environmentId: string, getHealthy: () => boolean) {
                 id: "runner-router",
                 environmentId,
                 state: "active",
-                capabilities: ["runtime-provider-model:claude-code:*:*"],
-                runtimeInventory: [{ runtime: "claude-code", state: "limited" }],
+                runtimes: [
+                  {
+                    runtime: "claude-code",
+                    models: ["claude-sonnet-4-6"],
+                    state: "limited",
+                    detail: "Daily quota exhausted",
+                  },
+                ],
                 currentLoad: 5,
                 maxConcurrent: 5,
                 lastHeartbeatAt: new Date().toISOString(),
@@ -130,14 +136,34 @@ describe("runtime source primitives", () => {
     const runner = {
       status: "active",
       lastHeartbeatAt: new Date().toISOString(),
-      capabilities: ["runtime-provider-model:claude-code:*:*"],
-      runtimeInventory: [{ runtime: "claude-code", state: "limited" }],
+      runtimes: [
+        {
+          runtime: "claude-code",
+          models: ["claude-sonnet-4-6", "vendor:model:v2"],
+          state: "limited",
+          detail: "Daily quota exhausted",
+        },
+      ],
       currentLoad: 3,
       maxConcurrent: 3,
     } as any;
 
     expect(amaRunnerOwnsRuntime(runner, "claude-code")).toBe(true);
+    expect(amaRunnerOwnsRuntime(runner, "claude-code", "claude-sonnet-4-6")).toBe(true);
+    expect(amaRunnerOwnsRuntime(runner, "claude-code", "vendor:model:v2")).toBe(true);
+    expect(amaRunnerOwnsRuntime(runner, "claude-code", "claude-opus-4-6")).toBe(false);
     expect(selectRuntimeSource({ ama: true, legacy: true })).toBe("ama");
+  });
+
+  it("does not require runner model declarations for the AMA cloud runtime", async () => {
+    const { amaRunnerOwnsRuntime } = await import("../apps/web/server/runtimeRouter");
+    const runner = {
+      status: "active",
+      lastHeartbeatAt: new Date().toISOString(),
+      runtimes: [{ runtime: "ama", models: [], state: "ready" }],
+    } as any;
+
+    expect(amaRunnerOwnsRuntime(runner, "ama", "anthropic/claude-haiku-4-5")).toBe(true);
   });
 
   it("persists and infers the runtime source annotation", async () => {

@@ -16,7 +16,15 @@ import { AMA_BACKFILL_FAILED_TAINT_KEY } from "@agent-kanban/shared";
 import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { hasAmaResources } from "../apps/web/server/betterAuth";
-import { addCloudSandboxMachine, createTestAgent, linkAmaAccount, seedUser, setupMiniflare, signUpVerifiedUser } from "./helpers/db";
+import {
+  addCloudSandboxMachine,
+  createTestAgent,
+  createTestSubagent,
+  linkAmaAccount,
+  seedUser,
+  setupMiniflare,
+  signUpVerifiedUser,
+} from "./helpers/db";
 
 const AMA_ENV = {
   AMA_ORIGIN: "https://ama.test",
@@ -251,6 +259,70 @@ describe("create-agent-creates-ama-agent-first", () => {
     const created = (await res.json()) as any;
     const row = await db.prepare("SELECT ama_agent_id FROM agents WHERE id = ?").bind(created.id).first<{ ama_agent_id: string }>();
     expect(row?.ama_agent_id).toBe("ama_agent_ca");
+  });
+
+  it("uses stable subagent usernames in AMA create and sync payloads", async () => {
+    const env = makeEnv();
+    const { userId, token } = await createSessionUser(env, "stable-subagent-name@test.com");
+    await linkAmaAccount(db, userId);
+    await seedIntegration(userId);
+    const subagent = await createTestSubagent(db, userId, {
+      name: "Morgan Hale",
+      username: "morgan-hale",
+      bio: "Writes focused regression tests.",
+      soul: "Verify behavior at the narrowest meaningful boundary.",
+      role: "test-writer",
+      models: { claude: "claude-sonnet-4-6", codex: "gpt-5.3-codex" },
+      skills: ["saltbo/agent-kanban@agent-kanban"],
+    });
+    let createBody: Record<string, any> | null = null;
+    let syncBody: Record<string, any> | null = null;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = reqUrl(input);
+      const method = reqMethod(input, init);
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
+      if (url === "https://ama.test/api/v1/projects/project_ca") return jsonResponse(amaProject("project_ca"));
+      if (url === "https://ama.test/api/v1/agents" && method === "POST") {
+        createBody = JSON.parse(await reqBody(input, init)) as Record<string, any>;
+        return jsonResponse(amaAgent("ama_agent_stable_subagent", { projectId: "project_ca", name: createBody.metadata?.name }), 201);
+      }
+      if (url === "https://ama.test/api/v1/agents/ama_agent_stable_subagent" && method === "GET") {
+        return jsonResponse(amaAgent("ama_agent_stable_subagent", { projectId: "project_ca", name: "Stable Parent" }));
+      }
+      if (url === "https://ama.test/api/v1/agents/ama_agent_stable_subagent" && method === "PATCH") {
+        syncBody = JSON.parse(await reqBody(input, init)) as Record<string, any>;
+        return jsonResponse(amaAgent("ama_agent_stable_subagent", { projectId: "project_ca", name: "Stable Parent" }));
+      }
+      throw new Error(`Unexpected fetch: ${url} (${method})`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const createResponse = await apiRequest(
+      env,
+      "POST",
+      "/api/agents",
+      { name: "Stable Parent", username: "stable-parent", runtime: "claude", subagents: [subagent.id] },
+      token,
+    );
+    expect(createResponse.status).toBe(201);
+    const created = (await createResponse.json()) as any;
+
+    const syncResponse = await apiRequest(env, "PATCH", `/api/agents/${created.id}`, { bio: "Updated parent bio" }, token);
+    expect(syncResponse.status).toBe(200);
+
+    const expectedSubagent = {
+      name: "morgan-hale",
+      description: "Writes focused regression tests.",
+      systemPrompt: "Verify behavior at the narrowest meaningful boundary.",
+      model: "claude-sonnet-4-6",
+      skills: ["saltbo/agent-kanban@agent-kanban"],
+      allowedTools: [],
+      mcpConnectors: [],
+    };
+    expect(createBody?.spec.subagents).toEqual([expectedSubagent]);
+    expect(syncBody?.spec.subagents).toEqual([expectedSubagent]);
+    expect(createBody?.spec.subagents[0].name).not.toBe("Morgan Hale");
+    expect(syncBody?.spec.subagents[0].name).not.toBe("Morgan Hale");
   });
 
   it("rolls back: persists no AK agent when the AMA agent creation fails", async () => {

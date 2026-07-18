@@ -21,7 +21,7 @@ AMA owns:
   vault-backed runtime secrets, events, usage, and runtime history
 
 The integration must keep AMA hidden as product plumbing. AK users should not
-need to understand AMA project, environment, runner capability, or session
+need to understand AMA project, environment, runner runtime support, or session
 configuration in order to use AK.
 
 ## Boundary Decisions
@@ -90,7 +90,7 @@ from resume to restart (teardown + release) when the session is already dead.
 - AK creates or reuses the machine's AMA environment during machine
   registration
 - AK returns runner onboarding data in the machine registration response
-- AK resolves AMA project, environment, capabilities, and runner federation
+- AK resolves AMA project, environment, structured runtime support, and runner federation
   server-side
 - AK creates/refreshes the generic AMA external project binding
 - the CLI ensures `ama-runner` has a valid AMA device-login credential for the
@@ -200,7 +200,7 @@ AgentDefinitions internally.
 
 - `ak start`, `ak stop`, `ak restart`, `ak status`, and `ak logs` remain the
   AK machine commands.
-- `ak start` must not ask users for AMA environment or capability arguments.
+- `ak start` must not ask users for AMA environment or runtime-support arguments.
 - Task creation and assignment must not ask users for AMA environment or
   session arguments.
 - Machines remain visible as the AK runner/environment concept where existing
@@ -292,8 +292,8 @@ All of these are implemented and tested:
   report) on the first leader command of a process. (AK)
 - Session max duration: runner-side timeout (default 2h, configurable) fails
   the lease explicitly instead of renewing forever. (AMA)
-- Runner capabilities are detected from installed CLIs and refreshed on every
-  heartbeat. (AMA)
+- Runner runtimes, models, and readiness states are detected from installed
+  CLIs and refreshed on every heartbeat. (AMA)
 - Mid-run chat: prompts to a running claude-code/copilot session are delivered
   live over the runner channel into the runtime; codex (and any channel
   failure) falls back to the queued resume turn. (AMA)
@@ -324,14 +324,12 @@ three-scenario regression (codex 11/11, ama 10/10, mixed 11/11):
 
 Closed after that regression (runner v0.2.1, verified by a codex 11/11 smoke):
 
-- Runners enumerate real host models at registration (claude via SDK
-  `supportedModels`, codex via `~/.codex/models_cache.json`, copilot via
-  `CopilotClient.listModels`) and declare per-model
-  `runtime-provider-model:<runtime>:*:<model>` capabilities; AMA matching is
-  model-precise again, with a transitional bare-runtime fallback for older
-  runners. (AMA)
+- Runners enumerate real host models (claude via SDK `supportedModels`, codex
+  via `~/.codex/models_cache.json`, copilot via `CopilotClient.listModels`) and
+  report structured `runtimes` entries containing models and readiness state;
+  AMA matching is model-precise. (AMA)
 - `ak get model` asks the server (`GET /api/models?runtime=`), which
-  aggregates runner capabilities across the owner's machine environments
+  aggregates runner runtime reports across the owner's machine environments
   (cloud runtimes keep the platform catalog), instead of loading provider
   SDKs locally. (AK)
 - Self-hosted dispatches get the same GitHub App `GH_TOKEN` as cloud ones;

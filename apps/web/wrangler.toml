@@ -4,6 +4,14 @@ compatibility_date = "2026-04-13"
 compatibility_flags = ["nodejs_compat"]
 preview_urls = true
 
+[[routes]]
+pattern = "ak.tftt.cc/*"
+zone_name = "tftt.cc"
+
+[[routes]]
+pattern = "agent-kanban.dev"
+custom_domain = true
+
 [vars]
 ALLOWED_HOSTS = "agent-kanban.dev"
 AK_API_URL = "https://agent-kanban.dev"
@@ -12,7 +20,7 @@ CF_ACCOUNT_ID = "94a89d03c0fc785c8dcbd3c674d6742a"
 AMA_ORIGIN = "https://ama.tftt.cc"
 AMA_OIDC_ISSUER = "https://id.tftt.cc/api/auth"
 AMA_OIDC_CLIENT_ID = "client_5fd9ed5b769b47ff8611f44debc82c10"
-AMA_RUNNER_VERSION = "0.6.0"
+AMA_RUNNER_VERSION = "0.7.0"
 GITHUB_APP_ID = "4098405"
 GITHUB_APP_SLUG = "agent-kanban"
 # Optional override. Defaults to "openid profile email offline_access".
@@ -69,6 +77,7 @@ migrations_dir = "migrations"
 # vars and durable_objects are NOT inherited — must be redeclared.
 # ----------------------------------------------------------------------------
 [env.staging]
+routes = []
 
 [env.staging.vars]
 ALLOWED_HOSTS = "*.workers.dev"
@@ -78,7 +87,7 @@ CF_ACCOUNT_ID = "94a89d03c0fc785c8dcbd3c674d6742a"
 AMA_ORIGIN = "https://ama.tftt.cc"
 AMA_OIDC_ISSUER = "https://id.tftt.cc/api/auth"
 AMA_OIDC_CLIENT_ID = "TODO_STAGING_AMA_OIDC_CLIENT_ID"
-AMA_RUNNER_VERSION = "0.6.0"
+AMA_RUNNER_VERSION = "0.7.0"
 # Optional override. Defaults to "openid profile email offline_access".
 # AMA_OIDC_SCOPES = "openid profile email offline_access"
 GITHUB_APP_ID = "4153714"
