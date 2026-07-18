@@ -127,6 +127,7 @@ import {
   verifyGithubSignature,
 } from "./githubWebhook";
 import { getArmoredPrivateKey, getRootKeyInfo, getRootPublicKey, getSubkeyIds } from "./gpgKeyRepo";
+import { legacyMachineHeartbeatFresh } from "./legacyRuntime";
 import { createLogger } from "./logger";
 import {
   createCloudMachine,
@@ -148,19 +149,26 @@ import { metricsMiddleware } from "./metrics";
 import { getMachineMetrics } from "./metricsRepo";
 import { listRuntimeModels } from "./modelCatalog";
 import { createRepository, deleteRepository, getRepository, listRepositories, normalizeGitUrl } from "./repositoryRepo";
+import {
+  amaRunnerHeartbeatFresh,
+  listAvailableRuntimeSources,
+  metadataWithRuntimeSource,
+  resolveRuntimeSourceAvailability,
+  selectRuntimeSource,
+  type TaskRuntimeSource,
+  taskRuntimeSource,
+} from "./runtimeRouter";
 import { createSSEResponse } from "./sse";
 import { getSystemStats } from "./statsRepo";
 import { createSubagent, deleteSubagent, getSubagent, listSubagents, updateSubagent } from "./subagentRepo";
 import {
   AK_VARIABLES_CREDENTIAL_NAME,
-  amaRunnerCanRunRuntime,
   amaRuntimeName,
   amaRuntimeSecretEnvForCredentialNames,
   apiUrl,
   boardMaintainerHttpTriggerName,
   boardMaintainerResourceName,
   boardMaintainerScheduleTriggerName,
-  clearAmaDispatchClaim,
   createAmaAgentForAkProfile,
   dispatchTaskToAma,
   ensureAmaAgentForAkAgent,
@@ -180,12 +188,14 @@ import {
   createTask,
   deleteTask,
   deleteTaskAfterFailedDispatch,
+  finalizeTaskAssignment,
   getTask,
   getTaskActions,
   listTasks,
   rejectTask,
   releaseTask,
   reviewTask,
+  rollbackTaskAssignment,
   updateTask,
 } from "./taskRepo";
 import type { Env } from "./types";
@@ -304,8 +314,13 @@ function withRuntimeSource<T extends Record<string, any>>(env: Env, agent: T, av
   return withAgentStatus(agent as any, availableRuntimes.has(agent.runtime)) as unknown as T;
 }
 
-async function assertAmaAssignableWorkerRuntime(db: D1, env: Env, ownerId: string, agentId: string, missingStatus: 400 | 404): Promise<void> {
-  if (!isAmaTaskDispatchConfigured(env)) return;
+async function resolveAssignableWorkerRuntimeSource(
+  db: D1,
+  env: Env,
+  ownerId: string,
+  agentId: string,
+  missingStatus: 400 | 404,
+): Promise<TaskRuntimeSource> {
   const agent = await getAgent(db, agentId, ownerId);
   if (!agent) throw new HTTPException(missingStatus, { message: "Agent not found" });
   if (agent.kind !== "worker") throw new HTTPException(400, { message: "Tasks can only be assigned to worker agents" });
@@ -313,12 +328,13 @@ async function assertAmaAssignableWorkerRuntime(db: D1, env: Env, ownerId: strin
     throw new HTTPException(409, { message: "Agent is tainted NoSchedule and cannot be assigned normal tasks" });
   }
   const runtime = agent.runtime as AgentRuntime;
-  const runtimes = await availableAmaRuntimes(db, env, ownerId, runtime);
-  if (!runtimes.has(runtime)) {
+  const source = selectRuntimeSource(await resolveRuntimeSourceAvailability(db, env, ownerId, runtime, agent.model));
+  if (!source) {
     throw new HTTPException(409, {
-      message: `Runtime "${runtime}" is not available on any AMA runner. Choose or create a worker that uses an available runtime.`,
+      message: `Runtime "${runtime}" is not available on any AMA runner or online legacy machine.`,
     });
   }
+  return source;
 }
 
 function parseOptionalBoolean(value: string | undefined, name: string): boolean | undefined {
@@ -459,32 +475,9 @@ async function listPublicMaintainersWithAmaStatus(db: D1, env: Env, ownerId: str
   return await Promise.all(maintainers.map((maintainer) => publicBoardMaintainerWithAmaStatus(db, env, ownerId, maintainer)));
 }
 
-async function availableAmaRuntimes(db: D1, env: Env, ownerId: string, runtimeFilter?: AgentRuntime): Promise<Set<string>> {
-  if (!isAmaTaskDispatchConfigured(env)) return new Set();
-  const machines = await listMachines(db, ownerId);
-  const environmentIds = [
-    ...new Set(
-      machines
-        .filter((machine) => !runtimeFilter || machine.runtimes.some((runtime) => runtime.name === runtimeFilter))
-        .map((machine) => machine.ama_environment_id)
-        .filter((id): id is string => Boolean(id)),
-    ),
-  ];
-  const runtimes = new Set<string>();
-  if (environmentIds.length === 0) return runtimes;
-  const projectId = await getAmaProjectId(db, ownerId);
-  if (!projectId) return runtimes;
-  const runnerLists = await Promise.all(environmentIds.map((environmentId) => listAmaRunners(env, ownerId, projectId, environmentId)));
-  for (const runners of runnerLists) {
-    for (const runner of runners.data) {
-      for (const runtime of runtimeFilter ? [runtimeFilter] : AGENT_RUNTIMES) {
-        if (amaRunnerCanRunRuntime(runner, amaRuntimeName(runtime))) {
-          runtimes.add(runtime);
-        }
-      }
-    }
-  }
-  return runtimes;
+async function availableRuntimeNames(db: D1, env: Env, ownerId: string): Promise<Set<string>> {
+  const sources = await listAvailableRuntimeSources(db, env, ownerId);
+  return new Set([...sources].filter(([, availability]) => availability.ama || availability.legacy).map(([runtime]) => runtime));
 }
 
 // Gates a user-initiated AMA dispatch on the owner having linked their own AMA
@@ -564,27 +557,51 @@ async function machineWithAmaRunnerStatus<T extends MachineRecord | MachineWithA
   machine: T,
 ): Promise<T> {
   if (!machine.ama_environment_id) {
-    return { ...machine, status: "offline", last_heartbeat_at: null, runtimes: [] };
+    return machineWithLegacyRuntimeStatus(machine);
   }
   const runners = await listAmaRunners(env, ownerId, projectId, machine.ama_environment_id);
-  const activeRunners = runners.data.filter((runner) => runner.status === "active");
+  const activeRunners = runners.data.filter((runner) => runner.status === "active" && amaRunnerHeartbeatFresh(runner));
+  if (activeRunners.length === 0 && legacyMachineHeartbeatFresh(machine)) {
+    return {
+      ...machine,
+      runner_count: runners.data.length,
+      active_runner_count: 0,
+      runner_capacity: 0,
+    };
+  }
   const activeLoad = activeRunners.reduce((sum, runner) => sum + runner.currentLoad, 0);
-  const lastHeartbeatAt = runners.data
+  const amaHeartbeatAt = activeRunners
     .map((runner) => runner.lastHeartbeatAt)
     .filter((value): value is string => typeof value === "string" && value.length > 0)
     .sort()
     .at(-1);
+  const lastHeartbeatAt = [amaHeartbeatAt, legacyMachineHeartbeatFresh(machine) ? machine.last_heartbeat_at : null]
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1);
+  const amaRuntimes = machineRuntimesFromAmaRunners(activeRunners, amaHeartbeatAt ?? new Date().toISOString());
   return {
     ...machine,
     status: activeRunners.length > 0 ? "online" : "offline",
     last_heartbeat_at: lastHeartbeatAt ?? null,
-    runtimes: machineRuntimesFromAmaRunners(activeRunners, lastHeartbeatAt ?? new Date().toISOString()),
+    runtimes: mergeLegacyMachineRuntimes(machine, amaRuntimes),
     usage_info: machineUsageInfoFromRunners(runners.data) ?? machine.usage_info,
     runner_count: runners.data.length,
     active_runner_count: activeRunners.length,
     runner_capacity: activeRunners.reduce((sum, runner) => sum + runner.maxConcurrent, 0),
     ...("active_session_count" in machine ? { active_session_count: activeLoad } : {}),
   };
+}
+
+function mergeLegacyMachineRuntimes<T extends MachineRecord | MachineWithAgentsRecord>(machine: T, amaRuntimes: MachineRuntime[]): MachineRuntime[] {
+  if (!legacyMachineHeartbeatFresh(machine)) return amaRuntimes;
+  const amaNames = new Set(amaRuntimes.map((runtime) => runtime.name));
+  return [...amaRuntimes, ...machine.runtimes.filter((runtime) => !amaNames.has(runtime.name))];
+}
+
+function machineWithLegacyRuntimeStatus<T extends MachineRecord | MachineWithAgentsRecord>(machine: T): T {
+  if (legacyMachineHeartbeatFresh(machine)) return machine;
+  return { ...machine, status: "offline", last_heartbeat_at: null, runtimes: [] };
 }
 
 function machineRuntimesFromAmaRunners(runners: AmaRunner[], checkedAt: string): MachineRuntime[] {
@@ -678,11 +695,11 @@ async function machinesWithRuntimeStatus<T extends MachineRecord | MachineWithAg
     return machines;
   }
   if (machines.every((machine) => !machine.ama_environment_id)) {
-    return machines.map((machine) => ({ ...machine, status: "offline", last_heartbeat_at: null, runtimes: [] }));
+    return machines.map(machineWithLegacyRuntimeStatus);
   }
   const projectId = await getAmaProjectId(db, ownerId);
   if (!projectId) {
-    return machines.map((machine) => ({ ...machine, status: "offline", last_heartbeat_at: null, runtimes: [] }));
+    return machines.map(machineWithLegacyRuntimeStatus);
   }
   return await Promise.all(machines.map((machine) => machineWithAmaRunnerStatus(env, ownerId, projectId, machine)));
 }
@@ -695,7 +712,7 @@ async function machinesWithRuntimeStatusByOwner<T extends MachineRecord | Machin
   return await Promise.all(
     machines.map(async (machine) => {
       if (!machine.ama_environment_id) {
-        return { ...machine, status: "offline", last_heartbeat_at: null, runtimes: [] };
+        return machineWithLegacyRuntimeStatus(machine);
       }
       let projectId = projectIds.get(machine.owner_id);
       if (projectId === undefined) {
@@ -703,7 +720,7 @@ async function machinesWithRuntimeStatusByOwner<T extends MachineRecord | Machin
         projectIds.set(machine.owner_id, projectId);
       }
       if (!projectId) {
-        return { ...machine, status: "offline", last_heartbeat_at: null, runtimes: [] };
+        return machineWithLegacyRuntimeStatus(machine);
       }
       return await machineWithAmaRunnerStatus(env, machine.owner_id, projectId, machine);
     }),
@@ -1147,16 +1164,17 @@ api.get("/api/machines/:id", async (c) => {
 
 api.post("/api/machines", async (c) => {
   markLegacyRuntimeSurface(c);
-  await requireAmaConnected(c.env.DB, c.env, c.get("ownerId"));
+  const ownerId = c.get("ownerId");
   const body = await c.req.json<{ name: string; os: string; version: string; runtimes: MachineRuntime[]; device_id: string }>();
   if (!body.name || !body.os || !body.version || !body.runtimes || !body.device_id) {
     throw new HTTPException(400, { message: "name, os, version, runtimes, and device_id are required" });
   }
   assertValidMachineRuntimes(body.runtimes);
-  let machine = await upsertMachine(c.env.DB, c.get("ownerId"), body);
-  if (isAmaTaskDispatchConfigured(c.env)) {
-    const environmentId = await ensureMachineAmaEnvironment(c.env.DB, c.env, c.get("ownerId"), machine);
-    machine = (await updateMachineAmaEnvironment(c.env.DB, machine.id, c.get("ownerId"), environmentId)) ?? machine;
+  let machine = await upsertMachine(c.env.DB, ownerId, body);
+  const amaConnected = isAmaTaskDispatchConfigured(c.env) && (await hasAmaAccount(c.env.DB, ownerId));
+  if (amaConnected) {
+    const environmentId = await ensureMachineAmaEnvironment(c.env.DB, c.env, ownerId, machine);
+    machine = (await updateMachineAmaEnvironment(c.env.DB, machine.id, ownerId, environmentId)) ?? machine;
   }
 
   // Registration always binds the API key to the upserted machine
@@ -1187,7 +1205,7 @@ api.post("/api/machines", async (c) => {
     });
   }
 
-  const runner = isAmaTaskDispatchConfigured(c.env) ? await createMachineRunnerOnboarding(c.env, machine, c.get("ownerId")) : null;
+  const runner = amaConnected ? await createMachineRunnerOnboarding(c.env, machine, ownerId) : null;
   return c.json({ ...publicMachine(machine), runner }, 201);
 });
 
@@ -1322,8 +1340,8 @@ api.get("/api/agents", async (c) => {
   });
   // When AMA is the runtime substrate, local machine heartbeats no longer
   // describe schedulability. Recompute it from live AMA runners.
-  const amaAvailableRuntimes = amaRuntime ? await availableAmaRuntimes(c.env.DB, c.env, c.get("ownerId")) : undefined;
-  const withSource = agents.map((agent) => withRuntimeSource(c.env, agent, amaAvailableRuntimes));
+  const availableRuntimes = amaRuntime ? await availableRuntimeNames(c.env.DB, c.env, c.get("ownerId")) : undefined;
+  const withSource = agents.map((agent) => withRuntimeSource(c.env, agent, availableRuntimes));
   const filtered = maintainerOnly === true ? withSource.filter((agent) => isMaintainerAgentProfile(agent)) : withSource;
   return c.json(available === undefined ? filtered : filtered.filter((agent) => agent.status.schedulable === available));
 });
@@ -1332,8 +1350,8 @@ api.get("/api/agents/:id", async (c) => {
   const agent = await getAgent(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!agent) throw new HTTPException(404, { message: "Agent not found" });
   const logs = await getAgentLogs(c.env.DB, c.req.param("id"));
-  const amaAvailableRuntimes = isAmaTaskDispatchConfigured(c.env) ? await availableAmaRuntimes(c.env.DB, c.env, c.get("ownerId")) : undefined;
-  return c.json({ ...withRuntimeSource(c.env, agent, amaAvailableRuntimes), logs });
+  const availableRuntimes = isAmaTaskDispatchConfigured(c.env) ? await availableRuntimeNames(c.env.DB, c.env, c.get("ownerId")) : undefined;
+  return c.json({ ...withRuntimeSource(c.env, agent, availableRuntimes), logs });
 });
 
 api.post("/api/agents", async (c) => {
@@ -1662,11 +1680,12 @@ api.post("/api/tasks", async (c) => {
   }
 
   const { actorType, actorId } = resolveActor(c);
-  if (body.assigned_to) {
-    await assertAmaAssignableWorkerRuntime(c.env.DB, c.env, c.get("ownerId"), body.assigned_to, 400);
-  }
+  const runtimeSource = body.assigned_to
+    ? await resolveAssignableWorkerRuntimeSource(c.env.DB, c.env, c.get("ownerId"), body.assigned_to, 400)
+    : null;
   const task = await createTask(c.env.DB, c.get("ownerId"), {
     ...body,
+    ...(runtimeSource ? { metadata: metadataWithRuntimeSource(body.metadata, runtimeSource) } : {}),
     actorType,
     actorId,
     skipRuntimeAvailability: isAmaTaskDispatchConfigured(c.env),
@@ -1683,7 +1702,8 @@ api.post("/api/tasks", async (c) => {
 
 api.get("/api/tasks", async (c) => {
   const { repository_id, status, label, board_id, parent, assigned_to } = c.req.query();
-  const tasks = await listTasks(c.env.DB, c.get("ownerId"), { repository_id, status, label, board_id, parent, assigned_to });
+  const runtime_source = c.get("identityType") === "machine" ? "legacy" : undefined;
+  const tasks = await listTasks(c.env.DB, c.get("ownerId"), { repository_id, status, label, board_id, parent, assigned_to, runtime_source });
   return c.json(tasks);
 });
 
@@ -1817,8 +1837,14 @@ api.delete("/api/tasks/:id", async (c) => {
 api.post("/api/tasks/:id/claim", async (c) => {
   const agentId = c.get("agentId");
   if (!agentId) throw new HTTPException(400, { message: "agent_id is required" });
+  if (c.get("identityType") === "agent:worker") {
+    const routed = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
+    if (!routed || taskRuntimeSource(routed) !== c.get("agentRuntimeSource")) {
+      throw new HTTPException(409, { message: "Task is routed to a different runtime source" });
+    }
+  }
 
-  const task = await claimTask(c.env.DB, c.req.param("id"), agentId, taskIdentity(c), c.get("sessionId") || null);
+  const task = await claimTask(c.env.DB, c.req.param("id"), agentId, taskIdentity(c), c.get("sessionId") || null, c.get("agentRuntimeSource"));
   return c.json(task);
 });
 
@@ -1839,10 +1865,13 @@ api.post("/api/tasks/:id/release", async (c) => {
   if (!task) return c.json(task);
   const identity = await validateTaskManagementTransition(c, "release", task);
 
-  const unbound = await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
-  await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), { ...unbound, status: "todo" }, { apiOrigin: new URL(c.req.url).origin });
+  await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
   const released = await releaseTask(c.env.DB, task.id, actorType, actorId, identity, "released", sessionId);
-  return c.json(released);
+  if (!released) return c.json(released);
+  const dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), released, {
+    apiOrigin: new URL(c.req.url).origin,
+  });
+  return c.json(dispatched);
 });
 
 api.post("/api/tasks/:id/assign", async (c) => {
@@ -1854,9 +1883,13 @@ api.post("/api/tasks/:id/assign", async (c) => {
   const existing = await getTask(c.env.DB, c.req.param("id"), c.get("ownerId"));
   if (!existing) throw new HTTPException(404, { message: "Task not found" });
   await requireTaskManager(c, existing);
-  await requireAmaConnected(c.env.DB, c.env, c.get("ownerId"));
   if (existing.status === "todo" && existing.assigned_to === targetAgentId) {
-    const dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), existing, {
+    const existingSource = taskRuntimeSource(existing);
+    const source = existingSource ?? (await resolveAssignableWorkerRuntimeSource(c.env.DB, c.env, c.get("ownerId"), targetAgentId, 404));
+    const routed = existingSource
+      ? existing
+      : ((await updateTask(c.env.DB, existing.id, { metadata: metadataWithRuntimeSource(existing.metadata, source) })) ?? existing);
+    const dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), routed, {
       apiOrigin: new URL(c.req.url).origin,
       takeover: true,
       recordFailure: false,
@@ -1872,29 +1905,33 @@ api.post("/api/tasks/:id/assign", async (c) => {
   if (hasNoScheduleTaint(targetAgent.taints)) {
     throw new HTTPException(409, { message: "Agent is tainted NoSchedule and cannot be assigned normal tasks" });
   }
-  await assertAmaAssignableWorkerRuntime(c.env.DB, c.env, c.get("ownerId"), targetAgentId, 404);
+  const source = await resolveAssignableWorkerRuntimeSource(c.env.DB, c.env, c.get("ownerId"), targetAgentId, 404);
+  const routed = {
+    ...existing,
+    assigned_to: targetAgentId,
+    metadata: metadataWithRuntimeSource(existing.metadata, source),
+  };
 
-  try {
-    await dispatchTaskToAma(
-      c.env.DB,
-      c.env,
-      c.get("ownerId"),
-      { ...existing, assigned_to: targetAgentId },
-      {
-        apiOrigin: new URL(c.req.url).origin,
-        takeover: true,
-        recordFailure: false,
-      },
-    );
-  } catch (error) {
-    await clearAmaDispatchClaim(c.env.DB, existing);
-    throw error;
-  }
+  const assignmentToken = newLongId();
   const task = await assignTask(c.env.DB, c.req.param("id"), targetAgentId, actorType, actorId, sessionId, {
     skipRuntimeAvailability: isAmaTaskDispatchConfigured(c.env),
+    metadata: routed.metadata,
+    assignmentToken,
   });
   if (!task) throw new HTTPException(404, { message: "Task not found" });
-  return c.json(task);
+  try {
+    await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), task, {
+      apiOrigin: new URL(c.req.url).origin,
+      takeover: true,
+      recordFailure: false,
+    });
+  } catch (error) {
+    await rollbackTaskAssignment(c.env.DB, task.id, targetAgentId, assignmentToken, existing.metadata, existing.updated_at);
+    throw error;
+  }
+  const finalized = await finalizeTaskAssignment(c.env.DB, task.id, assignmentToken);
+  if (!finalized) throw new HTTPException(404, { message: "Task not found" });
+  return c.json(finalized);
 });
 
 api.post("/api/tasks/:id/cancel", async (c) => {

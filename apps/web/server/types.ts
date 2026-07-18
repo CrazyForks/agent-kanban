@@ -41,6 +41,7 @@ declare module "hono" {
     machineId?: string;
     agentId?: string;
     sessionId?: string;
+    agentRuntimeSource?: "ama" | "legacy";
     agentCapabilities?: string[];
     user?: User;
     session?: Session;

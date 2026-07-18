@@ -226,7 +226,7 @@ async function handleAgentIdentity(c: Context<{ Bindings: Env }>, identity: any,
      LIMIT 1`,
   )
     .bind(sessionId, sessionId)
-    .first<{ agent_id: string; kind: string; owner_id: string | null; source: string }>();
+    .first<{ agent_id: string; kind: string; owner_id: string | null; source: "ama" | "legacy" }>();
 
   if (!row) {
     return c.json({ error: { code: "FORBIDDEN", message: "Agent session is not registered" } }, 403);
@@ -240,6 +240,7 @@ async function handleAgentIdentity(c: Context<{ Bindings: Env }>, identity: any,
   c.set("ownerId", row.owner_id || identity.host?.userId || identity.user?.id);
   c.set("sessionId", sessionId);
   c.set("agentId", agentId);
+  c.set("agentRuntimeSource", row.source);
   c.set("machineId", row.source === "legacy" ? identity.agent.hostId : undefined);
   const kind = row.kind === "leader" ? "leader" : "worker";
   c.set("agentCapabilities", kind === "leader" ? LEADER_CAPABILITIES : WORKER_CAPABILITIES);

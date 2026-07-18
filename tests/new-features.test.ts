@@ -891,6 +891,7 @@ describe("dispatchTaskToAma includes git identity env in runtimeEnv", () => {
       title: "Git env task",
       board_id: board.id,
       assigned_to: agent.id,
+      metadata: { annotations: { "runtime.source": "ama" } },
       skipRuntimeAvailability: true,
     });
 

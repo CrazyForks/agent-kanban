@@ -205,7 +205,15 @@ export async function assertTaskOwner(db: D1, taskId: string, ownerId: string): 
 export async function listTasks(
   db: D1,
   ownerId: string,
-  filters: { repository_id?: string; status?: string; label?: string; board_id?: string; parent?: string; assigned_to?: string },
+  filters: {
+    repository_id?: string;
+    status?: string;
+    label?: string;
+    board_id?: string;
+    parent?: string;
+    assigned_to?: string;
+    runtime_source?: "ama" | "legacy";
+  },
 ): Promise<Task[]> {
   let query = `
     SELECT t.*, r.name as repository_name, b.type as board_type FROM tasks t
@@ -238,6 +246,10 @@ export async function listTasks(
   if (filters.assigned_to) {
     query += " AND t.assigned_to = ?";
     binds.push(filters.assigned_to);
+  }
+  if (filters.runtime_source) {
+    query += ` AND json_extract(t.metadata, '$.annotations."runtime.source"') = ?`;
+    binds.push(filters.runtime_source);
   }
 
   query += " ORDER BY t.position";
@@ -373,6 +385,7 @@ export async function claimTask(
   agentId: string,
   identity: IdentityType,
   sessionId: string | null = null,
+  expectedRuntimeSource?: "ama" | "legacy",
 ): Promise<Task | null> {
   const task = await db.prepare("SELECT * FROM tasks WHERE id = ?").bind(taskId).first<Task>();
   if (!task) return null;
@@ -381,15 +394,52 @@ export async function claimTask(
 
   const now = new Date().toISOString();
   const logId = newLongId();
-
-  await db.batch([
-    db.prepare("UPDATE tasks SET status = 'in_progress', updated_at = ? WHERE id = ?").bind(now, taskId),
+  const sourceGuard =
+    expectedRuntimeSource === "ama"
+      ? `AND (
+          json_extract(metadata, '$.annotations."runtime.source"') = ?
+          OR (
+            json_extract(metadata, '$.annotations."runtime.source"') IS NULL
+            AND (
+              json_type(metadata, '$.annotations."ama.sessionId"') = 'text'
+              OR json_type(metadata, '$.annotations."ama.dispatch.result"') = 'text'
+            )
+          )
+        )`
+      : expectedRuntimeSource === "legacy"
+        ? `AND json_extract(metadata, '$.annotations."runtime.source"') = ?`
+        : "";
+  const results = await db.batch([
     db
-      .prepare(
-        "INSERT INTO task_actions (id, task_id, actor_type, actor_id, action, detail, session_id, created_at) VALUES (?, ?, ?, ?, 'claimed', NULL, ?, ?)",
-      )
-      .bind(logId, taskId, identity, agentId, sessionId, now),
+      .prepare(`
+        UPDATE tasks SET
+          status = 'in_progress',
+          updated_at = ?,
+          metadata = json_set(
+            json_set(COALESCE(metadata, '{}'), '$.annotations', json(COALESCE(json_extract(metadata, '$.annotations'), '{}'))),
+            '$.annotations."runtime.claimToken"', ?
+          )
+        WHERE id = ? AND status = 'todo' AND assigned_to = ? ${sourceGuard}
+      `)
+      .bind(...(expectedRuntimeSource ? [now, logId, taskId, agentId, expectedRuntimeSource] : [now, logId, taskId, agentId])),
+    db
+      .prepare(`
+        INSERT INTO task_actions (id, task_id, actor_type, actor_id, action, detail, session_id, created_at)
+        SELECT ?, ?, ?, ?, 'claimed', NULL, ?, ?
+        FROM tasks
+        WHERE id = ? AND json_extract(metadata, '$.annotations."runtime.claimToken"') = ?
+      `)
+      .bind(logId, taskId, identity, agentId, sessionId, now, taskId, logId),
+    db
+      .prepare(`
+        UPDATE tasks SET metadata = json_remove(metadata, '$.annotations."runtime.claimToken"')
+        WHERE id = ? AND json_extract(metadata, '$.annotations."runtime.claimToken"') = ?
+      `)
+      .bind(taskId, logId),
   ]);
+  if ((results[0]?.meta?.changes ?? 0) === 0) {
+    throw new HTTPException(409, { message: "Task status, assignment, or runtime source changed before claim" });
+  }
 
   return parseTask({ ...task, status: "in_progress" as const, updated_at: now });
 }
@@ -401,7 +451,7 @@ export async function assignTask(
   actorType: string,
   actorId: string,
   sessionId: string | null = null,
-  options: { skipRuntimeAvailability?: boolean } = {},
+  options: { skipRuntimeAvailability?: boolean; metadata?: Record<string, unknown>; assignmentToken?: string } = {},
 ): Promise<Task | null> {
   const task = await db
     .prepare("SELECT t.*, b.owner_id as board_owner_id FROM tasks t JOIN boards b ON t.board_id = b.id WHERE t.id = ?")
@@ -415,18 +465,101 @@ export async function assignTask(
   await assertAssignableWorkerAgent(db, ownerId, targetAgentId, 404, options.skipRuntimeAvailability);
 
   const now = new Date().toISOString();
-  const logId = newLongId();
+  const logId = options.assignmentToken ?? newLongId();
 
-  await db.batch([
-    db.prepare("UPDATE tasks SET assigned_to = ?, updated_at = ? WHERE id = ? AND assigned_to IS NULL").bind(targetAgentId, now, taskId),
+  const metadata = options.metadata ?? parseTask(taskRow).metadata;
+  const statements = [
+    db
+      .prepare(`
+        UPDATE tasks SET
+          assigned_to = ?,
+          metadata = json_set(
+            json_set(?, '$.annotations', json(COALESCE(json_extract(?, '$.annotations'), '{}'))),
+            '$.annotations."runtime.assignmentToken"', ?
+          ),
+          updated_at = ?
+        WHERE id = ? AND status = 'todo' AND assigned_to IS NULL
+      `)
+      .bind(targetAgentId, JSON.stringify(metadata ?? {}), JSON.stringify(metadata ?? {}), logId, now, taskId),
     db
       .prepare(
-        "INSERT INTO task_actions (id, task_id, actor_type, actor_id, action, detail, session_id, created_at) VALUES (?, ?, ?, ?, 'assigned', NULL, ?, ?)",
+        `INSERT INTO task_actions (id, task_id, actor_type, actor_id, action, detail, session_id, created_at)
+         SELECT ?, ?, ?, ?, 'assigned', NULL, ?, ?
+         FROM tasks
+         WHERE id = ? AND json_extract(metadata, '$.annotations."runtime.assignmentToken"') = ?`,
       )
-      .bind(logId, taskId, actorType, actorId, sessionId, now),
-  ]);
+      .bind(logId, taskId, actorType, actorId, sessionId, now, taskId, logId),
+  ];
+  if (!options.assignmentToken) {
+    statements.push(
+      db
+        .prepare(`
+          UPDATE tasks SET metadata = json_remove(metadata, '$.annotations."runtime.assignmentToken"')
+          WHERE id = ? AND json_extract(metadata, '$.annotations."runtime.assignmentToken"') = ?
+        `)
+        .bind(taskId, logId),
+    );
+  }
+  const results = await db.batch(statements);
+  if ((results[0]?.meta?.changes ?? 0) === 0) {
+    throw new HTTPException(409, { message: "Task status or assignment changed before assignment" });
+  }
 
-  return parseTask({ ...taskRow, assigned_to: targetAgentId, updated_at: now } as Task);
+  return parseTask({ ...taskRow, assigned_to: targetAgentId, metadata, updated_at: now } as Task);
+}
+
+export async function finalizeTaskAssignment(db: D1, taskId: string, assignmentToken: string): Promise<Task | null> {
+  await db
+    .prepare(`
+      UPDATE tasks SET metadata = json_remove(metadata, '$.annotations."runtime.assignmentToken"')
+      WHERE id = ? AND json_extract(metadata, '$.annotations."runtime.assignmentToken"') = ?
+    `)
+    .bind(taskId, assignmentToken)
+    .run();
+  const task = await db.prepare("SELECT * FROM tasks WHERE id = ?").bind(taskId).first<Task>();
+  return task ? parseTask(task) : null;
+}
+
+export async function rollbackTaskAssignment(
+  db: D1,
+  taskId: string,
+  targetAgentId: string,
+  assignmentToken: string,
+  metadata: Record<string, unknown> | null,
+  updatedAt: string,
+): Promise<boolean> {
+  const results = await db.batch([
+    db
+      .prepare(`
+        UPDATE tasks SET assigned_to = NULL, updated_at = ?
+        WHERE id = ?
+          AND status = 'todo'
+          AND assigned_to = ?
+          AND json_extract(metadata, '$.annotations."runtime.assignmentToken"') = ?
+      `)
+      .bind(updatedAt, taskId, targetAgentId, assignmentToken),
+    db
+      .prepare(`
+        DELETE FROM task_actions
+        WHERE id = ? AND task_id = ?
+          AND EXISTS (
+            SELECT 1 FROM tasks
+            WHERE id = ?
+              AND assigned_to IS NULL
+              AND json_extract(metadata, '$.annotations."runtime.assignmentToken"') = ?
+          )
+      `)
+      .bind(assignmentToken, taskId, taskId, assignmentToken),
+    db
+      .prepare(`
+        UPDATE tasks SET metadata = ?
+        WHERE id = ?
+          AND assigned_to IS NULL
+          AND json_extract(metadata, '$.annotations."runtime.assignmentToken"') = ?
+      `)
+      .bind(JSON.stringify(metadata ?? {}), taskId, assignmentToken),
+  ]);
+  return (results[0]?.meta?.changes ?? 0) > 0;
 }
 
 export async function completeTask(

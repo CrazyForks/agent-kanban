@@ -252,6 +252,7 @@ describe("routes", () => {
   let agentId: string;
   let sessionId: string;
   let sessionPrivateKey: CryptoKey;
+  let amaSessionId: string;
   let leaderAgentId: string;
   let leaderSessionId: string;
   let leaderSessionPrivateKey: CryptoKey;
@@ -280,7 +281,9 @@ describe("routes", () => {
     // link exists so the per-user token resolves (idempotent across owners).
     const linked = await env.DB.prepare("SELECT 1 FROM account WHERE userId = ? AND providerId = 'ama'").bind(ownerId).first();
     if (!linked) await linkAmaAccount(env.DB, ownerId);
-    const now = new Date().toISOString();
+    // AMA-only fixtures must not accidentally exercise the legacy heartbeat
+    // fallback. The runner mock below is the intended availability source.
+    const now = new Date(Date.now() - 61_000).toISOString();
     await env.DB.prepare(
       `INSERT INTO ama_owner_integrations (owner_id, ama_project_id, external_tenant_id, session_secret_vault_id, metadata)
        VALUES (?, ?, ?, ?, '{}')
@@ -315,6 +318,14 @@ describe("routes", () => {
 
   async function signSessionJWT(): Promise<string> {
     return new SignJWT({ sub: sessionId, aid: agentId, jti: randomUUID(), aud: BETTER_AUTH_URL })
+      .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
+      .setIssuedAt()
+      .setExpirationTime("60s")
+      .sign(sessionPrivateKey);
+  }
+
+  async function signAmaSessionJWT(): Promise<string> {
+    return new SignJWT({ sub: amaSessionId, aid: agentId, jti: randomUUID(), aud: BETTER_AUTH_URL })
       .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
       .setIssuedAt()
       .setExpirationTime("60s")
@@ -369,7 +380,15 @@ describe("routes", () => {
       },
       apiKey,
     );
-
+    amaSessionId = randomUUID();
+    const { createAmaAgentSession } = await import("../apps/web/server/agentSessionRepo");
+    await createAmaAgentSession(env.DB, env, {
+      ownerId: userId,
+      agentId,
+      sessionId: amaSessionId,
+      sessionPublicKey: pubJwk.x!,
+      amaSessionId: `ama-${amaSessionId}`,
+    });
     // Create a leader agent and session for complete/cancel/reject tests
     const leaderAgent = await createTestAgent(env.DB, userId, {
       name: "Routes Leader Agent",
@@ -1730,7 +1749,7 @@ describe("routes", () => {
     ]);
   });
 
-  it("GET /api/agents uses AMA runner load and capabilities as runtime availability source", async () => {
+  it("GET /api/agents keeps full AMA runtimes schedulable because capacity does not change ownership", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
       AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
@@ -1789,20 +1808,16 @@ describe("routes", () => {
       const res = await apiRequest("GET", "/api/agents?kind=worker&role=ama-runtime-source&available=true", undefined, apiKey);
       expect(res.status).toBe(200);
       const body = (await res.json()) as any[];
-      expect(body).toHaveLength(1);
-      expect(body[0]).toMatchObject({
-        username: "ama-available-agent",
-        status: expect.objectContaining({ schedulable: true }),
-      });
+      expect(body).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ username: "ama-available-agent", status: expect.objectContaining({ schedulable: true }) }),
+          expect.objectContaining({ username: "ama-full-agent", status: expect.objectContaining({ schedulable: true }) }),
+        ]),
+      );
 
       const unavailableRes = await apiRequest("GET", "/api/agents?kind=worker&role=ama-runtime-source&available=false", undefined, apiKey);
       expect(unavailableRes.status).toBe(200);
-      await expect(unavailableRes.json()).resolves.toEqual([
-        expect.objectContaining({
-          username: "ama-full-agent",
-          status: expect.objectContaining({ schedulable: false }),
-        }),
-      ]);
+      await expect(unavailableRes.json()).resolves.toEqual([]);
     } finally {
       Object.assign(env, previousAma);
       vi.unstubAllGlobals();
@@ -2849,6 +2864,7 @@ describe("routes", () => {
 
     const taskDetail = "Use the detail alias in the task dispatch prompt.";
     let runtimePrivateKeyJwk: JsonWebKey | null = null;
+    let createdAmaSessionCount = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") {
@@ -2880,8 +2896,9 @@ describe("routes", () => {
         return jsonResponse(amaCredential("vaultcred_123", "vaultver_123"), 201);
       }
       if (url === "https://ama.test/api/v1/sessions") {
+        createdAmaSessionCount += 1;
         const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
-        expect(body.metadata.name).toContain("AMA dispatched task");
+        expect(body.metadata.name).toContain(createdAmaSessionCount === 1 ? "Immediate AMA assignment" : "AMA dispatched task");
         expect(body.spec.agentId).toBe("ama_agent_123");
         expect(body.spec.environmentId).toBe("env_123");
         expect(body.spec.runtime).toBe("claude-code");
@@ -2902,13 +2919,51 @@ describe("routes", () => {
         expect(body.prompt).not.toContain(taskDetail);
         expect(body.prompt).not.toContain("Task detail:");
         expect(JSON.stringify(body)).not.toContain("board_");
-        return jsonResponse(amaSession("session_ama_123", { agentId: body.spec.agentId, environmentId: "env_123", runtime: body.spec.runtime }), 201);
+        const sessionId = createdAmaSessionCount === 1 ? "session_ama_assign_success" : "session_ama_123";
+        return jsonResponse(amaSession(sessionId, { agentId: body.spec.agentId, environmentId: "env_123", runtime: body.spec.runtime }), 201);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
 
     try {
+      const { createTask } = await import("../apps/web/server/taskRepo");
+      const scheduled = await createTask(env.DB, userId, {
+        title: "Scheduled AMA assignment",
+        board_id: boardId,
+        scheduled_at: new Date(Date.now() + 3_600_000).toISOString(),
+      });
+      const leaderJwt = await signLeaderSessionJWT();
+      const scheduledAssign = await apiRequest("POST", `/api/tasks/${scheduled.id}/assign`, { agent_id: agentId }, leaderJwt);
+      expect(scheduledAssign.status).toBe(200);
+      const scheduledBody = (await scheduledAssign.json()) as any;
+      expect(scheduledBody.metadata.annotations["runtime.source"]).toBe("ama");
+      expect(scheduledBody.metadata.annotations["ama.sessionId"]).toBeUndefined();
+      expect(scheduledBody.metadata.annotations["runtime.assignmentToken"]).toBeUndefined();
+      const persistedScheduled = await env.DB.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(scheduled.id).first<{ metadata: string }>();
+      const persistedScheduledMetadata = JSON.parse(persistedScheduled!.metadata);
+      expect(persistedScheduledMetadata.annotations["runtime.source"]).toBe("ama");
+      expect(persistedScheduledMetadata.annotations["runtime.assignmentToken"]).toBeUndefined();
+
+      const sameAgentAssign = await apiRequest("POST", `/api/tasks/${scheduled.id}/assign`, { agent_id: agentId }, leaderJwt);
+      expect(sameAgentAssign.status).toBe(200);
+      const sameAgentBody = (await sameAgentAssign.json()) as any;
+      expect(sameAgentBody.metadata.annotations["runtime.source"]).toBe("ama");
+      expect(sameAgentBody.metadata.annotations["runtime.assignmentToken"]).toBeUndefined();
+
+      const immediate = await createTask(env.DB, userId, { title: "Immediate AMA assignment", board_id: boardId });
+      const immediateAssign = await apiRequest("POST", `/api/tasks/${immediate.id}/assign`, { agent_id: agentId }, leaderJwt);
+      expect(immediateAssign.status).toBe(200);
+      const immediateBody = (await immediateAssign.json()) as any;
+      expect(immediateBody.metadata.annotations).toMatchObject({
+        "runtime.source": "ama",
+        "ama.sessionId": "session_ama_assign_success",
+        "ama.dispatch.result": "accepted",
+      });
+      expect(immediateBody.metadata.annotations).not.toHaveProperty("runtime.assignmentToken");
+      const persistedImmediate = await env.DB.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(immediate.id).first<{ metadata: string }>();
+      expect(JSON.parse(persistedImmediate!.metadata).annotations).not.toHaveProperty("runtime.assignmentToken");
+
       const jwt = await signSessionJWT();
       const res = await apiRequest(
         "POST",
@@ -2934,9 +2989,13 @@ describe("routes", () => {
         "ama.dispatch.result": "accepted",
       });
       expect(body.metadata.annotations).not.toHaveProperty("ama.runtimeSecretEnv.AK_AGENT_KEY");
+      expect(body.metadata.annotations).not.toHaveProperty("runtime.assignmentToken");
       expect(body.metadata.annotations.agentSessionId).toEqual(expect.any(String));
-      const taskRow = await env.DB.prepare("SELECT description FROM tasks WHERE id = ?").bind(body.id).first<{ description: string }>();
+      const taskRow = await env.DB.prepare("SELECT description, metadata FROM tasks WHERE id = ?")
+        .bind(body.id)
+        .first<{ description: string; metadata: string }>();
       expect(taskRow?.description).toBe(taskDetail);
+      expect(JSON.parse(taskRow!.metadata).annotations).not.toHaveProperty("runtime.assignmentToken");
 
       const sessionRow = await env.DB.prepare("SELECT ama_session_id, status FROM ama_agent_sessions WHERE id = ?")
         .bind(body.metadata.annotations.agentSessionId)
@@ -3067,26 +3126,29 @@ describe("routes", () => {
       username: `assign-failure-${randomUUID()}`,
       runtime: "codex",
     });
+    await setAgentAmaId(env.DB, tempAgent.id, "ama_agent_assign_failure");
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") {
         return jsonResponse({ access_token: "oauth-token" });
       }
-      if (url === "https://ama.test/api/v1/environments/env_123") {
+      if (url === "https://ama.test/api/v1/projects/project_123") {
+        return jsonResponse({ id: "project_123", name: "Workspace" });
+      }
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_123&limit=100") {
         return jsonResponse({
-          metadata: { uid: "env_123", projectId: "project_123", name: "env_123", description: null, archivedAt: null },
-          spec: {},
-          status: {},
+          data: [
+            {
+              id: "runner_assign_failure",
+              environmentId: "env_123",
+              state: "active",
+              capabilities: ["codex"],
+              currentLoad: 0,
+              maxConcurrent: 1,
+              lastHeartbeatAt: new Date().toISOString(),
+            },
+          ],
         });
-      }
-      if (url === "https://ama.test/api/v1/providers?limit=100") {
-        return jsonResponse({ data: [{ id: "provider_codex", status: "active" }] });
-      }
-      if (url === "https://ama.test/api/v1/providers/provider_codex/models?limit=100") {
-        return jsonResponse({ data: [{ modelId: "gpt-5.3-codex", availability: "available", metadata: { runtime: "codex" } }] });
-      }
-      if (url === "https://ama.test/api/v1/agents") {
-        return jsonResponse(amaAgent("ama_agent_123", { projectId: "project_123", provider: "openai", model: "gpt-5.3-codex" }), 201);
       }
       if (url === "https://ama.test/api/v1/vaults/vault_123/credentials") {
         return jsonResponse(amaCredential("vaultcred_123", "vaultver_123"), 201);
@@ -3100,16 +3162,26 @@ describe("routes", () => {
 
     try {
       const { createTask } = await import("../apps/web/server/taskRepo");
-      const task = await createTask(env.DB, userId, { title: "Assign dispatch failure", board_id: boardId });
+      const originalMetadata = { annotations: { retained: "original" }, request: { source: "regression" } };
+      const task = await createTask(env.DB, userId, {
+        title: "Assign dispatch failure",
+        board_id: boardId,
+        metadata: originalMetadata,
+      });
       const leaderJwt = await signLeaderSessionJWT();
       const res = await apiRequest("POST", `/api/tasks/${task.id}/assign`, { agent_id: tempAgent.id }, leaderJwt);
       expect(res.status).toBe(500);
-      const row = await env.DB.prepare("SELECT assigned_to FROM tasks WHERE id = ?").bind(task.id).first<{ assigned_to: string | null }>();
-      expect(row?.assigned_to).toBeNull();
-      const action = await env.DB.prepare("SELECT action, detail FROM task_actions WHERE task_id = ? ORDER BY created_at DESC LIMIT 1")
+      const row = await env.DB.prepare("SELECT assigned_to, metadata, updated_at FROM tasks WHERE id = ?")
         .bind(task.id)
-        .first<{ action: string; detail: string }>();
-      expect(action?.action).not.toBe("released");
+        .first<{ assigned_to: string | null; metadata: string; updated_at: string }>();
+      expect(row?.assigned_to).toBeNull();
+      expect(JSON.parse(row!.metadata)).toEqual(originalMetadata);
+      expect(row?.updated_at).toBe(task.updated_at);
+      expect(JSON.parse(row!.metadata).annotations).not.toHaveProperty("runtime.assignmentToken");
+      const assignedActions = await env.DB.prepare("SELECT COUNT(*) AS count FROM task_actions WHERE task_id = ? AND action = 'assigned'")
+        .bind(task.id)
+        .first<{ count: number }>();
+      expect(assignedActions?.count).toBe(0);
     } finally {
       Object.assign(env, previousAma);
       vi.unstubAllGlobals();
@@ -3224,7 +3296,8 @@ describe("routes", () => {
         title: "Release redispatch task",
         board_id: boardId,
         assigned_to: tempAgent.id,
-        metadata: { annotations: { "ama.sessionId": "session_release_old", "ama.projectId": "project_123" } },
+        metadata: { annotations: { "runtime.source": "ama", "ama.sessionId": "session_release_old", "ama.projectId": "project_123" } },
+        skipRuntimeAvailability: true,
       });
       await env.DB.prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ?").bind(task.id).run();
 
@@ -3311,6 +3384,26 @@ describe("routes", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(Array.isArray(body)).toBe(true);
+  });
+
+  it("GET /api/tasks exposes only legacy-owned tasks to a machine identity", async () => {
+    const { createTask } = await import("../apps/web/server/taskRepo");
+    const legacyTask = await createTask(env.DB, userId, {
+      title: "Legacy polling task",
+      board_id: boardId,
+      metadata: { annotations: { "runtime.source": "legacy" } },
+    });
+    const amaTask = await createTask(env.DB, userId, {
+      title: "AMA polling task",
+      board_id: boardId,
+      metadata: { annotations: { "runtime.source": "ama" } },
+    });
+
+    const res = await apiRequest("GET", "/api/tasks", undefined, apiKey);
+    expect(res.status).toBe(200);
+    const ids = ((await res.json()) as Array<{ id: string }>).map((task) => task.id);
+    expect(ids).toContain(legacyTask.id);
+    expect(ids).not.toContain(amaTask.id);
   });
 
   it("GET /api/tasks/:id returns a task", async () => {
@@ -4236,7 +4329,7 @@ describe("routes", () => {
                 capabilities: ["codex"],
                 currentLoad: 2,
                 maxConcurrent: 5,
-                lastHeartbeatAt: "2026-06-08T12:01:00.000Z",
+                lastHeartbeatAt: new Date().toISOString(),
               },
             ],
           });
@@ -4253,6 +4346,74 @@ describe("routes", () => {
       expect(body.usage_info).toEqual(usageInfo);
       expect(body.active_session_count).toBe(2);
       expect(body.runner_capacity).toBe(5);
+    } finally {
+      Object.assign(env, previousAma);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("GET /api/machines/:id merges fresh legacy runtimes that active AMA runners do not expose", async () => {
+    const previousAma = {
+      AMA_ORIGIN: env.AMA_ORIGIN,
+      AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
+      AMA_OIDC_CLIENT_ID: env.AMA_OIDC_CLIENT_ID,
+      AMA_OIDC_CLIENT_SECRET: env.AMA_OIDC_CLIENT_SECRET,
+    };
+    Object.assign(env, {
+      AMA_ORIGIN: "https://ama.test",
+      AMA_OIDC_ISSUER: "https://auth.test",
+      AMA_OIDC_CLIENT_ID: "ak-app",
+      AMA_OIDC_CLIENT_SECRET: "ak-secret",
+    });
+    await configureAmaOwnerRuntime(userId, "codex", "env_mixed_runtime");
+    const machine = await env.DB.prepare("SELECT id FROM machines WHERE owner_id = ? AND ama_environment_id = ?")
+      .bind(userId, "env_mixed_runtime")
+      .first<{ id: string }>();
+    const legacyHeartbeat = new Date().toISOString();
+    await env.DB.prepare("UPDATE machines SET runtimes = ?, status = 'online', last_heartbeat_at = ? WHERE id = ?")
+      .bind(
+        JSON.stringify([
+          { name: "claude", status: "ready", checked_at: legacyHeartbeat },
+          { name: "codex", status: "ready", checked_at: legacyHeartbeat },
+        ]),
+        legacyHeartbeat,
+        machine!.id,
+      )
+      .run();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = reqUrl(input);
+        if (url === "https://ama.test/api/v1/runners?environmentId=env_mixed_runtime&limit=100") {
+          return jsonResponse({
+            data: [
+              {
+                id: "runner_mixed_runtime",
+                environmentId: "env_mixed_runtime",
+                state: "active",
+                capabilities: ["codex"],
+                currentLoad: 0,
+                maxConcurrent: 2,
+                lastHeartbeatAt: new Date(Date.now() - 10_000).toISOString(),
+              },
+            ],
+          });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    try {
+      const res = await apiRequest("GET", `/api/machines/${machine!.id}`, undefined, apiKey);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as any;
+      expect(body.runtimes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "claude", status: "ready" }),
+          expect.objectContaining({ name: "codex", status: "ready" }),
+        ]),
+      );
+      expect(body.last_heartbeat_at).toBe(legacyHeartbeat);
     } finally {
       Object.assign(env, previousAma);
       vi.unstubAllGlobals();
@@ -4580,13 +4741,46 @@ describe("routes", () => {
     await apiRequest("POST", `/api/agents/${agentId}/sessions/${sessionId}/reopen`, {}, apiKey);
 
     const { createTask, assignTask } = await import("../apps/web/server/taskRepo");
-    const task = await createTask(env.DB, userId, { title: "Agent Claim Task", board_id: boardId });
+    const task = await createTask(env.DB, userId, {
+      title: "Agent Claim Task",
+      board_id: boardId,
+      metadata: { annotations: { "runtime.source": "legacy" } },
+    });
     await assignTask(env.DB, task.id, agentId, "machine", "system");
     const jwt = await signSessionJWT();
     const res = await apiRequest("POST", `/api/tasks/${task.id}/claim`, {}, jwt);
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.status).toBe("in_progress");
+  });
+
+  it("POST /api/tasks/:id/claim enforces the authenticated session runtime source", async () => {
+    const { createTask } = await import("../apps/web/server/taskRepo");
+    const createAssigned = (title: string, source: "ama" | "legacy") =>
+      createTask(env.DB, userId, {
+        title,
+        board_id: boardId,
+        assigned_to: agentId,
+        metadata: { annotations: { "runtime.source": source } },
+        skipRuntimeAvailability: true,
+      });
+    const legacyJwt = await signSessionJWT();
+    const amaJwt = await signAmaSessionJWT();
+    const amaForLegacy = await createAssigned("AMA task for legacy claim", "ama");
+    const legacyForAma = await createAssigned("Legacy task for AMA claim", "legacy");
+    const amaMatch = await createAssigned("AMA matching claim", "ama");
+
+    const legacyMismatch = await apiRequest("POST", `/api/tasks/${amaForLegacy.id}/claim`, {}, legacyJwt);
+    expect(legacyMismatch.status).toBe(409);
+    await expect(legacyMismatch.json()).resolves.toMatchObject({ error: { message: "Task is routed to a different runtime source" } });
+
+    const amaMismatch = await apiRequest("POST", `/api/tasks/${legacyForAma.id}/claim`, {}, amaJwt);
+    expect(amaMismatch.status).toBe(409);
+    await expect(amaMismatch.json()).resolves.toMatchObject({ error: { message: "Task is routed to a different runtime source" } });
+
+    const matching = await apiRequest("POST", `/api/tasks/${amaMatch.id}/claim`, {}, amaJwt);
+    expect(matching.status).toBe(200);
+    await expect(matching.json()).resolves.toMatchObject({ id: amaMatch.id, status: "in_progress" });
   });
 
   it("POST /api/tasks/:id/review works with agent JWT", async () => {

@@ -206,7 +206,9 @@ describe("CLI ApiClient agent JWT passthrough", () => {
     taskId = task.id;
 
     // Assign task to the worker agent so the worker can claim it in subsequent tests
-    await assignTask(testEnv.DB, taskId, agentId, "machine", "system");
+    await assignTask(testEnv.DB, taskId, agentId, "machine", "system", null, {
+      metadata: { annotations: { "runtime.source": "legacy" } },
+    });
   }, 10_000);
 
   it("ApiClient constructs valid session JWT that server accepts for claim", async () => {

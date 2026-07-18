@@ -225,6 +225,8 @@ function busyRunnerResponse(environmentId: string, runtime: string) {
   return activeRunnerResponse(environmentId, runtime, 1, 1);
 }
 
+const amaTaskMetadata = { annotations: { "runtime.source": "ama" } };
+
 // ─── 1. dispatchTaskToAma policy guards ──────────────────────────────────────
 
 describe("dispatchTaskToAma policy", () => {
@@ -244,6 +246,7 @@ describe("dispatchTaskToAma policy", () => {
       board_id: board.id,
       assigned_to: agent.id,
       depends_on: [blocker.id],
+      metadata: amaTaskMetadata,
       skipRuntimeAvailability: true,
     });
 
@@ -278,6 +281,7 @@ describe("dispatchTaskToAma policy", () => {
       board_id: board.id,
       assigned_to: agent.id,
       scheduled_at: future,
+      metadata: amaTaskMetadata,
       skipRuntimeAvailability: true,
     });
 
@@ -305,6 +309,7 @@ describe("dispatchTaskToAma policy", () => {
       title: "Busy runner task",
       board_id: board.id,
       assigned_to: agent.id,
+      metadata: amaTaskMetadata,
       skipRuntimeAvailability: true,
     });
 
@@ -348,6 +353,7 @@ describe("dispatchTaskToAma policy", () => {
       title: "No machine task",
       board_id: board.id,
       assigned_to: agent.id,
+      metadata: amaTaskMetadata,
       skipRuntimeAvailability: true,
     });
 
@@ -478,6 +484,7 @@ describe("dispatchTaskToAma model-precise candidate selection", () => {
       title: "Model prefer task",
       board_id: board.id,
       assigned_to: agent.id,
+      metadata: amaTaskMetadata,
       skipRuntimeAvailability: true,
     });
 
@@ -531,6 +538,7 @@ describe("dispatchTaskToAma model-precise candidate selection", () => {
       title: "Model mismatch task",
       board_id: board.id,
       assigned_to: agent.id,
+      metadata: amaTaskMetadata,
       skipRuntimeAvailability: true,
     });
 
@@ -577,6 +585,7 @@ describe("dispatchPendingAmaTasks", () => {
       title: "Pending sweep task",
       board_id: board.id,
       assigned_to: agent.id,
+      metadata: amaTaskMetadata,
     });
 
     let sessionCreated = false;
@@ -627,6 +636,7 @@ describe("dispatchPendingAmaTasks", () => {
       board_id: board.id,
       assigned_to: agent.id,
       depends_on: [blocker.id],
+      metadata: amaTaskMetadata,
     });
 
     const sessionPostCalls: string[] = [];
@@ -672,6 +682,7 @@ describe("dispatchPendingAmaTasks", () => {
       board_id: board.id,
       assigned_to: agent.id,
       depends_on: [blocker.id],
+      metadata: amaTaskMetadata,
     });
 
     // First sweep — blocked, no session
@@ -740,6 +751,7 @@ describe("reconcileAmaBoundTasks", () => {
       skipRuntimeAvailability: true,
       metadata: {
         annotations: {
+          "runtime.source": "ama",
           "ama.sessionId": sessionId,
           "ama.projectId": "project_123",
           "ama.dispatch.result": "accepted",
@@ -1181,6 +1193,7 @@ describe("detectAndReleaseStaleAll with AMA binding", () => {
       skipRuntimeAvailability: true,
       metadata: {
         annotations: {
+          "runtime.source": "ama",
           "ama.sessionId": sessionId,
           "ama.projectId": "project_123",
           "ama.dispatch.result": "accepted",
@@ -1275,6 +1288,7 @@ describe("POST /api/tasks/:id/reject AMA 409 handling", () => {
       skipRuntimeAvailability: true,
       metadata: {
         annotations: {
+          "runtime.source": "ama",
           "ama.projectId": "project_123",
           "ama.sessionId": amaSessionId,
           "ama.dispatch.result": "accepted",
@@ -1811,6 +1825,7 @@ describe("dispatchTaskToAma — GitHub clone credential (GitHub App installation
       board_id: board.id,
       assigned_to: agent.id,
       repository_id: repoId,
+      metadata: amaTaskMetadata,
     });
     return task;
   }
@@ -2024,6 +2039,7 @@ describe("dispatchTaskToAma with cloud runtime (ama)", () => {
       description: "Sensitive cloud task detail must be fetched with describe.",
       board_id: board.id,
       assigned_to: agent.id,
+      metadata: amaTaskMetadata,
       skipRuntimeAvailability: true,
     });
 
@@ -2101,6 +2117,7 @@ describe("taskResourceRefs with repository_id", () => {
       board_id: board.id,
       assigned_to: agent.id,
       repository_id: repoId,
+      metadata: amaTaskMetadata,
     });
 
     let sessionBody: Record<string, any> | null = null;
@@ -2373,6 +2390,7 @@ describe("dispatch task_actions (dispatch_failed / dispatched)", () => {
       title: "Dispatch failed action task",
       board_id: board.id,
       assigned_to: agent.id,
+      metadata: amaTaskMetadata,
       skipRuntimeAvailability: true,
     });
 
@@ -2424,6 +2442,7 @@ describe("dispatch task_actions (dispatch_failed / dispatched)", () => {
       title: "Dispatch failed dedupe task",
       board_id: board.id,
       assigned_to: agent.id,
+      metadata: amaTaskMetadata,
       skipRuntimeAvailability: true,
     });
 
@@ -2490,6 +2509,7 @@ describe("dispatch task_actions (dispatch_failed / dispatched)", () => {
       title: "Dispatch failed new reason task",
       board_id: board.id,
       assigned_to: agent.id,
+      metadata: amaTaskMetadata,
       skipRuntimeAvailability: true,
     });
 
@@ -2560,6 +2580,7 @@ describe("dispatch task_actions (dispatch_failed / dispatched)", () => {
       skipRuntimeAvailability: true,
       metadata: {
         annotations: {
+          "runtime.source": "ama",
           "ama.dispatch.lastReason": "previous error reason",
           "ama.dispatch.attempts": 2,
           "ama.dispatch.nextRetryAt": new Date(Date.now() - 1000).toISOString(),
@@ -2613,6 +2634,7 @@ describe("re-dispatch backoff (Feature B)", () => {
       title: "Backoff task",
       board_id: board.id,
       assigned_to: agent.id,
+      metadata: amaTaskMetadata,
       skipRuntimeAvailability: true,
     });
 
@@ -2674,6 +2696,7 @@ describe("re-dispatch backoff (Feature B)", () => {
       skipRuntimeAvailability: true,
       metadata: {
         annotations: {
+          "runtime.source": "ama",
           "ama.dispatch.attempts": 1,
           "ama.dispatch.nextRetryAt": futureRetryAt,
         },
@@ -2723,6 +2746,7 @@ describe("re-dispatch backoff (Feature B)", () => {
       skipRuntimeAvailability: true,
       metadata: {
         annotations: {
+          "runtime.source": "ama",
           "ama.dispatch.attempts": 2,
           "ama.dispatch.nextRetryAt": futureRetryAt,
         },

@@ -358,6 +358,50 @@ describe("task lifecycle repo functions", () => {
       await assignTask(env.DB, task.id, testAgentId, "machine", "system");
       await expect(claimTask(env.DB, task.id, otherAgentId, "agent:worker")).rejects.toThrow("not assigned");
     });
+
+    it("rejects a runtime-source mismatch atomically without status or action changes", async () => {
+      const { claimTask, assignTask } = await import("../apps/web/server/taskRepo");
+      const task = await createTestTask();
+      await assignTask(env.DB, task.id, testAgentId, "machine", "system", null, {
+        metadata: { annotations: { "runtime.source": "legacy" } },
+      });
+
+      await expect(claimTask(env.DB, task.id, testAgentId, "agent:worker", "session-mismatch", "ama")).rejects.toThrow("runtime source changed");
+      const stored = await env.DB.prepare("SELECT status FROM tasks WHERE id = ?").bind(task.id).first<{ status: string }>();
+      const claimedActions = await env.DB.prepare("SELECT COUNT(*) AS count FROM task_actions WHERE task_id = ? AND action = 'claimed'")
+        .bind(task.id)
+        .first<{ count: number }>();
+      expect(stored?.status).toBe("todo");
+      expect(claimedActions?.count).toBe(0);
+      const failedMetadata = await env.DB.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(task.id).first<{ metadata: string }>();
+      expect(JSON.parse(failedMetadata!.metadata).annotations).not.toHaveProperty("runtime.claimToken");
+
+      const claimed = await claimTask(env.DB, task.id, testAgentId, "agent:worker", "session-match", "legacy");
+      expect(claimed?.status).toBe("in_progress");
+      const successfulMetadata = await env.DB.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(task.id).first<{ metadata: string }>();
+      expect(JSON.parse(successfulMetadata!.metadata).annotations).not.toHaveProperty("runtime.claimToken");
+    });
+
+    it("accepts an AMA claim for rollout tasks with only legacy AMA binding annotations", async () => {
+      const { claimTask, assignTask } = await import("../apps/web/server/taskRepo");
+      const task = await createTestTask();
+      await assignTask(env.DB, task.id, testAgentId, "machine", "system", null, {
+        metadata: { annotations: { "ama.sessionId": "rollout-session", "ama.dispatch.result": "accepted" } },
+      });
+
+      const claimed = await claimTask(env.DB, task.id, testAgentId, "agent:worker", "rollout-ak-session", "ama");
+      expect(claimed?.status).toBe("in_progress");
+      const stored = await env.DB.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(task.id).first<{ metadata: string }>();
+      expect(JSON.parse(stored!.metadata).annotations).toMatchObject({
+        "ama.sessionId": "rollout-session",
+        "ama.dispatch.result": "accepted",
+      });
+      expect(JSON.parse(stored!.metadata).annotations).not.toHaveProperty("runtime.claimToken");
+      const claimedActions = await env.DB.prepare("SELECT COUNT(*) AS count FROM task_actions WHERE task_id = ? AND action = 'claimed'")
+        .bind(task.id)
+        .first<{ count: number }>();
+      expect(claimedActions?.count).toBe(1);
+    });
   });
 
   describe("review", () => {
@@ -556,6 +600,38 @@ describe("task lifecycle repo functions", () => {
       const task = await createTestTask();
       await assignTask(env.DB, task.id, testAgentId, "machine", "system");
       await expect(assignTask(env.DB, task.id, otherAgentId, "machine", "system")).rejects.toThrow("already assigned");
+    });
+
+    it("allows exactly one concurrent assignment winner without a fabricated action or token", async () => {
+      const { assignTask } = await import("../apps/web/server/taskRepo");
+      const task = await createTestTask();
+      const attempts = await Promise.allSettled([
+        assignTask(env.DB, task.id, testAgentId, "machine", "assigner-one", null, {
+          metadata: { annotations: { "runtime.source": "legacy" } },
+        }),
+        assignTask(env.DB, task.id, otherAgentId, "machine", "assigner-two", null, {
+          metadata: { annotations: { "runtime.source": "legacy" } },
+        }),
+      ]);
+
+      const winners = attempts.filter((attempt) => attempt.status === "fulfilled");
+      const losers = attempts.filter((attempt) => attempt.status === "rejected") as PromiseRejectedResult[];
+      expect(winners).toHaveLength(1);
+      expect(losers).toHaveLength(1);
+      expect(losers[0]!.reason).toMatchObject({ status: 409 });
+
+      const stored = await env.DB.prepare("SELECT assigned_to, metadata FROM tasks WHERE id = ?")
+        .bind(task.id)
+        .first<{ assigned_to: string; metadata: string }>();
+      expect([testAgentId, otherAgentId]).toContain(stored?.assigned_to);
+      expect(JSON.parse(stored!.metadata).annotations).toMatchObject({ "runtime.source": "legacy" });
+      expect(JSON.parse(stored!.metadata).annotations).not.toHaveProperty("runtime.assignmentToken");
+
+      const actions = await env.DB.prepare("SELECT actor_id FROM task_actions WHERE task_id = ? AND action = 'assigned'")
+        .bind(task.id)
+        .all<{ actor_id: string }>();
+      expect(actions.results).toHaveLength(1);
+      expect(actions.results[0]!.actor_id).toBe(stored?.assigned_to === testAgentId ? "assigner-one" : "assigner-two");
     });
 
     it("rejects assign in in_progress", async () => {

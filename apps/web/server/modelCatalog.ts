@@ -3,7 +3,7 @@ import { getAmaProjectId } from "./amaOwnerIntegrationRepo";
 import { type AmaCatalogModel, isAmaTaskDispatchConfigured, listAmaCatalogModels, listAmaRunners } from "./amaRuntime";
 import type { D1 } from "./db";
 import { listMachineEnvironmentCandidatesForRuntime } from "./machineRepo";
-import { amaCapabilityModel, amaRuntimeName } from "./taskDispatch";
+import { amaCapabilityModel, amaRunnerHeartbeatFresh, amaRuntimeName } from "./runtimeRouter";
 import type { Env } from "./types";
 
 export interface RuntimeModel {
@@ -37,7 +37,7 @@ export async function listRuntimeModels(db: D1, env: Env, ownerId: string, runti
   for (const environmentId of environmentIds) {
     const runners = await listAmaRunners(env, ownerId, projectId, environmentId);
     for (const runner of runners.data) {
-      if (runner.status !== "active") continue;
+      if (runner.status !== "active" || !amaRunnerHeartbeatFresh(runner)) continue;
       for (const capability of runner.capabilities) {
         const model = amaCapabilityModel(capability, amaRuntime);
         if (model && model !== "*") modelIds.add(model);

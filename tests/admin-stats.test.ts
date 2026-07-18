@@ -342,7 +342,7 @@ describe("GET /api/admin/stats", () => {
                 capabilities: ["runtime-provider-model:codex:openai:gpt-5.3-codex"],
                 currentLoad: 0,
                 maxConcurrent: 5,
-                lastHeartbeatAt: "2026-06-08T12:00:00.000Z",
+                lastHeartbeatAt: new Date().toISOString(),
               },
             ],
           });

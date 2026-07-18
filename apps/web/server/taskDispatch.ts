@@ -1,4 +1,4 @@
-import { generateKeypair, type Task } from "@agent-kanban/shared";
+import { AGENT_RUNTIMES, type AgentRuntime, generateKeypair, type Task } from "@agent-kanban/shared";
 import { HTTPException } from "hono/http-exception";
 import { getAgent, getAgentAmaId, setAgentAmaId } from "./agentRepo";
 import {
@@ -36,6 +36,16 @@ import { isGithubAppConfigured, mintGithubInstallationToken } from "./githubApp"
 import { createLogger } from "./logger";
 import { listMachineEnvironmentCandidatesForRuntime } from "./machineRepo";
 import { githubRepoRef } from "./repositoryRepo";
+import {
+  amaCapabilityModel,
+  amaRunnerDeclaresModel,
+  amaRunnerOwnsRuntime,
+  amaRuntimeName,
+  resolveRuntimeSourceAvailability,
+  selectRuntimeSource,
+  TASK_RUNTIME_SOURCE_ANNOTATION,
+  taskRuntimeSource,
+} from "./runtimeRouter";
 import { getSubagent } from "./subagentRepo";
 import { computeBlocked } from "./taskDeps";
 import { addTaskAction, getTask, releaseTask, updateTask } from "./taskRepo";
@@ -44,6 +54,8 @@ import type { Env } from "./types";
 type Annotations = Record<string, unknown>;
 
 const logger = createLogger("taskDispatch");
+
+export { amaCapabilityModel, amaRunnerDeclaresModel, amaRuntimeName };
 
 export const AK_VARIABLES_CREDENTIAL_NAME = "ak-variables";
 export const USER_VARIABLES_CREDENTIAL_NAME = "user-variables";
@@ -71,7 +83,7 @@ export async function dispatchTaskToAma(
   task: Task,
   options: { apiOrigin: string; takeover?: boolean; recordFailure?: boolean },
 ): Promise<Task> {
-  if (!task.assigned_to || !isAmaTaskDispatchConfigured(env)) {
+  if (!task.assigned_to || !isAmaTaskDispatchConfigured(env) || taskRuntimeSource(task) !== "ama") {
     return task;
   }
 
@@ -372,10 +384,6 @@ function amaAgentHandoffPolicy(handoffTo: string[] | null | undefined) {
   return roles.length > 0 ? { enabled: true, targets: roles.map((role) => ({ role })) } : {};
 }
 
-export function amaRuntimeName(runtime: string): string {
-  return runtime === "claude" ? "claude-code" : runtime;
-}
-
 export async function amaRuntimeSecretEnvForCredentialNames(
   env: Env,
   ownerId: string,
@@ -481,42 +489,12 @@ async function firstRunnableCandidate(
 }
 
 export function amaRunnerCanRunRuntime(runner: AmaRunner, runtime: string, model: string | null = null): boolean {
-  if (runner.status !== "active" || runner.currentLoad >= runner.maxConcurrent || runtimeQuotaExhausted(runner, runtime)) {
+  if (!amaRunnerOwnsRuntime(runner, runtime, model) || runner.currentLoad >= runner.maxConcurrent || runtimeQuotaExhausted(runner, runtime)) {
     return false;
   }
-  if (!runnerRuntimeInventoryReady(runner, runtime)) return false;
-  const runtimeCapable = runner.capabilities.some(
-    (capability) => capability === runtime || capability.startsWith(`runtime-provider-model:${runtime}:`),
-  );
-  if (!runtimeCapable) return false;
-  if (!model) return true;
-  // Model-precise gating: a runner declaring specific models only takes tasks
-  // pinned to one of them. A bare runtime capability (no model declaration)
-  // stays acceptable as a transitional fallback.
-  return amaRunnerDeclaresModel(runner, runtime, model) || runner.capabilities.includes(runtime);
-}
-
-function runnerRuntimeInventoryReady(runner: AmaRunner, runtime: string): boolean {
   const inventory = runner.runtimeInventory ?? [];
-  if (inventory.length === 0) return true;
-  return inventory.some((entry) => entry.runtime === runtime && entry.state === "ready");
-}
-
-export function amaRunnerDeclaresModel(runner: AmaRunner, runtime: string, model: string): boolean {
-  return runner.capabilities.some((capability) => {
-    const declared = amaCapabilityModel(capability, runtime);
-    return declared === model || declared === "*";
-  });
-}
-
-// Capability grammar: runtime-provider-model:<runtime>:<provider>:<model>.
-// The model is the remainder after the third colon and may itself contain colons.
-export function amaCapabilityModel(capability: string, runtime: string): string | null {
-  const prefix = `runtime-provider-model:${runtime}:`;
-  if (!capability.startsWith(prefix)) return null;
-  const rest = capability.slice(prefix.length);
-  const separator = rest.indexOf(":");
-  return separator === -1 ? null : rest.slice(separator + 1);
+  if (inventory.length > 0 && !inventory.some((entry) => entry.runtime === runtime && entry.state === "ready")) return false;
+  return true;
 }
 
 // Runners report provider quota windows in their heartbeat usage; dispatching
@@ -661,9 +639,10 @@ async function claimTaskDispatch(db: D1, taskId: string, options: { takeover?: b
     .prepare(`
       UPDATE tasks SET metadata = json_set(
         json_set(COALESCE(metadata, '{}'), '$.annotations', json(COALESCE(json_extract(metadata, '$.annotations'), '{}'))),
-        '$.annotations."ama.dispatch.result"', 'dispatching'
+        '$.annotations."ama.dispatch.result"', 'dispatching',
+        '$.annotations."runtime.source"', 'ama'
       )
-      WHERE id = ? AND ${guard}
+      WHERE id = ? AND status = 'todo' AND ${guard}
     `)
     .bind(taskId)
     .run();
@@ -698,6 +677,73 @@ export async function clearAmaDispatchClaim(db: D1, task: Task): Promise<Task> {
   return await annotateTask(db, task, { "ama.dispatch.result": null });
 }
 
+export async function routePendingTasks(db: D1, env: Env): Promise<void> {
+  const rows = await db
+    .prepare(`
+      SELECT t.id, b.owner_id FROM tasks t
+      JOIN boards b ON t.board_id = b.id
+      WHERE t.status = 'todo' AND t.assigned_to IS NOT NULL
+        AND json_extract(t.metadata, '$.annotations."ama.dispatch.result"') IS NULL
+    `)
+    .all<{ id: string; owner_id: string }>();
+
+  for (const row of rows.results) {
+    const task = await getTask(db, row.id, row.owner_id);
+    if (!task?.assigned_to) continue;
+    const agent = await getAgent(db, task.assigned_to, row.owner_id);
+    if (!agent) continue;
+    if (!AGENT_RUNTIMES.includes(agent.runtime as AgentRuntime)) continue;
+    const runtime = agent.runtime as AgentRuntime;
+    const availability = await resolveRuntimeSourceAvailability(db, env, row.owner_id, runtime, agent.model);
+    const annotations = taskAnnotations(task);
+    const storedSource = stringAnnotation(annotations, TASK_RUNTIME_SOURCE_ANNOTATION);
+    const current = storedSource === "ama" || storedSource === "legacy" ? storedSource : null;
+    const hasAmaBinding = Boolean(stringAnnotation(annotations, "ama.sessionId") || stringAnnotation(annotations, "agentSessionId"));
+    if (hasAmaBinding) {
+      if (!current) await updateTaskRuntimeSource(db, task.id, null, "ama");
+      continue;
+    }
+    let next: "ama" | "legacy" | null = current;
+    if (!current) {
+      next =
+        stringAnnotation(annotations, "ama.sessionId") || stringAnnotation(annotations, "ama.dispatch.result")
+          ? "ama"
+          : selectRuntimeSource(availability);
+    } else if (current === "legacy" && !availability.legacy && availability.ama) {
+      next = "ama";
+    } else if (current === "ama" && !availability.ama && availability.legacy) {
+      next = "legacy";
+    }
+    if (!next || next === current) continue;
+    if (!(await updateTaskRuntimeSource(db, task.id, current, next))) continue;
+    logger.info(`task runtime source selected task=${task.id} runtime=${runtime} previous=${current ?? "unrouted"} next=${next}`);
+  }
+}
+
+async function updateTaskRuntimeSource(db: D1, taskId: string, current: "ama" | "legacy" | null, next: "ama" | "legacy"): Promise<boolean> {
+  const sourceGuard = current
+    ? `json_extract(metadata, '$.annotations."${TASK_RUNTIME_SOURCE_ANNOTATION}"') = ?`
+    : `json_extract(metadata, '$.annotations."${TASK_RUNTIME_SOURCE_ANNOTATION}"') IS NULL`;
+  const binds = current ? [next, taskId, current] : [next, taskId];
+  const result = await db
+    .prepare(`
+      UPDATE tasks SET metadata = json_set(
+        json_set(COALESCE(metadata, '{}'), '$.annotations', json(COALESCE(json_extract(metadata, '$.annotations'), '{}'))),
+        '$.annotations."${TASK_RUNTIME_SOURCE_ANNOTATION}"', ?
+      )
+      WHERE id = ?
+        AND status = 'todo'
+        AND assigned_to IS NOT NULL
+        AND json_extract(metadata, '$.annotations."ama.dispatch.result"') IS NULL
+        AND json_extract(metadata, '$.annotations."ama.sessionId"') IS NULL
+        AND json_extract(metadata, '$.annotations."agentSessionId"') IS NULL
+        AND ${sourceGuard}
+    `)
+    .bind(...binds)
+    .run();
+  return (result.meta?.changes ?? 0) > 0;
+}
+
 // Cron sweep: dispatch assigned todo tasks that have no runtime binding yet —
 // tasks deferred because they were blocked, scheduled in the future, or all
 // capable runners were busy, plus tasks released by the reconcile sweep.
@@ -713,6 +759,7 @@ export async function dispatchPendingAmaTasks(db: D1, env: Env): Promise<void> {
       SELECT t.id, b.owner_id FROM tasks t
       JOIN boards b ON t.board_id = b.id
       WHERE t.status = 'todo' AND t.assigned_to IS NOT NULL
+        AND json_extract(t.metadata, '$.annotations."runtime.source"') = 'ama'
         AND json_extract(t.metadata, '$.annotations."ama.dispatch.result"') IS NULL
         AND (t.scheduled_at IS NULL OR t.scheduled_at <= ?)
         AND (json_extract(t.metadata, '$.annotations."ama.dispatch.nextRetryAt"') IS NULL

@@ -250,7 +250,9 @@ describe("machine → agent session flow", () => {
     // Re-assign the task to the worker agent directly via repo so the worker can claim it
     const { assignTask } = await import("../apps/web/server/taskRepo");
     await env.DB.prepare("UPDATE tasks SET status = 'todo', assigned_to = NULL WHERE id = ?").bind(taskId).run();
-    await assignTask(env.DB, taskId, agentId, "machine", "system");
+    await assignTask(env.DB, taskId, agentId, "machine", "system", null, {
+      metadata: { annotations: { "runtime.source": "legacy" } },
+    });
 
     const jwt = await signSessionJWT();
     const res = await apiRequest("POST", `/api/tasks/${taskId}/claim`, { agent_id: agentId }, jwt);
