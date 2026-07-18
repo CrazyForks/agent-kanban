@@ -149,15 +149,9 @@ import { metricsMiddleware } from "./metrics";
 import { getMachineMetrics } from "./metricsRepo";
 import { listRuntimeModels } from "./modelCatalog";
 import { createRepository, deleteRepository, getRepository, listRepositories, normalizeGitUrl } from "./repositoryRepo";
-import {
-  amaRunnerHeartbeatFresh,
-  listAvailableRuntimeSources,
-  metadataWithRuntimeSource,
-  resolveRuntimeSourceAvailability,
-  selectRuntimeSource,
-  type TaskRuntimeSource,
-  taskRuntimeSource,
-} from "./runtimeRouter";
+import { metadataWithRuntimeSource, taskRuntimeSource } from "./runtimeBinding";
+import { dispatchAssignedTask, releaseAssignedTaskRuntime, resolveAssignableWorkerRuntimeSource } from "./runtimeCoordinator";
+import { amaRunnerHeartbeatFresh, listAvailableRuntimeSources } from "./runtimeRouter";
 import { createSSEResponse } from "./sse";
 import { getSystemStats } from "./statsRepo";
 import { createSubagent, deleteSubagent, getSubagent, listSubagents, updateSubagent } from "./subagentRepo";
@@ -170,9 +164,7 @@ import {
   boardMaintainerResourceName,
   boardMaintainerScheduleTriggerName,
   createAmaAgentForAkProfile,
-  dispatchTaskToAma,
   ensureAmaAgentForAkAgent,
-  releaseTaskRuntimeBinding,
   sendTaskMessageToAma,
   sendTaskRejectToAma,
   syncAmaAgentForAkProfile,
@@ -312,29 +304,6 @@ function withRuntimeSource<T extends Record<string, any>>(env: Env, agent: T, av
   if (!isAmaTaskDispatchConfigured(env)) return agent;
   if (availableRuntimes === undefined) return agent;
   return withAgentStatus(agent as any, availableRuntimes.has(agent.runtime)) as unknown as T;
-}
-
-async function resolveAssignableWorkerRuntimeSource(
-  db: D1,
-  env: Env,
-  ownerId: string,
-  agentId: string,
-  missingStatus: 400 | 404,
-): Promise<TaskRuntimeSource> {
-  const agent = await getAgent(db, agentId, ownerId);
-  if (!agent) throw new HTTPException(missingStatus, { message: "Agent not found" });
-  if (agent.kind !== "worker") throw new HTTPException(400, { message: "Tasks can only be assigned to worker agents" });
-  if (hasNoScheduleTaint(agent.taints)) {
-    throw new HTTPException(409, { message: "Agent is tainted NoSchedule and cannot be assigned normal tasks" });
-  }
-  const runtime = agent.runtime as AgentRuntime;
-  const source = selectRuntimeSource(await resolveRuntimeSourceAvailability(db, env, ownerId, runtime, agent.model));
-  if (!source) {
-    throw new HTTPException(409, {
-      message: `Runtime "${runtime}" is not available on any AMA runner or online legacy machine.`,
-    });
-  }
-  return source;
 }
 
 function parseOptionalBoolean(value: string | undefined, name: string): boolean | undefined {
@@ -1692,7 +1661,7 @@ api.post("/api/tasks", async (c) => {
   });
   let dispatched: Task;
   try {
-    dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), task, { apiOrigin: new URL(c.req.url).origin });
+    dispatched = await dispatchAssignedTask(c.env.DB, c.env, c.get("ownerId"), task, { apiOrigin: new URL(c.req.url).origin });
   } catch (error) {
     await deleteTaskAfterFailedDispatch(c.env.DB, task.id);
     throw error;
@@ -1854,7 +1823,7 @@ api.post("/api/tasks/:id/complete", async (c) => {
   if (!task) return c.json(task);
   const identity = await validateTaskManagementTransition(c, "complete", task);
 
-  await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
+  await releaseAssignedTaskRuntime(c.env.DB, c.env, c.get("ownerId"), task);
   const completed = await completeTask(c.env.DB, task.id, actorType, actorId, identity, sessionId);
   return c.json(completed);
 });
@@ -1865,10 +1834,10 @@ api.post("/api/tasks/:id/release", async (c) => {
   if (!task) return c.json(task);
   const identity = await validateTaskManagementTransition(c, "release", task);
 
-  await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
+  await releaseAssignedTaskRuntime(c.env.DB, c.env, c.get("ownerId"), task);
   const released = await releaseTask(c.env.DB, task.id, actorType, actorId, identity, "released", sessionId);
   if (!released) return c.json(released);
-  const dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), released, {
+  const dispatched = await dispatchAssignedTask(c.env.DB, c.env, c.get("ownerId"), released, {
     apiOrigin: new URL(c.req.url).origin,
   });
   return c.json(dispatched);
@@ -1889,7 +1858,7 @@ api.post("/api/tasks/:id/assign", async (c) => {
     const routed = existingSource
       ? existing
       : ((await updateTask(c.env.DB, existing.id, { metadata: metadataWithRuntimeSource(existing.metadata, source) })) ?? existing);
-    const dispatched = await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), routed, {
+    const dispatched = await dispatchAssignedTask(c.env.DB, c.env, c.get("ownerId"), routed, {
       apiOrigin: new URL(c.req.url).origin,
       takeover: true,
       recordFailure: false,
@@ -1920,7 +1889,7 @@ api.post("/api/tasks/:id/assign", async (c) => {
   });
   if (!task) throw new HTTPException(404, { message: "Task not found" });
   try {
-    await dispatchTaskToAma(c.env.DB, c.env, c.get("ownerId"), task, {
+    await dispatchAssignedTask(c.env.DB, c.env, c.get("ownerId"), task, {
       apiOrigin: new URL(c.req.url).origin,
       takeover: true,
       recordFailure: false,
@@ -1940,7 +1909,7 @@ api.post("/api/tasks/:id/cancel", async (c) => {
   if (!task) throw new HTTPException(404, { message: "Task not found" });
   const identity = await validateTaskManagementTransition(c, "cancel", task);
 
-  await releaseTaskRuntimeBinding(c.env.DB, c.env, c.get("ownerId"), task);
+  await releaseAssignedTaskRuntime(c.env.DB, c.env, c.get("ownerId"), task);
   const cancelled = await cancelTask(c.env.DB, task.id, actorType, actorId, identity, sessionId);
   if (!cancelled) throw new HTTPException(404, { message: "Task not found" });
   return c.json(cancelled);

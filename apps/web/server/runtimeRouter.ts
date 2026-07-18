@@ -1,14 +1,11 @@
-import { AGENT_RUNTIMES, type AgentRuntime, MACHINE_STALE_TIMEOUT_MS, type Task } from "@agent-kanban/shared";
+import { AGENT_RUNTIMES, type AgentRuntime, MACHINE_STALE_TIMEOUT_MS } from "@agent-kanban/shared";
 import { getAmaProjectId } from "./amaOwnerIntegrationRepo";
 import { type AmaRunner, isAmaTaskDispatchConfigured, listAmaRunners } from "./amaRuntime";
 import type { D1 } from "./db";
 import { legacyRuntimeAvailableOnMachines } from "./legacyRuntime";
 import { listMachines } from "./machineRepo";
+import type { TaskRuntimeSource } from "./runtimeBinding";
 import type { Env } from "./types";
-
-export type TaskRuntimeSource = "ama" | "legacy";
-
-export const TASK_RUNTIME_SOURCE_ANNOTATION = "runtime.source";
 
 export interface RuntimeSourceAvailability {
   ama: boolean;
@@ -114,25 +111,4 @@ export function selectRuntimeSource(availability: RuntimeSourceAvailability): Ta
   if (availability.ama) return "ama";
   if (availability.legacy) return "legacy";
   return null;
-}
-
-export function taskRuntimeSource(task: Pick<Task, "metadata">): TaskRuntimeSource | null {
-  const annotations = metadataObject(metadataObject(task.metadata).annotations);
-  const source = annotations[TASK_RUNTIME_SOURCE_ANNOTATION];
-  if (source === "ama" || source === "legacy") return source;
-  if (typeof annotations["ama.sessionId"] === "string" || typeof annotations["ama.dispatch.result"] === "string") return "ama";
-  return null;
-}
-
-export function metadataWithRuntimeSource(metadata: unknown, source: TaskRuntimeSource): Record<string, unknown> {
-  const next = { ...metadataObject(metadata) };
-  next.annotations = {
-    ...metadataObject(next.annotations),
-    [TASK_RUNTIME_SOURCE_ANNOTATION]: source,
-  };
-  return next;
-}
-
-function metadataObject(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }

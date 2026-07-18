@@ -4,6 +4,20 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTestAgent, seedUser, setupMiniflare } from "./helpers/db";
 
+const { dispatchTaskToAmaMock, releaseTaskRuntimeBindingMock } = vi.hoisted(() => ({
+  dispatchTaskToAmaMock: vi.fn(),
+  releaseTaskRuntimeBindingMock: vi.fn(),
+}));
+
+vi.mock("../apps/web/server/taskDispatch", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../apps/web/server/taskDispatch")>();
+  return {
+    ...actual,
+    dispatchTaskToAma: dispatchTaskToAmaMock,
+    releaseTaskRuntimeBinding: releaseTaskRuntimeBindingMock,
+  };
+});
+
 let db: D1Database;
 let mf: Awaited<ReturnType<typeof setupMiniflare>>["mf"];
 
@@ -89,6 +103,8 @@ afterAll(async () => {
 });
 
 afterEach(() => {
+  dispatchTaskToAmaMock.mockReset();
+  releaseTaskRuntimeBindingMock.mockReset();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -125,7 +141,7 @@ describe("runtime source primitives", () => {
   });
 
   it("persists and infers the runtime source annotation", async () => {
-    const { metadataWithRuntimeSource, taskRuntimeSource } = await import("../apps/web/server/runtimeRouter");
+    const { metadataWithRuntimeSource, taskRuntimeSource } = await import("../apps/web/server/runtimeBinding");
     const metadata = metadataWithRuntimeSource({ annotations: { keep: "yes" } }, "legacy");
 
     expect(metadata).toEqual({ annotations: { keep: "yes", "runtime.source": "legacy" } });
@@ -142,8 +158,8 @@ describe("routePendingTasks", () => {
     await configureOwner(ownerId, environmentId);
     const { createBoard } = await import("../apps/web/server/boardRepo");
     const { createTask, getTask } = await import("../apps/web/server/taskRepo");
-    const { routePendingTasks } = await import("../apps/web/server/taskDispatch");
-    const { taskRuntimeSource } = await import("../apps/web/server/runtimeRouter");
+    const { routePendingTasks } = await import("../apps/web/server/runtimeCoordinator");
+    const { taskRuntimeSource } = await import("../apps/web/server/runtimeBinding");
     const board = await createBoard(db, ownerId, `router-${randomUUID()}`, "ops");
     const agent = await createTestAgent(db, ownerId, { username: `router-${randomUUID()}`, runtime: "claude" });
     const unrouted = await createTask(db, ownerId, { title: "unrouted", board_id: board.id, assigned_to: agent.id, skipRuntimeAvailability: true });
@@ -183,26 +199,31 @@ describe("routePendingTasks", () => {
       runnerFetch(environmentId, () => healthyAma),
     );
 
-    await routePendingTasks(db, env());
-    expect(taskRuntimeSource((await getTask(db, unrouted.id, ownerId))!)).toBe("ama");
-    expect(taskRuntimeSource((await getTask(db, stickyLegacy.id, ownerId))!)).toBe("legacy");
-    expect(taskRuntimeSource((await getTask(db, preboundAma.id, ownerId))!)).toBe("ama");
-    expect(taskRuntimeSource((await getTask(db, blockedUnrouted.id, ownerId))!)).toBe("ama");
+    try {
+      await routePendingTasks(db, env());
+      expect(taskRuntimeSource((await getTask(db, unrouted.id, ownerId))!)).toBe("ama");
+      expect(taskRuntimeSource((await getTask(db, stickyLegacy.id, ownerId))!)).toBe("legacy");
+      const persistedPrebound = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(preboundAma.id).first<{ metadata: string }>();
+      expect(JSON.parse(persistedPrebound!.metadata).annotations["runtime.source"]).toBe("ama");
+      expect(taskRuntimeSource((await getTask(db, blockedUnrouted.id, ownerId))!)).toBe("ama");
 
-    await db
-      .prepare("UPDATE machines SET last_heartbeat_at = ? WHERE owner_id = ?")
-      .bind(new Date(Date.now() - 60_001).toISOString(), ownerId)
-      .run();
-    await routePendingTasks(db, env());
-    expect(taskRuntimeSource((await getTask(db, stickyLegacy.id, ownerId))!)).toBe("ama");
-    expect(taskRuntimeSource((await getTask(db, inProgressLegacy.id, ownerId))!)).toBe("legacy");
+      await db
+        .prepare("UPDATE machines SET last_heartbeat_at = ? WHERE owner_id = ?")
+        .bind(new Date(Date.now() - 60_001).toISOString(), ownerId)
+        .run();
+      await routePendingTasks(db, env());
+      expect(taskRuntimeSource((await getTask(db, stickyLegacy.id, ownerId))!)).toBe("ama");
+      expect(taskRuntimeSource((await getTask(db, inProgressLegacy.id, ownerId))!)).toBe("legacy");
 
-    await db.prepare("UPDATE machines SET last_heartbeat_at = ? WHERE owner_id = ?").bind(new Date().toISOString(), ownerId).run();
-    healthyAma = false;
-    await routePendingTasks(db, env());
-    expect(taskRuntimeSource((await getTask(db, unrouted.id, ownerId))!)).toBe("legacy");
-
-    await db.prepare("UPDATE tasks SET status = 'done' WHERE board_id = ?").bind(board.id).run();
+      await db.prepare("UPDATE machines SET last_heartbeat_at = ? WHERE owner_id = ?").bind(new Date().toISOString(), ownerId).run();
+      healthyAma = false;
+      await routePendingTasks(db, env());
+      expect(taskRuntimeSource((await getTask(db, unrouted.id, ownerId))!)).toBe("legacy");
+      const stickyPrebound = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(preboundAma.id).first<{ metadata: string }>();
+      expect(JSON.parse(stickyPrebound!.metadata).annotations["runtime.source"]).toBe("ama");
+    } finally {
+      await db.prepare("UPDATE tasks SET status = 'done' WHERE board_id = ?").bind(board.id).run();
+    }
   });
 
   it("leaves legacy-owned tasks out of the AMA dispatch sweep", async () => {
@@ -225,5 +246,70 @@ describe("routePendingTasks", () => {
 
     await dispatchPendingAmaTasks(db, env());
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("dispatchAssignedTask", () => {
+  it("keeps legacy-owned tasks local and delegates AMA-owned tasks through the unified coordinator", async () => {
+    const { dispatchAssignedTask } = await import("../apps/web/server/runtimeCoordinator");
+    const legacy = {
+      id: "legacy-task",
+      metadata: { annotations: { "runtime.source": "legacy" } },
+    } as any;
+    const ama = {
+      id: "ama-task",
+      metadata: { annotations: { "runtime.source": "ama" } },
+    } as any;
+    const dispatchedAma = {
+      ...ama,
+      metadata: { annotations: { ...ama.metadata.annotations, "ama.dispatch.result": "accepted" } },
+    };
+    const options = { apiOrigin: "https://ak.test", takeover: true, recordFailure: false };
+    dispatchTaskToAmaMock.mockResolvedValue(dispatchedAma);
+
+    await expect(dispatchAssignedTask(db, env(), "owner", legacy, options)).resolves.toBe(legacy);
+    expect(dispatchTaskToAmaMock).not.toHaveBeenCalled();
+
+    await expect(dispatchAssignedTask(db, env(), "owner", ama, options)).resolves.toBe(dispatchedAma);
+    expect(dispatchTaskToAmaMock).toHaveBeenCalledOnce();
+    const [calledDb, , calledOwner, calledTask, calledOptions] = dispatchTaskToAmaMock.mock.calls[0]!;
+    expect(calledDb).toBe(db);
+    expect(calledOwner).toBe("owner");
+    expect(calledTask).toBe(ama);
+    expect(calledOptions).toBe(options);
+  });
+});
+
+describe("releaseAssignedTaskRuntime", () => {
+  it("keeps explicit legacy tasks local but delegates AMA and historical bindings", async () => {
+    const { releaseAssignedTaskRuntime } = await import("../apps/web/server/runtimeCoordinator");
+    const legacy = {
+      id: "legacy-release-task",
+      metadata: { annotations: { "runtime.source": "legacy" } },
+    } as any;
+    const unknown = {
+      id: "historical-release-task",
+      metadata: { annotations: { agentSessionId: "historical-session" } },
+    } as any;
+    const ama = {
+      id: "ama-release-task",
+      metadata: { annotations: { "runtime.source": "ama" } },
+    } as any;
+    releaseTaskRuntimeBindingMock.mockImplementation(async (_db, _env, _owner, task) => ({ ...task, assigned_to: null }));
+
+    await expect(releaseAssignedTaskRuntime(db, env(), "owner", legacy, "policy")).resolves.toBe(legacy);
+    expect(releaseTaskRuntimeBindingMock).not.toHaveBeenCalled();
+
+    await expect(releaseAssignedTaskRuntime(db, env(), "owner", unknown, "runtime_error")).resolves.toEqual({ ...unknown, assigned_to: null });
+    await expect(releaseAssignedTaskRuntime(db, env(), "owner", ama, "timeout")).resolves.toEqual({ ...ama, assigned_to: null });
+    expect(releaseTaskRuntimeBindingMock).toHaveBeenCalledTimes(2);
+    const [calledDb, , calledOwner, calledTask, calledReason] = releaseTaskRuntimeBindingMock.mock.calls[0]!;
+    expect(calledDb).toBe(db);
+    expect(calledOwner).toBe("owner");
+    expect(calledTask).toBe(unknown);
+    expect(calledReason).toBe("runtime_error");
+    const [, , , calledAmaTask, calledAmaReason] = releaseTaskRuntimeBindingMock.mock.calls[1]!;
+    expect(calledAmaTask).toBe(ama);
+    expect(calledAmaReason).toBe("timeout");
   });
 });

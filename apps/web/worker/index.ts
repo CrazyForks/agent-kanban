@@ -3,7 +3,8 @@ export { TunnelRelay } from "../server/tunnelRelay";
 import { createLogger } from "../server/logger";
 import { detectStaleMachines } from "../server/machineRepo";
 import { api } from "../server/routes";
-import { dispatchPendingAmaTasks, reconcileAmaBoundTasks, releaseStaleDispatchClaims, routePendingTasks } from "../server/taskDispatch";
+import { routePendingTasks } from "../server/runtimeCoordinator";
+import { dispatchPendingAmaTasks, reconcileAmaBoundTasks, releaseStaleDispatchClaims } from "../server/taskDispatch";
 import { detectAndReleaseStaleAll } from "../server/taskStale";
 import type { Env } from "../server/types";
 

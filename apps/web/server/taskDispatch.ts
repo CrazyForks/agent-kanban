@@ -1,4 +1,4 @@
-import { AGENT_RUNTIMES, type AgentRuntime, generateKeypair, type Task } from "@agent-kanban/shared";
+import { generateKeypair, type Task } from "@agent-kanban/shared";
 import { HTTPException } from "hono/http-exception";
 import { getAgent, getAgentAmaId, setAgentAmaId } from "./agentRepo";
 import {
@@ -36,16 +36,8 @@ import { isGithubAppConfigured, mintGithubInstallationToken } from "./githubApp"
 import { createLogger } from "./logger";
 import { listMachineEnvironmentCandidatesForRuntime } from "./machineRepo";
 import { githubRepoRef } from "./repositoryRepo";
-import {
-  amaCapabilityModel,
-  amaRunnerDeclaresModel,
-  amaRunnerOwnsRuntime,
-  amaRuntimeName,
-  resolveRuntimeSourceAvailability,
-  selectRuntimeSource,
-  TASK_RUNTIME_SOURCE_ANNOTATION,
-  taskRuntimeSource,
-} from "./runtimeRouter";
+import { taskRuntimeSource } from "./runtimeBinding";
+import { amaCapabilityModel, amaRunnerDeclaresModel, amaRunnerOwnsRuntime, amaRuntimeName } from "./runtimeRouter";
 import { getSubagent } from "./subagentRepo";
 import { computeBlocked } from "./taskDeps";
 import { addTaskAction, getTask, releaseTask, updateTask } from "./taskRepo";
@@ -675,73 +667,6 @@ export async function releaseStaleDispatchClaims(db: D1): Promise<void> {
 
 export async function clearAmaDispatchClaim(db: D1, task: Task): Promise<Task> {
   return await annotateTask(db, task, { "ama.dispatch.result": null });
-}
-
-export async function routePendingTasks(db: D1, env: Env): Promise<void> {
-  const rows = await db
-    .prepare(`
-      SELECT t.id, b.owner_id FROM tasks t
-      JOIN boards b ON t.board_id = b.id
-      WHERE t.status = 'todo' AND t.assigned_to IS NOT NULL
-        AND json_extract(t.metadata, '$.annotations."ama.dispatch.result"') IS NULL
-    `)
-    .all<{ id: string; owner_id: string }>();
-
-  for (const row of rows.results) {
-    const task = await getTask(db, row.id, row.owner_id);
-    if (!task?.assigned_to) continue;
-    const agent = await getAgent(db, task.assigned_to, row.owner_id);
-    if (!agent) continue;
-    if (!AGENT_RUNTIMES.includes(agent.runtime as AgentRuntime)) continue;
-    const runtime = agent.runtime as AgentRuntime;
-    const availability = await resolveRuntimeSourceAvailability(db, env, row.owner_id, runtime, agent.model);
-    const annotations = taskAnnotations(task);
-    const storedSource = stringAnnotation(annotations, TASK_RUNTIME_SOURCE_ANNOTATION);
-    const current = storedSource === "ama" || storedSource === "legacy" ? storedSource : null;
-    const hasAmaBinding = Boolean(stringAnnotation(annotations, "ama.sessionId") || stringAnnotation(annotations, "agentSessionId"));
-    if (hasAmaBinding) {
-      if (!current) await updateTaskRuntimeSource(db, task.id, null, "ama");
-      continue;
-    }
-    let next: "ama" | "legacy" | null = current;
-    if (!current) {
-      next =
-        stringAnnotation(annotations, "ama.sessionId") || stringAnnotation(annotations, "ama.dispatch.result")
-          ? "ama"
-          : selectRuntimeSource(availability);
-    } else if (current === "legacy" && !availability.legacy && availability.ama) {
-      next = "ama";
-    } else if (current === "ama" && !availability.ama && availability.legacy) {
-      next = "legacy";
-    }
-    if (!next || next === current) continue;
-    if (!(await updateTaskRuntimeSource(db, task.id, current, next))) continue;
-    logger.info(`task runtime source selected task=${task.id} runtime=${runtime} previous=${current ?? "unrouted"} next=${next}`);
-  }
-}
-
-async function updateTaskRuntimeSource(db: D1, taskId: string, current: "ama" | "legacy" | null, next: "ama" | "legacy"): Promise<boolean> {
-  const sourceGuard = current
-    ? `json_extract(metadata, '$.annotations."${TASK_RUNTIME_SOURCE_ANNOTATION}"') = ?`
-    : `json_extract(metadata, '$.annotations."${TASK_RUNTIME_SOURCE_ANNOTATION}"') IS NULL`;
-  const binds = current ? [next, taskId, current] : [next, taskId];
-  const result = await db
-    .prepare(`
-      UPDATE tasks SET metadata = json_set(
-        json_set(COALESCE(metadata, '{}'), '$.annotations', json(COALESCE(json_extract(metadata, '$.annotations'), '{}'))),
-        '$.annotations."${TASK_RUNTIME_SOURCE_ANNOTATION}"', ?
-      )
-      WHERE id = ?
-        AND status = 'todo'
-        AND assigned_to IS NOT NULL
-        AND json_extract(metadata, '$.annotations."ama.dispatch.result"') IS NULL
-        AND json_extract(metadata, '$.annotations."ama.sessionId"') IS NULL
-        AND json_extract(metadata, '$.annotations."agentSessionId"') IS NULL
-        AND ${sourceGuard}
-    `)
-    .bind(...binds)
-    .run();
-  return (result.meta?.changes ?? 0) > 0;
 }
 
 // Cron sweep: dispatch assigned todo tasks that have no runtime binding yet —
