@@ -616,6 +616,71 @@ describe("dispatchPendingAmaTasks", () => {
     expect(sessionCreated).toBe(true);
   });
 
+  it("continues dispatching independent tasks after one candidate throws", async () => {
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createTask } = await import("../apps/web/server/taskRepo");
+    const { dispatchPendingAmaTasks } = await import("../apps/web/server/taskDispatch");
+
+    const owner = `sweep-isolation-owner-${randomUUID()}`;
+    await seedUser(db, owner, `${owner}@test.local`);
+    await configureAmaIntegration(owner);
+    await configureAmaEnvironment(owner, "claude", "env_sweep_isolation");
+
+    const board = await createBoard(db, owner, `sweep-isolation-board-${randomUUID()}`, "ops");
+    const agent = await createTestAgent(db, owner, {
+      name: "SweepIsolationAgent",
+      username: `sweep-isolation-agent-${randomUUID()}`,
+      runtime: "claude",
+    });
+    const first = await createTask(db, owner, {
+      title: "Dispatch candidate one",
+      board_id: board.id,
+      assigned_to: agent.id,
+      metadata: amaTaskMetadata,
+    });
+    const second = await createTask(db, owner, {
+      title: "Dispatch candidate two",
+      board_id: board.id,
+      assigned_to: agent.id,
+      metadata: amaTaskMetadata,
+    });
+
+    let sessionAttempts = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = reqUrl(input);
+      if (url === "https://auth.test/.well-known/openid-configuration") return oidcDiscoveryResponse();
+      if (url === "https://ama.test/api/v1/projects/project_123") return jsonResponse({ id: "project_123", name: "Workspace" }, 200);
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_sweep_isolation&limit=100")
+        return activeRunnerResponse("env_sweep_isolation", "claude-code");
+      if (url === "https://ama.test/api/v1/providers?limit=100")
+        return jsonResponse({ data: [{ id: "provider_claude", type: "anthropic", enabled: true }] }, 200);
+      if (url === "https://ama.test/api/v1/vaults/vault_123/credentials")
+        return jsonResponse(amaCredential(`vaultcred_isolation_${sessionAttempts}`, `vaultver_isolation_${sessionAttempts}`), 201);
+      if (url.includes("/vaults/vault_123/credentials/") && reqMethod(input, init) === "PATCH") return jsonResponse({ state: "revoked" }, 200);
+      if (url === "https://ama.test/api/v1/sessions") {
+        sessionAttempts += 1;
+        if (sessionAttempts === 1) return jsonResponse({ error: "legacy_model_unavailable" }, 503);
+        const body = JSON.parse(await reqBody(input, init)) as Record<string, any>;
+        return jsonResponse(amaSession("session_sweep_isolation", body.spec), 201);
+      }
+      throw new Error(`Unexpected isolation sweep fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await dispatchPendingAmaTasks(db, makeEnv());
+
+    expect(sessionAttempts).toBe(2);
+    const rows = await db
+      .prepare(
+        `SELECT id, json_extract(metadata, '$.annotations."ama.dispatch.result"') AS dispatch_result
+         FROM tasks WHERE id IN (?, ?)`,
+      )
+      .bind(first.id, second.id)
+      .all<{ id: string; dispatch_result: string | null }>();
+    expect(rows.results.filter((row) => row.dispatch_result === "accepted")).toHaveLength(1);
+    expect(rows.results.filter((row) => row.dispatch_result === null)).toHaveLength(1);
+  });
+
   it("skips a blocked task in the sweep", async () => {
     const { createBoard } = await import("../apps/web/server/boardRepo");
     const { createTask } = await import("../apps/web/server/taskRepo");
