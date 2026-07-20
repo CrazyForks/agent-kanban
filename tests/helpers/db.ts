@@ -57,6 +57,7 @@ export async function applyMigrations(db: D1Database) {
     "0035_board_maintainer_vault.sql",
     "0036_backfill_ama_session_secret_refs.sql",
     "0037_unique_latest_leader_per_runtime.sql",
+    "0038_board_maintainer_http_trigger_serial.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");

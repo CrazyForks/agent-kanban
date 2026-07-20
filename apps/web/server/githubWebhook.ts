@@ -19,6 +19,7 @@ import {
   upsertInstallation,
 } from "./githubInstallations";
 import { createLogger } from "./logger";
+import { ensureMaintainerHttpTriggerSerial } from "./maintainerTriggerConcurrency";
 import { releaseTaskRuntimeBinding } from "./taskDispatch";
 import { cancelTask, completeTask, getTask } from "./taskRepo";
 import type { Env } from "./types";
@@ -130,7 +131,7 @@ function toRepoInputs(repos: WebhookRepo[] | undefined): { fullName: string; rep
 export async function handleGithubMaintainerEvent(
   db: D1,
   env: Env,
-  input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload; waitUntil?: (promise: Promise<void>) => void },
+  input: { event: string; deliveryId?: string | null; payload: MaintainerWebhookPayload },
 ): Promise<{ handled: boolean; maintainers: string[] }> {
   if (!MAINTAINER_GITHUB_EVENTS.has(input.event)) return { handled: false, maintainers: [] };
   if (isOwnGithubAppBotEvent(env, input)) return { handled: false, maintainers: [] };
@@ -150,6 +151,7 @@ export async function handleGithubMaintainerEvent(
   const processed: string[] = [];
   for (const maintainer of maintainers) {
     if (!maintainer.ama_http_trigger_id) continue;
+    await ensureMaintainerHttpTriggerSerial(db, env, maintainer);
     const projectId = await getAmaProjectId(db, maintainer.owner_id);
     if (!projectId) {
       throw new Error(`No AMA project for maintainer owner ${maintainer.owner_id}`);

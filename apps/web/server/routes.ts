@@ -96,6 +96,7 @@ import {
   isActiveMaintainerForBoard,
   isActiveMaintainerForRepository,
   listBoardMaintainers,
+  markBoardMaintainerHttpTriggerSerialized,
   setBoardMaintainerApiKeyId,
   setBoardMaintainerVaultId,
   updateBoardMaintainer,
@@ -409,11 +410,21 @@ function publicBoardMaintainer(
   maintainer: BoardMaintainer,
 ): Omit<
   BoardMaintainer,
-  "ama_schedule_id" | "ama_http_trigger_id" | "ama_memory_store_id" | "ama_board_vault_id" | "last_ama_session_id" | "prompt" | "api_key_id"
+  | "ama_schedule_id"
+  | "ama_http_trigger_id"
+  | "ama_http_trigger_serialized"
+  | "ama_http_trigger_serialization_attempted_at"
+  | "ama_memory_store_id"
+  | "ama_board_vault_id"
+  | "last_ama_session_id"
+  | "prompt"
+  | "api_key_id"
 > {
   const {
     ama_schedule_id: _scheduleId,
     ama_http_trigger_id: _httpTriggerId,
+    ama_http_trigger_serialized: _httpTriggerSerialized,
+    ama_http_trigger_serialization_attempted_at: _httpTriggerSerializationAttemptedAt,
     ama_memory_store_id: _memoryStoreId,
     ama_board_vault_id: _boardVaultId,
     last_ama_session_id: _lastAmaSessionId,
@@ -864,20 +875,12 @@ api.post("/api/webhooks/github-app", async (c) => {
   const event = c.req.header("x-github-event");
   const deliveryId = c.req.header("x-github-delivery");
   const payload = JSON.parse(body);
-  const waitUntil = (promise: Promise<void>) => {
-    try {
-      c.executionCtx.waitUntil(promise);
-    } catch {
-      void promise;
-    }
-  };
   if (event === "pull_request") {
     const taskSync = await handleGithubPullRequestEvent(c.env.DB, c.env, payload);
     const maintainerDispatch = await handleGithubMaintainerEvent(c.env.DB, c.env, {
       event,
       deliveryId,
       payload,
-      waitUntil,
     });
     return c.json({ ok: true, ...taskSync, maintainer_dispatch: maintainerDispatch });
   }
@@ -888,7 +891,6 @@ api.post("/api/webhooks/github-app", async (c) => {
         event,
         deliveryId,
         payload,
-        waitUntil,
       })),
     });
   }
@@ -2135,6 +2137,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     runtimeEnv,
     runtimeSecretEnv,
     metadata: maintainerSessionMetadata,
+    concurrency: "serial",
   });
 
   const maintainer = await createBoardMaintainer(c.env.DB, ownerId, {
@@ -2143,6 +2146,7 @@ api.post("/api/boards/:id/maintainers", async (c) => {
     agentId: maintainerAgentId,
     amaScheduleId: schedule.id,
     amaHttpTriggerId: httpTrigger.id,
+    amaHttpTriggerSerialized: true,
     amaMemoryStoreId: memoryStore.id,
     prompt: "",
     intervalSeconds,
@@ -2339,7 +2343,9 @@ api.patch("/api/boards/:id/maintainers/:maintainerId", async (c) => {
       runtimeEnv,
       runtimeSecretEnv,
       metadata: maintainerSessionMetadata,
+      concurrency: "serial",
     });
+    await markBoardMaintainerHttpTriggerSerialized(c.env.DB, ownerId, boardId, maintainer.id);
   }
   const updated = await updateBoardMaintainer(c.env.DB, ownerId, boardId, maintainer.id, {
     intervalSeconds: body.interval_seconds ?? schedule.schedule.intervalSeconds,

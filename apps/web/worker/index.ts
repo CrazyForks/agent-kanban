@@ -2,6 +2,7 @@ export { TunnelRelay } from "../server/tunnelRelay";
 
 import { createLogger } from "../server/logger";
 import { detectStaleMachines } from "../server/machineRepo";
+import { backfillMaintainerHttpTriggerConcurrency } from "../server/maintainerTriggerConcurrency";
 import { api } from "../server/routes";
 import { routePendingTasks } from "../server/runtimeCoordinator";
 import { dispatchPendingAmaTasks, reconcileAmaBoundTasks, releaseStaleDispatchClaims } from "../server/taskDispatch";
@@ -23,6 +24,7 @@ export default {
     ctx.waitUntil(
       Promise.all([
         detectStaleMachines(env.DB).catch((err) => logger.warn(`detectStaleMachines failed: ${err}`)),
+        backfillMaintainerHttpTriggerConcurrency(env.DB, env).catch((err) => logger.warn(`backfillMaintainerHttpTriggerConcurrency failed: ${err}`)),
         // Task sweeps run sequentially: stale and reconcile sweeps both tear
         // down runtime bindings and must not race each other on the same
         // task, and dispatch last picks up everything they released.

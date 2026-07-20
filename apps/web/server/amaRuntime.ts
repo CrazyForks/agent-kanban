@@ -182,6 +182,7 @@ export interface AmaHttpTriggerInput {
   runtimeEnv?: Record<string, string>;
   runtimeSecretEnv?: AmaRuntimeSecretEnvRef[];
   metadata?: Record<string, unknown>;
+  concurrency?: "parallel" | "serial";
 }
 
 export interface AmaHttpTriggerUpdate {
@@ -195,6 +196,7 @@ export interface AmaHttpTriggerUpdate {
   runtimeEnv?: Record<string, string>;
   runtimeSecretEnv?: AmaRuntimeSecretEnvRef[];
   metadata?: Record<string, unknown>;
+  concurrency?: "parallel" | "serial";
 }
 
 export interface AmaScheduledTrigger {
@@ -944,7 +946,9 @@ interface AmaTriggerResponse {
     archivedAt: string | null;
   };
   spec: {
-    source: { type: "schedule"; schedule: { intervalSeconds: number; windowSeconds?: number } } | { type: "http" };
+    source:
+      | { type: "schedule"; schedule: { intervalSeconds: number; windowSeconds?: number } }
+      | { type: "http"; concurrency?: { mode: "parallel" | "serial" } };
     suspend: boolean;
     template: {
       spec: {
@@ -1093,7 +1097,7 @@ export async function createAmaHttpAgentTrigger(env: Env, ownerId: string, input
     client.triggers.create({
       metadata: { name: input.name },
       spec: {
-        source: { type: "http" },
+        source: { type: "http", concurrency: { mode: input.concurrency ?? "parallel" } },
         suspend: (input.status ?? "active") === "paused",
         template: {
           metadata: triggerTemplateMetadata(input.metadata),
@@ -1138,6 +1142,7 @@ export async function updateAmaHttpAgentTrigger(
   const body: UpdateTriggerRequest = {};
   if (input.name !== undefined) body.metadata = { name: input.name };
   body.spec = {};
+  if (input.concurrency !== undefined) body.spec.source = { type: "http", concurrency: { mode: input.concurrency } };
   if (input.status !== undefined) body.spec.suspend = input.status === "paused";
   const template = triggerExecutionSpecUpdate(input);
   const metadata = input.metadata !== undefined ? triggerTemplateMetadata(input.metadata) : undefined;

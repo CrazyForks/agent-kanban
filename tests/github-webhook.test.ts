@@ -72,6 +72,31 @@ function amaTriggerRun(
   };
 }
 
+function amaHttpTrigger(id: string, projectId: string) {
+  const now = "2026-07-20T00:00:00.000Z";
+  return {
+    metadata: { uid: id, projectId, name: id, description: null, archivedAt: null, createdAt: now, updatedAt: now },
+    spec: {
+      source: { type: "http", concurrency: { mode: "serial" } },
+      suspend: false,
+      template: {
+        metadata: { labels: {}, annotations: {} },
+        spec: {
+          agentId: "ama_agent_maintainer",
+          environmentId: null,
+          runtime: "codex",
+          promptTemplate: "",
+          env: {},
+          envFrom: [],
+          volumes: [],
+          volumeMounts: [],
+        },
+      },
+    },
+    status: { lastDispatchedAt: null, lastRunId: null },
+  };
+}
+
 // Minimal Env for direct function calls
 function makeEnv(overrides: Record<string, unknown> = {}): any {
   return {
@@ -172,7 +197,13 @@ describe("verifyGithubSignature", () => {
 // ─── 2. POST /api/webhooks/github-app — route-level integration tests ────────────
 
 describe("POST /api/webhooks/github-app route", () => {
-  async function seedMaintainerWebhookTarget(input: { ownerId: string; repoName: string; projectId: string; httpTriggerId: string }) {
+  async function seedMaintainerWebhookTarget(input: {
+    ownerId: string;
+    repoName: string;
+    projectId: string;
+    httpTriggerId: string;
+    serialized?: boolean;
+  }) {
     const repoFullName = `maintainer-org/${input.repoName}`;
     const installationId = Math.floor(Math.random() * 1_000_000_000);
     await seedUser(db, input.ownerId, `${input.ownerId}@test.com`);
@@ -215,6 +246,7 @@ describe("POST /api/webhooks/github-app route", () => {
       agentId: agent.id,
       amaScheduleId: `sched_webhook_${randomUUID()}`,
       amaHttpTriggerId: input.httpTriggerId,
+      amaHttpTriggerSerialized: input.serialized ?? true,
       amaMemoryStoreId: `mem_webhook_${randomUUID()}`,
       prompt: "Watch GitHub events.",
       intervalSeconds: 3600,
@@ -298,6 +330,142 @@ describe("POST /api/webhooks/github-app route", () => {
     expect(res.status).toBe(200);
   });
 
+  it("migrates a legacy maintainer trigger to serial before dispatching its webhook", async () => {
+    const ownerId = `webhook-maintainer-migrate-${randomUUID()}`;
+    const projectId = `project_migrate_${randomUUID()}`;
+    const httpTriggerId = `http_migrate_${randomUUID()}`;
+    const { repoFullName, installationId, maintainer } = await seedMaintainerWebhookTarget({
+      ownerId,
+      repoName: `maintainer-repo-migrate-${randomUUID()}`,
+      projectId,
+      httpTriggerId,
+      serialized: false,
+    });
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = reqUrl(input);
+        const method = reqMethod(input, init);
+        if (url === `https://ama.test/api/v1/triggers/${httpTriggerId}` && method === "PATCH") {
+          calls.push("patch");
+          const patchBody = JSON.parse(await reqBody(input, init));
+          expect(patchBody).toEqual({ spec: { source: { type: "http", concurrency: { mode: "serial" } } } });
+          return jsonResponse(amaHttpTrigger(httpTriggerId, projectId));
+        }
+        if (url === `https://ama.test/api/v1/triggers/${httpTriggerId}/runs` && method === "POST") {
+          calls.push("dispatch");
+          return jsonResponse(amaTriggerRun("run_migrated", { projectId, triggerId: httpTriggerId, phase: "queued", sessionId: null }), 201);
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    const body = JSON.stringify({
+      action: "opened",
+      installation: { id: installationId },
+      repository: { id: 123, full_name: repoFullName, html_url: `https://github.com/${repoFullName}` },
+      issue: { id: 42, number: 42, state: "open", html_url: `https://github.com/${repoFullName}/issues/42` },
+      sender: { login: "octocat" },
+    });
+    const res = await apiRequest("POST", "/api/webhooks/github-app", body, {
+      "x-hub-signature-256": await signWebhookBody(body),
+      "x-github-event": "issues",
+      "x-github-delivery": `delivery-migrate-${randomUUID()}`,
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ handled: true, maintainers: [maintainer.id] });
+    expect(calls).toEqual(["patch", "dispatch"]);
+    const stored = await db
+      .prepare("SELECT ama_http_trigger_serialized FROM board_maintainers WHERE id = ?")
+      .bind(maintainer.id)
+      .first<{ ama_http_trigger_serialized: number }>();
+    expect(stored?.ama_http_trigger_serialized).toBe(1);
+  });
+
+  it("propagates a legacy trigger migration failure without marking or dispatching it", async () => {
+    const ownerId = `webhook-maintainer-migrate-fail-${randomUUID()}`;
+    const projectId = `project_migrate_fail_${randomUUID()}`;
+    const httpTriggerId = `http_migrate_fail_${randomUUID()}`;
+    const { repoFullName, installationId, maintainer } = await seedMaintainerWebhookTarget({
+      ownerId,
+      repoName: `maintainer-repo-migrate-fail-${randomUUID()}`,
+      projectId,
+      httpTriggerId,
+      serialized: false,
+    });
+    const fetchMock = vi.fn(async () => jsonResponse({ error: "temporary" }, 503));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const body = JSON.stringify({
+      action: "opened",
+      installation: { id: installationId },
+      repository: { id: 123, full_name: repoFullName, html_url: `https://github.com/${repoFullName}` },
+      issue: { id: 42, number: 42, state: "open", html_url: `https://github.com/${repoFullName}/issues/42` },
+      sender: { login: "octocat" },
+    });
+    const res = await apiRequest("POST", "/api/webhooks/github-app", body, {
+      "x-hub-signature-256": await signWebhookBody(body),
+      "x-github-event": "issues",
+      "x-github-delivery": `delivery-migrate-fail-${randomUUID()}`,
+    });
+
+    expect(res.status).toBe(500);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const stored = await db
+      .prepare("SELECT ama_http_trigger_serialized FROM board_maintainers WHERE id = ?")
+      .bind(maintainer.id)
+      .first<{ ama_http_trigger_serialized: number }>();
+    expect(stored?.ama_http_trigger_serialized).toBe(0);
+  });
+
+  it.each([
+    { label: "queued", phase: "queued", sessionId: null, replayed: false },
+    { label: "dispatched", phase: "dispatched", sessionId: "session_dispatch", replayed: false },
+    { label: "idempotency replay", phase: "queued", sessionId: null, replayed: true },
+  ])("treats an AMA $label run response as a handled webhook", async ({ phase, sessionId, replayed }) => {
+    const ownerId = `webhook-maintainer-run-state-${randomUUID()}`;
+    const projectId = `project_run_state_${randomUUID()}`;
+    const httpTriggerId = `http_run_state_${randomUUID()}`;
+    const { repoFullName, installationId, maintainer } = await seedMaintainerWebhookTarget({
+      ownerId,
+      repoName: `maintainer-repo-run-state-${randomUUID()}`,
+      projectId,
+      httpTriggerId,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        expect(reqUrl(input)).toBe(`https://ama.test/api/v1/triggers/${httpTriggerId}/runs`);
+        expect(reqMethod(input, init)).toBe("POST");
+        return new Response(JSON.stringify(amaTriggerRun("run_state", { projectId, triggerId: httpTriggerId, phase, sessionId })), {
+          status: 201,
+          headers: {
+            "Content-Type": "application/json",
+            ...(replayed ? { "idempotency-replayed": "true" } : {}),
+          },
+        });
+      }),
+    );
+
+    const body = JSON.stringify({
+      action: "opened",
+      installation: { id: installationId },
+      repository: { id: 123, full_name: repoFullName, html_url: `https://github.com/${repoFullName}` },
+      issue: { id: 42, number: 42, state: "open", html_url: `https://github.com/${repoFullName}/issues/42` },
+      sender: { login: "octocat" },
+    });
+    const res = await apiRequest("POST", "/api/webhooks/github-app", body, {
+      "x-hub-signature-256": await signWebhookBody(body),
+      "x-github-event": "issues",
+      "x-github-delivery": `delivery-run-state-${randomUUID()}`,
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ handled: true, maintainers: [maintainer.id] });
+  });
+
   it("closes the maintainer session directly when an issue is closed", async () => {
     const { handleGithubMaintainerEvent } = await import("../apps/web/server/githubWebhook");
     const ownerId = `webhook-maintainer-close-${randomUUID()}`;
@@ -333,11 +501,9 @@ describe("POST /api/webhooks/github-app route", () => {
       }),
     );
 
-    const waitUntil: Promise<void>[] = [];
     const result = await handleGithubMaintainerEvent(db, makeEnv(), {
       event: "issues",
       deliveryId: `delivery-close-${randomUUID()}`,
-      waitUntil: (promise) => waitUntil.push(promise),
       payload: {
         action: "closed",
         installation: { id: installationId },
@@ -348,7 +514,6 @@ describe("POST /api/webhooks/github-app route", () => {
     });
 
     expect(result).toEqual({ handled: true, maintainers: [maintainer.id] });
-    expect(waitUntil).toEqual([]);
     const lookupUrl = new URL(calls[0].url);
     expect(lookupUrl.searchParams.get("labelSelector")).toBe(`maintainerId=${maintainer.id},${AK_LABEL_KEY_GITHUB_SUBJECT}=${key}`);
     expect(calls.map((call) => [call.method, call.url.includes("/triggers/") ? "trigger" : (call.body?.state ?? "read")])).toEqual([
@@ -492,11 +657,9 @@ describe("POST /api/webhooks/github-app route", () => {
       }),
     );
 
-    const waitUntil: Promise<void>[] = [];
     const result = await handleGithubMaintainerEvent(db, makeEnv(), {
       event: "issues",
       deliveryId: `delivery-open-${randomUUID()}`,
-      waitUntil: (promise) => waitUntil.push(promise),
       payload: {
         action: "reopened",
         installation: { id: installationId },
@@ -507,7 +670,6 @@ describe("POST /api/webhooks/github-app route", () => {
     });
 
     expect(result).toEqual({ handled: true, maintainers: [maintainer.id] });
-    expect(waitUntil).toEqual([]);
     const lookupUrl = new URL(calls[0].url);
     expect(lookupUrl.searchParams.get("labelSelector")).toBe(`maintainerId=${maintainer.id},${AK_LABEL_KEY_GITHUB_SUBJECT}=${key}`);
     expect(calls.map((call) => [call.method, call.url.includes("/triggers/") ? "trigger" : (call.body?.state ?? "read")])).toEqual([
@@ -691,11 +853,9 @@ describe("POST /api/webhooks/github-app route", () => {
       }),
     );
 
-    const waitUntil: Promise<void>[] = [];
     const result = await handleGithubMaintainerEvent(db, makeEnv(), {
       event: "issue_comment",
       deliveryId: `delivery-reopen-${randomUUID()}`,
-      waitUntil: (promise) => waitUntil.push(promise),
       payload: {
         action: "created",
         installation: { id: installationId },
@@ -707,7 +867,6 @@ describe("POST /api/webhooks/github-app route", () => {
     });
 
     expect(result).toEqual({ handled: true, maintainers: [maintainer.id] });
-    expect(waitUntil).toEqual([]);
     const lookupUrl = new URL(calls[0].url);
     expect(lookupUrl.searchParams.get("limit")).toBe("1");
     expect(lookupUrl.searchParams.get("labelSelector")).toBe(`maintainerId=${maintainer.id},${AK_LABEL_KEY_GITHUB_SUBJECT}=${key}`);
@@ -987,6 +1146,7 @@ describe("POST /api/webhooks/github-app route", () => {
       agentId: agent.id,
       amaScheduleId: `sched_webhook_${triggerSuffix}_${randomUUID()}`,
       amaHttpTriggerId: httpTriggerId,
+      amaHttpTriggerSerialized: true,
       amaMemoryStoreId: `mem_webhook_${triggerSuffix}_${randomUUID()}`,
       prompt: "Watch GitHub events.",
       intervalSeconds: 3600,
@@ -1192,6 +1352,7 @@ describe("POST /api/webhooks/github-app route", () => {
       agentId: agent.id,
       amaScheduleId: `sched_webhook_scope_${randomUUID()}`,
       amaHttpTriggerId: httpTriggerId,
+      amaHttpTriggerSerialized: true,
       amaMemoryStoreId: `mem_webhook_scope_${randomUUID()}`,
       prompt: "Watch GitHub events.",
       intervalSeconds: 3600,

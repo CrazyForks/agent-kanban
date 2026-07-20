@@ -7,6 +7,8 @@ export interface BoardMaintainer {
   agent_id: string;
   ama_schedule_id: string;
   ama_http_trigger_id: string | null;
+  ama_http_trigger_serialized: boolean;
+  ama_http_trigger_serialization_attempted_at: string | null;
   ama_memory_store_id: string | null;
   ama_board_vault_id: string | null;
   prompt: string;
@@ -27,6 +29,7 @@ export interface CreateBoardMaintainerInput {
   agentId: string;
   amaScheduleId: string;
   amaHttpTriggerId: string;
+  amaHttpTriggerSerialized?: boolean;
   amaMemoryStoreId: string;
   amaBoardVaultId?: string | null;
   prompt: string;
@@ -43,10 +46,17 @@ export interface UpdateBoardMaintainerInput {
   status?: "active" | "paused" | "archived";
 }
 
-type BoardMaintainerRow = Omit<BoardMaintainer, "heartbeat_enabled"> & { heartbeat_enabled: number };
+type BoardMaintainerRow = Omit<BoardMaintainer, "heartbeat_enabled" | "ama_http_trigger_serialized"> & {
+  heartbeat_enabled: number;
+  ama_http_trigger_serialized: number;
+};
 
 function mapBoardMaintainer(row: BoardMaintainerRow): BoardMaintainer {
-  return { ...row, heartbeat_enabled: row.heartbeat_enabled === 1 };
+  return {
+    ...row,
+    heartbeat_enabled: row.heartbeat_enabled === 1,
+    ama_http_trigger_serialized: row.ama_http_trigger_serialized === 1,
+  };
 }
 
 export async function getOwnedBoard(db: D1, ownerId: string, boardId: string) {
@@ -59,9 +69,9 @@ export async function createBoardMaintainer(db: D1, ownerId: string, input: Crea
   await db
     .prepare(
       `INSERT INTO board_maintainers (
-        id, owner_id, board_id, agent_id, ama_schedule_id, ama_http_trigger_id, ama_memory_store_id, ama_board_vault_id,
+        id, owner_id, board_id, agent_id, ama_schedule_id, ama_http_trigger_id, ama_http_trigger_serialized, ama_memory_store_id, ama_board_vault_id,
         prompt, interval_seconds, heartbeat_enabled, status, api_key_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -70,6 +80,7 @@ export async function createBoardMaintainer(db: D1, ownerId: string, input: Crea
       input.agentId,
       input.amaScheduleId,
       input.amaHttpTriggerId,
+      input.amaHttpTriggerSerialized ? 1 : 0,
       input.amaMemoryStoreId,
       input.amaBoardVaultId ?? null,
       input.prompt,
@@ -151,6 +162,40 @@ export async function setBoardMaintainerApiKeyId(db: D1, ownerId: string, boardI
     .run();
 }
 
+export async function markBoardMaintainerHttpTriggerSerialized(db: D1, ownerId: string, boardId: string, maintainerId: string): Promise<void> {
+  await db
+    .prepare("UPDATE board_maintainers SET ama_http_trigger_serialized = 1, updated_at = ? WHERE owner_id = ? AND board_id = ? AND id = ?")
+    .bind(new Date().toISOString(), ownerId, boardId, maintainerId)
+    .run();
+}
+
+export async function markBoardMaintainerHttpTriggerSerializationAttempted(
+  db: D1,
+  ownerId: string,
+  boardId: string,
+  maintainerId: string,
+): Promise<void> {
+  await db
+    .prepare("UPDATE board_maintainers SET ama_http_trigger_serialization_attempted_at = ? WHERE owner_id = ? AND board_id = ? AND id = ?")
+    .bind(new Date().toISOString(), ownerId, boardId, maintainerId)
+    .run();
+}
+
+export async function listUnserializedBoardMaintainers(db: D1, limit = 25): Promise<BoardMaintainer[]> {
+  const rows = await db
+    .prepare(
+      `SELECT * FROM board_maintainers
+       WHERE ama_http_trigger_id IS NOT NULL
+         AND ama_http_trigger_serialized = 0
+         AND status != 'archived'
+       ORDER BY COALESCE(ama_http_trigger_serialization_attempted_at, created_at) ASC, created_at ASC
+       LIMIT ?`,
+    )
+    .bind(limit)
+    .all<BoardMaintainerRow>();
+  return rows.results.map(mapBoardMaintainer);
+}
+
 export async function deleteBoardMaintainer(db: D1, ownerId: string, boardId: string, maintainerId: string): Promise<boolean> {
   const result = await db
     .prepare("DELETE FROM board_maintainers WHERE owner_id = ? AND board_id = ? AND id = ?")
@@ -217,6 +262,6 @@ export async function listActiveBoardMaintainersForRepository(db: D1, installati
     `,
     )
     .bind(installationId, canonicalFullName, canonicalFullName)
-    .all<BoardMaintainer>();
-  return result.results;
+    .all<BoardMaintainerRow>();
+  return result.results.map(mapBoardMaintainer);
 }

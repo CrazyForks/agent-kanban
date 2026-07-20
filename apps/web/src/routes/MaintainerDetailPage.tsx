@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { AmaSessionChat } from "../components/ChatPanel";
 import { Header } from "../components/Header";
 import { formatRelative } from "../components/TaskDetailFields";
+import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Label } from "../components/ui/label";
@@ -32,7 +33,7 @@ interface MaintainerRun {
   scheduled_for: string | null;
   heartbeat_at: string | null;
   triggered_at: string | null;
-  status: string;
+  status: "claimed" | "queued" | "dispatching" | "dispatched" | "failed";
   session_id: string | null;
   error_message: string | null;
   metadata: Record<string, unknown>;
@@ -594,7 +595,9 @@ function ActivityPanel({
                 <TableCell className="px-3 py-2">
                   <RunEventLink run={run} github={github} />
                 </TableCell>
-                <TableCell className="px-3 py-2 font-mono text-xs text-content-secondary">{run.status}</TableCell>
+                <TableCell className="px-3 py-2">
+                  <Badge variant={runStatusBadgeVariant(run.status)}>{run.status}</Badge>
+                </TableCell>
                 <TableCell className="max-w-[180px] truncate px-3 py-2" title={run.session_id ?? ""}>
                   {session ? (
                     <Button
@@ -622,6 +625,13 @@ function ActivityPanel({
       </Table>
     </div>
   );
+}
+
+function runStatusBadgeVariant(status: MaintainerRun["status"]): "default" | "secondary" | "destructive" | "outline" {
+  if (status === "failed") return "destructive";
+  if (status === "dispatching") return "default";
+  if (status === "dispatched") return "outline";
+  return "secondary";
 }
 
 function MemoryPanel({

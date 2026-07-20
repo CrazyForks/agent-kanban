@@ -740,7 +740,7 @@ if ! [[ "$CLOSED_NO_RUN_SECONDS" =~ ^[0-9]+$ ]] || [ "$CLOSED_NO_RUN_SECONDS" -l
   exit 1
 fi
 
-if ! ak whoami >/dev/null 2>&1; then
+if ! ak auth whoami >/dev/null 2>&1; then
   echo "FATAL: ak is not authenticated. Run ak config set/use or agent identity setup first."
   exit 1
 fi
@@ -771,7 +771,7 @@ fi
 REPO_FULL_NAME="$(repo_field "$REPO_ID" full_name)"
 
 AGENT_ID="$(create_smoke_agent "$RUNTIME")"
-CALLER_AGENT_ID="$(ak whoami 2>/dev/null | awk '/Agent ID:/ {print $3; exit}' || true)"
+CALLER_AGENT_ID="$(ak auth whoami 2>/dev/null | awk '/Agent ID:/ {print $3; exit}' || true)"
 
 echo "  Board:   $BOARD_ID"
 echo "  Repo:    $REPO_ID ($REPO_FULL_NAME)"

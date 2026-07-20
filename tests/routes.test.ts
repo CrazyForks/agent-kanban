@@ -646,6 +646,7 @@ describe("routes", () => {
         expect(spec.promptTemplate).not.toContain("Do not use pre-existing gh login state or human GitHub tokens");
         if (body.spec.source.type === "http") {
           expect(body.metadata.name).toBe(`ak-boarder-${maintainerBoard.id}-http`);
+          expect(body.spec.source).toEqual({ type: "http", concurrency: { mode: "serial" } });
           expect(spec.promptTemplate).toContain("{% if .ama.run.session_reused == false %}");
           expect(spec.promptTemplate).toContain("# AK Maintainer GitHub Event");
           expect(spec.promptTemplate).toContain("# GitHub Event");
@@ -751,6 +752,38 @@ describe("routes", () => {
               },
               createdAt: "2026-06-08T12:09:59.000Z",
               updatedAt: "2026-06-08T12:10:00.000Z",
+            }),
+            amaTriggerRun({
+              id: "run_maintainer_http_queued",
+              triggerId: "http_maintainer",
+              scheduledFor: null,
+              heartbeatAt: null,
+              triggeredAt: "2026-06-08T12:09:00.000Z",
+              phase: "queued",
+              sessionId: null,
+              errorMessage: null,
+              metadata: {
+                labels: { [AK_LABEL_KEY_GITHUB_SUBJECT]: "github:maintainer-org/maintainer-repo:issue:43" },
+                annotations: { [AK_ANNOTATION_KEY_SOURCE_EVENT]: "issues.opened" },
+              },
+              createdAt: "2026-06-08T12:09:00.000Z",
+              updatedAt: "2026-06-08T12:09:00.000Z",
+            }),
+            amaTriggerRun({
+              id: "run_maintainer_http_dispatching",
+              triggerId: "http_maintainer",
+              scheduledFor: null,
+              heartbeatAt: null,
+              triggeredAt: "2026-06-08T12:08:00.000Z",
+              phase: "dispatching",
+              sessionId: null,
+              errorMessage: null,
+              metadata: {
+                labels: { [AK_LABEL_KEY_GITHUB_SUBJECT]: "github:maintainer-org/maintainer-repo:issue:44" },
+                annotations: { [AK_ANNOTATION_KEY_SOURCE_EVENT]: "issues.opened" },
+              },
+              createdAt: "2026-06-08T12:08:00.000Z",
+              updatedAt: "2026-06-08T12:08:00.000Z",
             }),
           ],
           pagination: { limit, hasMore: false },
@@ -918,12 +951,13 @@ describe("routes", () => {
         .first<{ count: number }>();
       expect(sessionBeforeLogin?.count).toBe(0);
       const maintainerRow = await env.DB.prepare(
-        "SELECT ama_schedule_id, ama_http_trigger_id, ama_memory_store_id, ama_board_vault_id, heartbeat_enabled, api_key_id FROM board_maintainers WHERE id = ?",
+        "SELECT ama_schedule_id, ama_http_trigger_id, ama_http_trigger_serialized, ama_memory_store_id, ama_board_vault_id, heartbeat_enabled, api_key_id FROM board_maintainers WHERE id = ?",
       )
         .bind(maintainer.id)
         .first<{
           ama_schedule_id: string;
           ama_http_trigger_id: string;
+          ama_http_trigger_serialized: number;
           ama_memory_store_id: string;
           ama_board_vault_id: string;
           heartbeat_enabled: number;
@@ -932,6 +966,7 @@ describe("routes", () => {
       expect(maintainerRow).toMatchObject({
         ama_schedule_id: "sched_maintainer",
         ama_http_trigger_id: "http_maintainer",
+        ama_http_trigger_serialized: 1,
         ama_memory_store_id: "mem_maintainer",
         ama_board_vault_id: "vault_maintainer_board",
         heartbeat_enabled: 1,
@@ -1104,6 +1139,10 @@ describe("routes", () => {
         expect(request.body.spec.template.spec.env).not.toHaveProperty("AK_AGENT_KEY");
         expect(request.body.spec.template.spec.env).not.toHaveProperty("AK_BOARD_REPOSITORIES");
       }
+      expect(updateRequests.slice(-2).find((request) => request.triggerId === "http_maintainer")?.body.spec.source).toEqual({
+        type: "http",
+        concurrency: { mode: "serial" },
+      });
 
       const heartbeatOffRes = await apiRequest(
         "PATCH",
@@ -1177,7 +1216,7 @@ describe("routes", () => {
         )?.body.spec?.template?.spec?.promptTemplate,
       ).toContain("# GitHub Event");
 
-      const runsRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/runs?limit=2`, undefined, userToken);
+      const runsRes = await apiRequest("GET", `/api/boards/${maintainerBoard.id}/maintainers/${maintainer.id}/runs?limit=4`, undefined, userToken);
       expect(runsRes.status).toBe(200);
       const runs = (await runsRes.json()) as any;
       expect(runs).toEqual({
@@ -1196,6 +1235,24 @@ describe("routes", () => {
             },
           }),
           expect.objectContaining({
+            id: "run_maintainer_http_queued",
+            scheduled_for: null,
+            heartbeat_at: null,
+            triggered_at: "2026-06-08T12:09:00.000Z",
+            status: "queued",
+            session_id: null,
+            error_message: null,
+          }),
+          expect.objectContaining({
+            id: "run_maintainer_http_dispatching",
+            scheduled_for: null,
+            heartbeat_at: null,
+            triggered_at: "2026-06-08T12:08:00.000Z",
+            status: "dispatching",
+            session_id: null,
+            error_message: null,
+          }),
+          expect.objectContaining({
             id: "run_maintainer_1",
             scheduled_for: "2026-06-08T12:00:00.000Z",
             heartbeat_at: "2026-06-08T12:00:03.000Z",
@@ -1206,7 +1263,7 @@ describe("routes", () => {
             metadata: { attempt: 1 },
           }),
         ],
-        pagination: { limit: 2, hasMore: false },
+        pagination: { limit: 4, hasMore: false },
       });
       expect(runs.data[0]).not.toHaveProperty("projectId");
       expect(runs.data[0]).not.toHaveProperty("triggerId");
