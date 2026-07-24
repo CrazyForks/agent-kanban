@@ -13,6 +13,7 @@ vi.mock("../packages/cli/src/agent/leader.js", () => ({
 vi.mock("../packages/cli/src/output.js", () => ({
   getOutputFormat: vi.fn((format?: string) => format ?? "text"),
   output,
+  outputOption: vi.fn(() => ({ flags: "-o, --output <format>" })),
 }));
 
 type CommandAction = (id: string, opts: Record<string, string | undefined>) => Promise<void>;
@@ -27,6 +28,7 @@ function buildProgram(captureCommand: (name: string, command: CapturedCommand) =
     const command = {
       description: () => command,
       option: () => command,
+      addOption: () => command,
       action: (action: CommandAction) => {
         captured.action = action;
         if (name) captureCommand(name, captured);

@@ -12,21 +12,25 @@ vi.mock("../src/agent/leader.js", () => ({
   createClient: mockCreateClient,
 }));
 
-vi.mock("../src/output.js", () => ({
-  getOutputFormat: vi.fn(() => "text"),
-  output: mockOutput,
-  formatAgent: vi.fn(),
-  formatAgentList: vi.fn(),
-  formatBoard: vi.fn(),
-  formatBoardList: vi.fn(),
-  formatLabelList: mockFormatLabelList,
-  formatRepository: vi.fn(),
-  formatRepositoryList: vi.fn(),
-  formatTask: vi.fn(),
-  formatTaskList: vi.fn(),
-  formatTaskListWide: vi.fn(),
-  formatTaskNotes: vi.fn(),
-}));
+vi.mock("../src/output.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/output.js")>();
+  return {
+    ...actual,
+    getOutputFormat: vi.fn(() => "text"),
+    output: mockOutput,
+    formatAgent: vi.fn(),
+    formatAgentList: vi.fn(),
+    formatBoard: vi.fn(),
+    formatBoardList: vi.fn(),
+    formatLabelList: mockFormatLabelList,
+    formatRepository: vi.fn(),
+    formatRepositoryList: vi.fn(),
+    formatTask: vi.fn(),
+    formatTaskList: vi.fn(),
+    formatTaskListWide: vi.fn(),
+    formatTaskNotes: vi.fn(),
+  };
+});
 
 const { registerGetCommand } = await import("../src/commands/get.js");
 

@@ -1,18 +1,18 @@
+import { Option } from "commander";
 import { stringify } from "yaml";
 
-export type OutputFormat = "json" | "yaml" | "wide" | "text";
+const OUTPUT_FORMATS = ["text", "json", "yaml", "wide"] as const;
+
+export type OutputFormat = (typeof OUTPUT_FORMATS)[number];
+
+export function outputOption(): Option {
+  return new Option("-o, --output <format>", `Output format (${OUTPUT_FORMATS.join(", ")})`).choices([...OUTPUT_FORMATS]);
+}
 
 export function getOutputFormat(explicit?: string): OutputFormat {
-  switch (explicit) {
-    case "json":
-      return "json";
-    case "yaml":
-      return "yaml";
-    case "wide":
-      return "wide";
-    default:
-      return "text";
-  }
+  if (explicit === undefined) return "text";
+  if (OUTPUT_FORMATS.includes(explicit as OutputFormat)) return explicit as OutputFormat;
+  throw new Error(`Invalid output format: ${explicit}`);
 }
 
 function toYamlOutput(data: unknown, kind?: string): string {

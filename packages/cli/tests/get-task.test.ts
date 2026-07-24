@@ -49,27 +49,31 @@ vi.mock("../src/sessionWs.js", () => ({
 }));
 
 // Silence output helpers — we don't test formatting
-vi.mock("../src/output.js", () => ({
-  getOutputFormat: vi.fn((format?: string) => format ?? "text"),
-  output: (...args: unknown[]) => mockOutput(...args),
-  formatSessionEvent: (...args: unknown[]) => mockFormatSessionEvent(...args),
-  formatTask: vi.fn(),
-  formatTaskList: vi.fn(),
-  formatTaskListWide: vi.fn(),
-  formatTaskSession: vi.fn(() => "session"),
-  formatBoard: vi.fn(),
-  formatBoardList: vi.fn(),
-  formatAgent: vi.fn(),
-  formatAgentList: vi.fn(),
-  formatRepository: vi.fn(),
-  formatRepositoryList: vi.fn(),
-  formatTaskNotes: vi.fn(),
-  formatMaintainer: vi.fn(),
-  formatMaintainerList: vi.fn(),
-  formatModelList: vi.fn(),
-  formatSubagent: vi.fn(),
-  formatSubagentList: vi.fn(),
-}));
+vi.mock("../src/output.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/output.js")>();
+  return {
+    ...actual,
+    getOutputFormat: vi.fn((format?: string) => format ?? "text"),
+    output: (...args: unknown[]) => mockOutput(...args),
+    formatSessionEvent: (...args: unknown[]) => mockFormatSessionEvent(...args),
+    formatTask: vi.fn(),
+    formatTaskList: vi.fn(),
+    formatTaskListWide: vi.fn(),
+    formatTaskSession: vi.fn(() => "session"),
+    formatBoard: vi.fn(),
+    formatBoardList: vi.fn(),
+    formatAgent: vi.fn(),
+    formatAgentList: vi.fn(),
+    formatRepository: vi.fn(),
+    formatRepositoryList: vi.fn(),
+    formatTaskNotes: vi.fn(),
+    formatMaintainer: vi.fn(),
+    formatMaintainerList: vi.fn(),
+    formatModelList: vi.fn(),
+    formatSubagent: vi.fn(),
+    formatSubagentList: vi.fn(),
+  };
+});
 
 const { registerGetCommand } = await import("../src/commands/get.js");
 

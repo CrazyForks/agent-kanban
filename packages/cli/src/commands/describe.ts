@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import { createClient } from "../agent/leader.js";
-import { getOutputFormat, output } from "../output.js";
+import { getOutputFormat, output, outputOption } from "../output.js";
 
 function pad(label: string): string {
   return `${label}:`.padEnd(14);
@@ -155,7 +155,7 @@ export function registerDescribeCommand(program: Command) {
   describeCmd
     .command("task <id>")
     .description("Show full detail for a task: logs, messages")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (id: string, opts) => {
       const client = await createClient();
       const fmt = getOutputFormat(opts.output);
@@ -167,7 +167,7 @@ export function registerDescribeCommand(program: Command) {
     .command("agent <id>")
     .description("Show full detail for an agent")
     .option("--version <version>", "Agent version when <id> is a username")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (id: string, opts) => {
       const client = await createClient();
       const fmt = getOutputFormat(opts.output);
@@ -178,7 +178,7 @@ export function registerDescribeCommand(program: Command) {
   describeCmd
     .command("board <id>")
     .description("Show full detail for a board: all tasks with status counts")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (id: string, opts) => {
       const client = await createClient();
       const fmt = getOutputFormat(opts.output);

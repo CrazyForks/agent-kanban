@@ -2,14 +2,14 @@ import type { Command } from "commander";
 import { createClient } from "../agent/leader.js";
 import { applyResource } from "../apply/kinds.js";
 import { parseResourceDocs } from "../apply/parser.js";
-import { getOutputFormat } from "../output.js";
+import { getOutputFormat, outputOption } from "../output.js";
 
 export function registerApplyCommand(program: Command) {
   program
     .command("apply")
     .description("Apply a YAML/JSON resource spec from file or stdin")
     .requiredOption("-f <file>", "File to apply (use - for stdin)")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (opts) => {
       const client = await createClient();
       const fmt = getOutputFormat(opts.output);

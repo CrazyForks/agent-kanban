@@ -22,6 +22,7 @@ import {
   formatTaskSession,
   getOutputFormat,
   output,
+  outputOption,
 } from "../output.js";
 import {
   filterSessionEventsBySubagent,
@@ -223,7 +224,7 @@ export function registerGetCommand(program: Command) {
   getCmd
     .command("board [id]")
     .description("Get a board or list boards")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (id: string | undefined, opts) => {
       const client = await createClient();
       const fmt = getOutputFormat(opts.output);
@@ -240,7 +241,7 @@ export function registerGetCommand(program: Command) {
     .command("label")
     .description("List board labels")
     .requiredOption("--board <id>", "Board ID")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (opts) => {
       const client = await createClient();
       const fmt = getOutputFormat(opts.output);
@@ -251,7 +252,7 @@ export function registerGetCommand(program: Command) {
   getCmd
     .command("task [id]")
     .description("Get a task or list tasks")
-    .option("-o, --output <format>", "Output format (json, yaml, wide, text)")
+    .addOption(outputOption())
     .option("--board <id>", "Board ID (required when listing)")
     .option("--status <status>", "Filter by status")
     .option("--label <label>", "Filter by label")
@@ -300,7 +301,7 @@ export function registerGetCommand(program: Command) {
     .option("--assistant", "Only show agent text output")
     .option("--subagent <name-or-tool-call-id>", "Only show events under a subagent call")
     .option("--verbose", "Show longer event summaries")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (sessionId: string, opts) => {
       const client = await createClient();
       await showSession(client, sessionId, opts);
@@ -312,7 +313,7 @@ export function registerGetCommand(program: Command) {
     .requiredOption("--board <id>", "Board ID")
     .option("--runs", "Show heartbeat run history for one maintainer")
     .option("--limit <n>", "Maximum run history entries", "20")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (id: string | undefined, opts) => {
       const client = await createClient();
       const fmt = getOutputFormat(opts.output);
@@ -352,7 +353,7 @@ export function registerGetCommand(program: Command) {
   getCmd
     .command("agent [id]")
     .description("Get an agent or list agents")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .option("--role <role>", "Filter by agent role")
     .option("--runtime <runtime>", "Filter by runtime")
     .option("--available", "Only show agents whose runtime is available")
@@ -375,7 +376,7 @@ export function registerGetCommand(program: Command) {
   getCmd
     .command("subagent [id]")
     .description("Get a task-local subagent or list subagents")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (id: string | undefined, opts) => {
       const client = await createClient();
       const fmt = getOutputFormat(opts.output);
@@ -392,7 +393,7 @@ export function registerGetCommand(program: Command) {
     .command("model")
     .description("List available models for a runtime")
     .requiredOption("--runtime <runtime>", "Runtime name")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (opts) => {
       const client = await createClient();
       const fmt = getOutputFormat(opts.output);
@@ -404,7 +405,7 @@ export function registerGetCommand(program: Command) {
     .command("repo [id]")
     .description("Get a repository or list repositories")
     .option("--board <id>", "Only list repositories associated with a board")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (id: string | undefined, opts) => {
       const client = await createClient();
       const fmt = getOutputFormat(opts.output);
@@ -420,7 +421,7 @@ export function registerGetCommand(program: Command) {
   getCmd
     .command("note [task-id]")
     .description("Get notes for a task")
-    .option("-o, --output <format>", "Output format (json, text)")
+    .addOption(outputOption())
     .option("--task <id>", "Task ID")
     .option("--since <timestamp>", "Only show notes after this timestamp")
     .action(async (taskId: string | undefined, opts) => {

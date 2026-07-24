@@ -7,7 +7,7 @@ import {
 import type { Command } from "commander";
 import { createClient } from "../agent/leader.js";
 import type { ApiClient } from "../client/index.js";
-import { getOutputFormat, output } from "../output.js";
+import { getOutputFormat, output, outputOption } from "../output.js";
 
 function isUrl(value: string): boolean {
   return value.includes("://") || value.startsWith("git@");
@@ -54,7 +54,7 @@ export function registerCreateCommand(program: Command) {
     .requiredOption("--name <name>", "Board name")
     .requiredOption("--type <type>", "Board type: dev, ops")
     .option("--description <desc>", "Board description")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (opts) => {
       if (!isBoardType(opts.type)) {
         console.error(`Unknown type "${opts.type}" — must be dev or ops`);
@@ -79,7 +79,7 @@ export function registerCreateCommand(program: Command) {
     .option("--parent <id>", "Parent task ID")
     .option("--depends-on <ids>", "Comma-separated dependency task IDs")
     .option("--scheduled-at <time>", "ISO 8601 time to schedule task")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (opts) => {
       const client = await createClient();
       const body: Record<string, unknown> = { title: opts.title, board_id: opts.board };
@@ -117,7 +117,7 @@ export function registerCreateCommand(program: Command) {
     .option("--name <name>", "Label name")
     .option("--color <hex>", "Label color, e.g. #22D3EE")
     .option("--description <desc>", "Label description")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (opts) => {
       if (!opts.board || !opts.name || !opts.color) {
         console.error("Missing required options: --board, --name, and --color");
@@ -141,7 +141,7 @@ export function registerCreateCommand(program: Command) {
     .option("--interval-seconds <seconds>", "Heartbeat interval in seconds", String(MAINTAINER_HEARTBEAT_DEFAULT_INTERVAL_SECONDS))
     .option("--heartbeat <on|off>", "Scheduled heartbeat switch", "on")
     .option("--paused", "Create maintainer paused")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (opts) => {
       const intervalSeconds = Number.parseInt(String(opts.intervalSeconds), 10);
       if (!Number.isInteger(intervalSeconds) || intervalSeconds < MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS) {
@@ -173,7 +173,7 @@ export function registerCreateCommand(program: Command) {
     .option("--handoff-to <roles>", "Comma-separated agent roles this agent may hand off to")
     .option("--skills <skills>", "Comma-separated installable skill refs (<source>@<skill>)")
     .option("--subagents <ids>", "Comma-separated subagent IDs to install as task-local subagents")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (opts) => {
       const client = await createClient();
       if (!opts.username) {
@@ -208,7 +208,7 @@ export function registerCreateCommand(program: Command) {
     .option("--role <role>", "Subagent role")
     .option("--models <pairs>", "Comma-separated runtime=model pairs")
     .option("--skills <skills>", "Comma-separated installable skill refs (<source>@<skill>)")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (opts) => {
       const client = await createClient();
       if (!opts.username) {
@@ -232,7 +232,7 @@ export function registerCreateCommand(program: Command) {
     .description("Create a repository")
     .requiredOption("--name <name>", "Repository name")
     .requiredOption("--url <url>", "Clone URL")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (opts) => {
       const client = await createClient();
       const repo = await client.createRepository({ name: opts.name, url: opts.url });

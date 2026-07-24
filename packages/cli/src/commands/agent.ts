@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import { createClient } from "../agent/leader.js";
-import { getOutputFormat, output } from "../output.js";
+import { getOutputFormat, output, outputOption } from "../output.js";
 
 const DIFF_FIELDS = ["name", "bio", "soul", "role", "kind", "handoff_to", "runtime", "model", "skills", "subagents"];
 
@@ -66,7 +66,7 @@ export function registerAgentCommand(program: Command) {
   agentCmd
     .command("diff <from> [to]")
     .description("Compare two agent versions")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (fromRef: string, toRef: string | undefined, opts) => {
       const client = await createClient();
       const from = await resolveAgentRef(client, fromRef);

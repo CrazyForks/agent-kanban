@@ -2,7 +2,7 @@ import { MAINTAINER_HEARTBEAT_MIN_INTERVAL_SECONDS } from "@agent-kanban/shared"
 import type { Command } from "commander";
 import { createClient } from "../agent/leader.js";
 import type { ApiClient } from "../client/index.js";
-import { getOutputFormat, output } from "../output.js";
+import { getOutputFormat, output, outputOption } from "../output.js";
 
 function parseModels(value: string): Record<string, string> {
   const entries = value.split(",").map((entry) => entry.trim());
@@ -60,7 +60,7 @@ export function registerUpdateCommand(program: Command) {
     .description("Update a board")
     .option("--name <name>", "New name")
     .option("--description <desc>", "New description")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (id: string, opts) => {
       const client = await createClient();
       const boardId = await resolveBoardId(client, id);
@@ -85,7 +85,7 @@ export function registerUpdateCommand(program: Command) {
     .option("--input <json>", "JSON input payload")
     .option("--depends-on <ids>", "Comma-separated task IDs")
     .option("--repo <repo>", "Repository ID or URL")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (id: string, opts) => {
       const client = await createClient();
       const body: Record<string, unknown> = {};
@@ -119,7 +119,7 @@ export function registerUpdateCommand(program: Command) {
     .option("--new-name <name>", "New label name")
     .option("--color <hex>", "New label color, e.g. #22D3EE")
     .option("--description <desc>", "New label description")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (opts) => {
       if (!opts.board || !opts.name) {
         console.error("Missing required options: --board and --name");
@@ -151,7 +151,7 @@ export function registerUpdateCommand(program: Command) {
     .option("--handoff-to <roles>", "Comma-separated agent roles this agent may hand off to")
     .option("--skills <skills>", "Comma-separated installable skill refs (<source>@<skill>)")
     .option("--subagents <ids>", "Comma-separated subagent IDs to install as task-local subagents")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (id: string, opts) => {
       const client = await createClient();
       const body: Record<string, unknown> = {};
@@ -184,7 +184,7 @@ export function registerUpdateCommand(program: Command) {
     .option("--role <role>", "Subagent role")
     .option("--models <pairs>", "Comma-separated runtime=model pairs")
     .option("--skills <skills>", "Comma-separated installable skill refs (<source>@<skill>)")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (id: string, opts) => {
       const client = await createClient();
       const body: Record<string, unknown> = {};
@@ -210,7 +210,7 @@ export function registerUpdateCommand(program: Command) {
     .option("--interval-seconds <seconds>", "Heartbeat interval in seconds")
     .option("--heartbeat <on|off>", "Scheduled heartbeat switch")
     .option("--status <status>", "active or paused")
-    .option("-o, --output <format>", "Output format (json, yaml, text)")
+    .addOption(outputOption())
     .action(async (id: string, opts) => {
       if (!opts.board) {
         console.error("--board is required");

@@ -12,67 +12,16 @@ import { registerUpdateCommand } from "./commands/update.js";
 import { registerUpgradeCommand } from "./commands/upgrade.js";
 import { registerWaitCommand } from "./commands/wait.js";
 import { getCredentials, readConfig, saveCredentials, setCurrent } from "./config.js";
-import { getOutputFormat, output } from "./output.js";
+import { getOutputFormat, output, outputOption } from "./output.js";
 import { checkForUpdate, isNpx, isWorkerAgent } from "./updateCheck.js";
 import { getVersion } from "./version.js";
 
 const program = new Command();
 program.name("ak").description("Agent-first kanban board").version(getVersion());
 
-const pad = (s: string, n: number) => s + " ".repeat(Math.max(0, n - s.length));
-const helpSections: [string, [string, string][]][] = [
-  [
-    "Resources",
-    [
-      ["get <resource> [id]", "Get or list resources"],
-      ["create <resource>", "Create a resource"],
-      ["update <resource> <id>", "Update a resource"],
-      ["delete <resource> <id>", "Delete a resource"],
-      ["describe <resource> <id>", "Show detailed resource info"],
-      ["apply -f <file>", "Apply a YAML/JSON resource spec"],
-      ["create maintainer", "Create an AI board maintainer"],
-      ["get maintainer --board <id>", "List board maintainers"],
-      ["update maintainer <id> --board <id>", "Update or pause/resume a maintainer"],
-      ["delete maintainer <id> --board <id>", "Delete (archive) a maintainer"],
-      ["get session <session-id>", "Show runtime session state and events"],
-      ["auth git <repo-id>", "Configure git auth for a repository"],
-    ],
-  ],
-  [
-    "Task Lifecycle",
-    [
-      ["task claim <id>", "Claim a task"],
-      ["task review <id>", "Submit for review"],
-      ["task complete <id>", "Complete a task"],
-      ["task reject <id>", "Reject back to in-progress"],
-      ["task cancel <id>", "Cancel a task"],
-      ["task release <id>", "Release back to todo"],
-    ],
-  ],
-  ["Agent", [["agent diff <from> [to]", "Compare agent versions"]]],
-  [
-    "Wait (block until condition)",
-    [
-      ["wait task <ids...>", "Wait until tasks reach --until status (default done)"],
-      ["wait board <id>", "Wait for task state changes on a board"],
-      ["wait pr <num>", "Wait for a PR's CI checks to finish"],
-    ],
-  ],
-  ["Output", [["-o json|yaml|wide", "Output format (default: text table)"]]],
-];
-
-program.helpInformation = () => {
-  const lines = [`Usage: ak [command]\n`, `Agent-first kanban board (v${getVersion()})\n`];
-  for (const [title, cmds] of helpSections) {
-    lines.push(`  ${title}:`);
-    for (const [cmd, desc] of cmds) lines.push(`    ${pad(cmd, 28)} ${desc}`);
-    lines.push("");
-  }
-  return lines.join("\n");
-};
-
 // ─── Config ───
 
+program.commandsGroup("Configuration:");
 const configCmd = program.command("config").description("Manage CLI configuration");
 
 configCmd
@@ -131,14 +80,17 @@ configCmd
     }
   });
 
+registerAuthCommand(program);
+
 // ─── Task ───
 
+program.commandsGroup("Task Lifecycle:");
 const taskCmd = program.command("task").description("Task lifecycle commands");
 
 taskCmd
   .command("claim <id>")
   .description("Claim an assigned task — start working on it")
-  .option("-o, --output <format>", "Output format (json, yaml, text)")
+  .addOption(outputOption())
   .action(async (id, opts) => {
     const client = await createClient();
     const task = await client.claimTask(id);
@@ -149,7 +101,7 @@ taskCmd
 taskCmd
   .command("cancel <id>")
   .description("Cancel a task")
-  .option("-o, --output <format>", "Output format (json, yaml, text)")
+  .addOption(outputOption())
   .action(async (id, opts) => {
     const client = await createClient();
     const task = await client.cancelTask(id);
@@ -161,7 +113,7 @@ taskCmd
   .command("review <id>")
   .description("Move a task to In Review")
   .option("--pr-url <url>", "Pull request URL")
-  .option("-o, --output <format>", "Output format (json, yaml, text)")
+  .addOption(outputOption())
   .action(async (id, opts) => {
     const client = await createClient();
     const body: Record<string, unknown> = {};
@@ -174,7 +126,7 @@ taskCmd
 taskCmd
   .command("complete <id>")
   .description("Complete a task (ops fallback)")
-  .option("-o, --output <format>", "Output format (json, yaml, text)")
+  .addOption(outputOption())
   .action(async (id, opts) => {
     const client = await createClient();
     const task = await client.completeTask(id);
@@ -186,7 +138,7 @@ taskCmd
   .command("reject <id>")
   .description("Reject a task from review back to in-progress")
   .option("--reason <reason>", "Reason for rejection (logged)")
-  .option("-o, --output <format>", "Output format (json, yaml, text)")
+  .addOption(outputOption())
   .action(async (id, opts) => {
     const client = await createClient();
     const body: Record<string, unknown> = {};
@@ -199,7 +151,7 @@ taskCmd
 taskCmd
   .command("release <id>")
   .description("Release a task back to todo (ops fallback)")
-  .option("-o, --output <format>", "Output format (json, yaml, text)")
+  .addOption(outputOption())
   .action(async (id, opts) => {
     const client = await createClient();
     const task = await client.releaseTask(id);
@@ -209,23 +161,30 @@ taskCmd
 
 // ─── Top-level CRUD ───
 
+program.commandsGroup("Agent:");
 registerAgentCommand(program);
-registerAuthCommand(program);
+
+program.commandsGroup("Resources:");
 registerGetCommand(program);
 registerDescribeCommand(program);
 registerCreateCommand(program);
 registerUpdateCommand(program);
 registerDeleteCommand(program);
 registerApplyCommand(program);
+
+program.commandsGroup("Wait:");
 registerWaitCommand(program);
 
 // ─── Daemon ───
 
+program.commandsGroup("Runtime:");
 registerStartCommand(program);
 registerStopCommand(program);
 registerRestartCommand(program);
 registerStatusCommand(program);
 registerLogsCommand(program);
+
+program.commandsGroup("Maintenance:");
 registerUpgradeCommand(program);
 
 // Fire update check in background for non-npx, non-worker invocations

@@ -673,8 +673,8 @@ describe("getOutputFormat", () => {
     expect(getOutputFormat("wide")).toBe("wide");
   });
 
-  it("returns 'text' when given an unrecognized value", () => {
-    expect(getOutputFormat("unknown")).toBe("text");
+  it("rejects an unrecognized value", () => {
+    expect(() => getOutputFormat("unknown")).toThrow("Invalid output format: unknown");
   });
 
   it("returns 'text' when given undefined", () => {

@@ -38,6 +38,10 @@ function buildProgram(captureModel: (command: CapturedCommand) => void): any {
         captured.options.push(flags);
         return command;
       },
+      addOption: (option: { flags: string }) => {
+        captured.options.push(option.flags);
+        return command;
+      },
       action: (action: CommandAction) => {
         captured.action = action;
         if (name === "model") captureModel(captured);

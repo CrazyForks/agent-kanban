@@ -15,10 +15,14 @@ vi.mock("../src/agent/leader.js", () => ({
   createClient: mockCreateClient,
 }));
 
-vi.mock("../src/output.js", () => ({
-  getOutputFormat: vi.fn(() => "text"),
-  output: vi.fn(),
-}));
+vi.mock("../src/output.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/output.js")>();
+  return {
+    ...actual,
+    getOutputFormat: vi.fn(() => "text"),
+    output: vi.fn(),
+  };
+});
 
 const { registerCreateCommand } = await import("../src/commands/create.js");
 const { registerUpdateCommand } = await import("../src/commands/update.js");
