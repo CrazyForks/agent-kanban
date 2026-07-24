@@ -1806,7 +1806,7 @@ describe("routes", () => {
     ]);
   });
 
-  it("GET /api/agents keeps full AMA runtimes schedulable because capacity does not change ownership", async () => {
+  it("GET /api/agents uses runnable AMA runtime state without treating full capacity as unavailable", async () => {
     const previousAma = {
       AMA_ORIGIN: env.AMA_ORIGIN,
       AMA_OIDC_ISSUER: env.AMA_OIDC_ISSUER,
@@ -1821,6 +1821,7 @@ describe("routes", () => {
     });
     await configureAmaOwnerRuntime(userId, "claude", "env_available");
     await configureAmaOwnerRuntime(userId, "codex", "env_full");
+    await configureAmaOwnerRuntime(userId, "copilot", "env_limited");
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = reqUrl(input);
       if (url === "https://auth.test/.well-known/openid-configuration") {
@@ -1856,12 +1857,28 @@ describe("routes", () => {
           ],
         });
       }
+      if (url === "https://ama.test/api/v1/runners?environmentId=env_limited&limit=100") {
+        return jsonResponse({
+          data: [
+            {
+              id: "runner_limited",
+              environmentId: "env_limited",
+              state: "active",
+              runtimes: [{ runtime: "copilot", models: [], state: "limited", detail: "Runtime authorization unavailable" }],
+              currentLoad: 0,
+              maxConcurrent: 5,
+              lastHeartbeatAt: new Date().toISOString(),
+            },
+          ],
+        });
+      }
       throw new Error(`Unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
     try {
       await createTestAgent(env.DB, userId, { username: "ama-available-agent", runtime: "claude", role: "ama-runtime-source" });
       await createTestAgent(env.DB, userId, { username: "ama-full-agent", runtime: "codex", role: "ama-runtime-source" });
+      await createTestAgent(env.DB, userId, { username: "ama-limited-agent", runtime: "copilot", role: "ama-runtime-source" });
       const res = await apiRequest("GET", "/api/agents?kind=worker&role=ama-runtime-source&available=true", undefined, apiKey);
       expect(res.status).toBe(200);
       const body = (await res.json()) as any[];
@@ -1871,10 +1888,13 @@ describe("routes", () => {
           expect.objectContaining({ username: "ama-full-agent", status: expect.objectContaining({ schedulable: true }) }),
         ]),
       );
+      expect(body.map((agent) => agent.username)).not.toContain("ama-limited-agent");
 
       const unavailableRes = await apiRequest("GET", "/api/agents?kind=worker&role=ama-runtime-source&available=false", undefined, apiKey);
       expect(unavailableRes.status).toBe(200);
-      await expect(unavailableRes.json()).resolves.toEqual([]);
+      await expect(unavailableRes.json()).resolves.toEqual([
+        expect.objectContaining({ username: "ama-limited-agent", status: expect.objectContaining({ schedulable: false }) }),
+      ]);
     } finally {
       Object.assign(env, previousAma);
       vi.unstubAllGlobals();
@@ -1927,6 +1947,21 @@ describe("routes", () => {
                 runtimes: [{ runtime: "codex", models: ["gpt-5.3-codex"], state: "ready" }],
                 currentLoad: 2,
                 maxConcurrent: 2,
+                lastHeartbeatAt: new Date().toISOString(),
+              },
+            ],
+          });
+        }
+        if (url === "https://ama.test/api/v1/runners?environmentId=env_limited&limit=100") {
+          return jsonResponse({
+            data: [
+              {
+                id: "runner_limited",
+                environmentId: "env_limited",
+                state: "active",
+                runtimes: [{ runtime: "copilot", models: [], state: "limited" }],
+                currentLoad: 0,
+                maxConcurrent: 5,
                 lastHeartbeatAt: new Date().toISOString(),
               },
             ],

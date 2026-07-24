@@ -37,7 +37,7 @@ import { createLogger } from "./logger";
 import { listMachineEnvironmentCandidatesForRuntime } from "./machineRepo";
 import { githubRepoRef } from "./repositoryRepo";
 import { taskRuntimeSource } from "./runtimeBinding";
-import { amaRunnerOwnsRuntime, amaRuntimeName } from "./runtimeRouter";
+import { amaRunnerCanScheduleRuntime, amaRuntimeName } from "./runtimeRouter";
 import { getSubagent } from "./subagentRepo";
 import { computeBlocked } from "./taskDeps";
 import { addTaskAction, getTask, releaseTask, updateTask } from "./taskRepo";
@@ -474,23 +474,7 @@ async function firstRunnableCandidate(
 }
 
 export function amaRunnerCanRunRuntime(runner: AmaRunner, runtime: string, model: string | null = null): boolean {
-  if (!amaRunnerOwnsRuntime(runner, runtime, model) || runner.currentLoad >= runner.maxConcurrent || runtimeQuotaExhausted(runner, runtime)) {
-    return false;
-  }
-  return runner.runtimes.some(
-    (entry) => entry.runtime === runtime && entry.state === "ready" && (!model || runtime === "ama" || entry.models.includes(model)),
-  );
-}
-
-// Runners report provider quota windows in their heartbeat usage; dispatching
-// to a runtime whose quota is fully used just burns work-item attempts. The
-// dispatch sweep retries once the window resets.
-function runtimeQuotaExhausted(runner: AmaRunner, runtime: string): boolean {
-  const usage = (runner.runtimeUsage ?? []).find((entry) => entry.runtime === runtime);
-  if (!usage) return false;
-  const now = Date.now();
-  // utilization is a 0-100 percentage (bridge normalizes provider scales)
-  return usage.windows.some((window) => window.utilization >= 100 && Date.parse(window.resetsAt) > now);
+  return runner.currentLoad < runner.maxConcurrent && amaRunnerCanScheduleRuntime(runner, runtime, model);
 }
 
 export async function sendTaskMessageToAma(env: Env, ownerId: string, task: Task, message: string): Promise<Task> {

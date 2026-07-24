@@ -131,8 +131,8 @@ describe("runtime source primitives", () => {
     expect(legacyMachineHeartbeatFresh(machine, now)).toBe(false);
   });
 
-  it("treats active limited and full AMA runners as owners, then selects AMA first", async () => {
-    const { amaRunnerOwnsRuntime, selectRuntimeSource } = await import("../apps/web/server/runtimeRouter");
+  it("preserves runtime ownership for limited runners while only ready runners are schedulable", async () => {
+    const { amaRunnerCanScheduleRuntime, amaRunnerOwnsRuntime, selectRuntimeSource } = await import("../apps/web/server/runtimeRouter");
     const runner = {
       status: "active",
       lastHeartbeatAt: new Date().toISOString(),
@@ -152,7 +152,30 @@ describe("runtime source primitives", () => {
     expect(amaRunnerOwnsRuntime(runner, "claude-code", "claude-sonnet-4-6")).toBe(true);
     expect(amaRunnerOwnsRuntime(runner, "claude-code", "vendor:model:v2")).toBe(true);
     expect(amaRunnerOwnsRuntime(runner, "claude-code", "claude-opus-4-6")).toBe(false);
+    expect(amaRunnerCanScheduleRuntime(runner, "claude-code")).toBe(false);
     expect(selectRuntimeSource({ ama: true, legacy: true })).toBe("ama");
+  });
+
+  it("keeps ready runtimes schedulable at full capacity but excludes exhausted quota windows", async () => {
+    const { amaRunnerCanScheduleRuntime } = await import("../apps/web/server/runtimeRouter");
+    const runner = {
+      status: "active",
+      lastHeartbeatAt: new Date().toISOString(),
+      runtimes: [{ runtime: "claude-code", models: ["claude-sonnet-4-6"], state: "ready" }],
+      currentLoad: 2,
+      maxConcurrent: 2,
+      runtimeUsage: [],
+    } as any;
+
+    expect(amaRunnerCanScheduleRuntime(runner, "claude-code")).toBe(true);
+
+    runner.runtimeUsage = [
+      {
+        runtime: "claude-code",
+        windows: [{ label: "Daily", utilization: 100, resetsAt: new Date(Date.now() + 60_000).toISOString() }],
+      },
+    ];
+    expect(amaRunnerCanScheduleRuntime(runner, "claude-code")).toBe(false);
   });
 
   it("does not require runner model declarations for the AMA cloud runtime", async () => {

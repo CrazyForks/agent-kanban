@@ -32,6 +32,20 @@ export function amaRunnerOwnsRuntime(runner: AmaRunner, runtime: string, model: 
   );
 }
 
+export function amaRunnerCanScheduleRuntime(runner: AmaRunner, runtime: string, model: string | null = null): boolean {
+  if (!amaRunnerOwnsRuntime(runner, runtime, model) || runtimeQuotaExhausted(runner, runtime)) return false;
+  return runner.runtimes.some(
+    (entry) => entry.runtime === runtime && entry.state === "ready" && (!model || runtime === "ama" || entry.models.includes(model)),
+  );
+}
+
+function runtimeQuotaExhausted(runner: AmaRunner, runtime: string): boolean {
+  const usage = (runner.runtimeUsage ?? []).find((entry) => entry.runtime === runtime);
+  if (!usage) return false;
+  const now = Date.now();
+  return usage.windows.some((window) => window.utilization >= 100 && Date.parse(window.resetsAt) > now);
+}
+
 export async function resolveRuntimeSourceAvailability(
   db: D1,
   env: Env,
@@ -78,7 +92,7 @@ export async function listAvailableRuntimeSources(db: D1, env: Env, ownerId: str
       const cloudAvailable = machines.some(
         (machine) => machine.hosting === "cloud" && machine.runtimes.some((entry) => entry.name === runtime && entry.status === "ready"),
       );
-      const ama = cloudAvailable || runnerPages.some((page) => page.data.some((runner) => amaRunnerOwnsRuntime(runner, amaRuntime)));
+      const ama = cloudAvailable || runnerPages.some((page) => page.data.some((runner) => amaRunnerCanScheduleRuntime(runner, amaRuntime)));
       const legacy = legacyRuntimeAvailableOnMachines(machines, runtime);
       return [runtime, { ama, legacy }] as const;
     }),
