@@ -521,6 +521,10 @@ export async function sendTaskRejectToAma(db: D1, env: Env, ownerId: string, tas
       "Do not run `ak task claim` again.",
       "Inspect the current task, repository, and pull request state. Fix the reviewer rejection in the working branch, commit and push any required code changes, rerun the smallest meaningful checks, then submit the task for review again.",
       `When the fix is complete, add a Completion Summary note with what changed and what passed, then run: ak task review ${task.id}`,
+      "In AK, in_review does not only mean completed work is waiting for review. It is the task's only paused or handed-off state, including waits for blockers, prerequisites, external actions, or later continuation. in_progress means this worker session is actively running.",
+      `Even if this rejection or wake-up was a mistake and there is no actionable work, do not simply report that and exit. Write the Completion Summary and resubmit task ${task.id} using its existing PR URL.`,
+      "If the rejection reason says this task is blocked by another task, PR, migration, infrastructure repair, or maintainer action, do not stop and wait in in_progress. In the Completion Summary, state that there is no actionable worker work yet and tell the reviewer to keep this task in review until the prerequisite finishes, then reject it again only when you have an immediate action to perform.",
+      `Under all circumstances, the final task operation before ending this session must be \`ak task review ${task.id}\`, with \`--pr-url <existing PR URL>\` when the task has a PR. If it fails, correct the error and retry; do not end the session without a successful review submission.`,
     ].join("\n"),
   );
   return await annotateTask(db, task, {
@@ -900,6 +904,11 @@ function taskInitialPrompt(task: Task) {
     "- Before submitting review, post a final note that starts with `Completion Summary:` and includes `Profile Decision:`.",
     "- If you changed code, create a draft PR and keep it draft while work, checks, and the completion note are still pending. After the completion note exists and the PR is otherwise reviewable, mark it ready immediately before submitting review with `ak task review --pr-url <PR URL>`. Never submit review without a PR URL after code changes.",
     `- Before you stop working on this task for any reason, including blockers or partial completion, you must submit it for review with \`ak task review ${task.id}\` after documenting the result. Do not end the session without submitting review.`,
+    "- In AK, in_review does not only mean completed work is waiting for review. It is the task's only paused or handed-off state, including waits for blockers, prerequisites, external actions, or later continuation. It does not matter who or what the task is waiting for.",
+    `- in_progress means this worker session is actively running. Under all circumstances, before ending this work session you must submit task ${task.id} to in_review. Never stop without submitting review.`,
+    "- This rule still applies if the session was awakened or rejected by mistake, the rejection reason says to wait for another task, there is no actionable work, the work is blocked or partial, or another task, PR, migration, infrastructure repair, or maintainer action must happen first.",
+    "- Never wait in in_progress for a prerequisite. State in the Completion Summary that there is no actionable worker work yet, tell the reviewer to keep the task in review until the prerequisite finishes, and submit it back to in_review. The reviewer may reject it again when there is an immediate action for you.",
+    `- In those cases, document the situation in the Completion Summary and still submit review. The final task operation before stopping must be \`ak task review ${task.id}\` with the task's PR URL when it has one. If review submission fails, correct the error and retry; do not exit.`,
     task.repository_id ? "" : null,
     task.repository_id ? "GitHub auth:" : null,
     task.repository_id
@@ -952,6 +961,11 @@ function cloudTaskInitialPrompt(task: Task, resourceRefs: { owner: string; repo:
           `6. Submit for review before stopping: ak task review ${task.id}`,
         ]),
     "Do not end the session without submitting review. If blocked, document the blocker in the final note and still submit review.",
+    "In AK, in_review does not only mean completed work is waiting for review. It is the task's only paused or handed-off state, including waits for blockers, prerequisites, external actions, or later continuation. It does not matter who or what the task is waiting for.",
+    `in_progress means this worker session is actively running. Under all circumstances, before ending this work session you must submit task ${task.id} to in_review. Never stop without submitting review.`,
+    "This rule still applies if the session was awakened or rejected by mistake, the rejection reason says to wait for another task, there is no actionable work, the work is blocked or partial, or another task, PR, migration, infrastructure repair, or maintainer action must happen first.",
+    "Never wait in in_progress for a prerequisite. State in the Completion Summary that there is no actionable worker work yet, tell the reviewer to keep the task in review until the prerequisite finishes, and submit it back to in_review. The reviewer may reject it again when there is an immediate action for you.",
+    `In those cases, document the situation in the Completion Summary and still submit review. The final task operation before stopping must be \`ak task review ${task.id}\` with the task's PR URL when it has one. If review submission fails, correct the error and retry; do not exit.`,
     "Never submit review without `--pr-url` after code changes.",
   ].filter((line): line is string => line !== null);
   return prompt.join("\n");

@@ -20,6 +20,29 @@ You are an agent. Use the `ak` CLI to work on tasks. Your identity is initialize
 8. **Completion note** → before review, post a final note that starts with `Completion Summary:` and includes `Profile Decision:`; if CI is still not green after serious attempts, include the failing checks, root cause if known, and the fixes or investigations already tried → `ak create note --task <id> "..."`
 9. **Ready PR** → immediately before submitting task review, mark the PR ready for review → `gh pr ready <pr-number>`
 10. **Submit for review** after CI passes, or after documenting why CI still cannot pass despite repeated attempts; the PR must be conflict-free and the completion note must be posted → `ak task review <id> --pr-url <url>`
+11. **Submit before stopping** → immediately before ending the session, always run `ak task review <id>` with `--pr-url` when the task has a PR
+
+## Mandatory Review Before Exit
+
+`in_review` does not only mean that completed work is waiting for someone to review it. In AK, `in_review` is the task's only paused or handed-off state. It also represents waiting on a blocker, prerequisite, external action, or later continuation. It does not matter who or what the task is waiting for.
+
+`in_progress` means the worker session is actively running. Therefore, whenever a running worker decides to stop, it must first move the task to `in_review`.
+
+Before stopping for any reason, always submit the task to `in_review`. Never end a work session without submitting the task for review.
+
+This rule has no work-related exceptions. It still applies when:
+
+- The session was awakened or the task was rejected by mistake.
+- The rejection reason says to wait for another task, PR, migration, infrastructure repair, or maintainer action.
+- The worker finds no actionable work.
+- The work is blocked or only partially complete.
+- Another task, PR, migration, infrastructure repair, or maintainer action must happen next.
+
+When there is no actionable work, write the Completion Summary explaining that fact and resubmit the task using its existing PR URL. Do not merely report the situation and exit.
+
+If a rejection reason tells the worker that the task is blocked by other work, do not wait in `in_progress`. State in the Completion Summary that there is no actionable worker work yet, ask the reviewer to keep the task in review until the prerequisite finishes, and submit it back to `in_review`. The reviewer may reject it again after the prerequisite is complete and the worker has an immediate action to perform.
+
+The final task operation before stopping must be `ak task review <id>` with `--pr-url` when the task has a PR. If that command fails, the exit requirement has not been satisfied: correct the error and retry instead of ending the session.
 
 ## Agent Profile Change Candidates
 
@@ -168,7 +191,7 @@ ak create task --board <id> --title "Title" \
 - **Never call `task complete`** — only humans complete tasks.
 - **Test before pushing** — run the project's test suite and type check locally. All tests must pass before `git push`. Skip only if tests cannot run locally. Do not rely on CI to catch failures you could have caught locally.
 - **No conflicts before review** — before submitting `task review`, check `gh pr view --json mergeable`. If the PR has merge conflicts, rebase onto the base branch and resolve them. Never submit a conflicted PR for review.
-- **Always reach review before exiting** — CI is a required check before `task review`, and you must try to fix failing or pending checks. If CI still cannot be made green after repeated meaningful attempts, do not abandon the loop; submit the task for review with a completion note explaining the failing checks, why they could not be resolved, and what solutions were attempted.
+- **Always submit review before exiting** — no matter why the session is stopping, its final task operation must be `ak task review`. This includes mistaken wake-ups or rejections, rejection reasons that say to wait for another task, no actionable work, blockers, partial completion, and follow-up work. Never wait in `in_progress`; tell the reviewer to reject again only when the prerequisite is complete and the worker has an immediate action. If review submission fails, fix it and retry; do not exit.
 - Always create a draft PR for code changes. Keep it draft until the completion note exists and the next action is `task review --pr-url`; then mark it ready with `gh pr ready <pr-number>` immediately before submitting task review.
 - Log progress frequently — humans monitor the board.
 - **Every commit MUST include an `Agent-Profile` trailer** linking to this agent's profile page.
