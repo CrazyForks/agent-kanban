@@ -5,11 +5,6 @@ import { addSubkey, getOrCreateRootKey } from "./gpgKeyRepo";
 import { runtimeReadyPredicateSql } from "./machineRepo";
 
 const parseAgent = <T extends Agent>(row: T) => parseJsonFields(row, ["skills", "subagents", "taints", "handoff_to", "metadata"]);
-const SESSION_UNION_SQL = `
-  SELECT agent_id, status, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_micro_usd FROM agent_sessions
-  UNION ALL
-  SELECT agent_id, status, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_micro_usd FROM ama_agent_sessions
-`;
 
 export type AgentListFilters = {
   kind?: "worker" | "leader";
@@ -41,6 +36,17 @@ type AgentActivityRow = Agent & {
   cache_creation_tokens: number;
   cost_micro_usd: number;
 };
+
+type AgentBaseRow = Agent & {
+  runtime_ready: number | boolean;
+};
+
+type AgentTaskCounts = Pick<
+  AgentActivityRow,
+  "todo_task_count" | "in_progress_task_count" | "in_review_task_count" | "done_task_count" | "cancelled_task_count"
+>;
+
+type AgentUsageTotals = Pick<AgentActivityRow, "input_tokens" | "output_tokens" | "cache_read_tokens" | "cache_creation_tokens" | "cost_micro_usd">;
 
 function buildAgentStatus(agent: AgentActivityRow, runtimeAvailable: boolean): AgentStatus {
   return {
@@ -245,6 +251,9 @@ export async function seedBuiltinAgents(db: D1, ownerId: string): Promise<void> 
 export async function listAgents(db: D1, ownerId: string, filters: AgentListFilters = {}): Promise<AgentWithActivity[]> {
   const runtimeCutoff = new Date(Date.now() - MACHINE_STALE_TIMEOUT_MS).toISOString();
   let query = `
+    WITH owner_agent_ids AS (
+      SELECT id FROM agents WHERE owner_id = ?
+    )
     SELECT a.id, a.owner_id, a.name, a.username, a.gpg_subkey_id, a.bio, a.soul, a.role, a.kind, a.handoff_to, a.runtime, a.model, a.skills, a.subagents, a.taints,
       a.version,
       a.public_key, a.fingerprint, a.builtin, a.ama_agent_id, a.metadata, a.created_at, a.updated_at,
@@ -260,11 +269,11 @@ export async function listAgents(db: D1, ownerId: string, filters: AgentListFilt
       COALESCE(tc.in_review_task_count, 0) as in_review_task_count,
       COALESCE(tc.done_task_count, 0) as done_task_count,
       COALESCE(tc.cancelled_task_count, 0) as cancelled_task_count,
-      COALESCE((SELECT SUM(s.input_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as input_tokens,
-      COALESCE((SELECT SUM(s.output_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as output_tokens,
-      COALESCE((SELECT SUM(s.cache_read_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cache_read_tokens,
-      COALESCE((SELECT SUM(s.cache_creation_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cache_creation_tokens,
-      COALESCE((SELECT SUM(s.cost_micro_usd) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cost_micro_usd
+      COALESCE(su.input_tokens, 0) as input_tokens,
+      COALESCE(su.output_tokens, 0) as output_tokens,
+      COALESCE(su.cache_read_tokens, 0) as cache_read_tokens,
+      COALESCE(su.cache_creation_tokens, 0) as cache_creation_tokens,
+      COALESCE(su.cost_micro_usd, 0) as cost_micro_usd
     FROM agents a
     LEFT JOIN (
       SELECT assigned_to,
@@ -277,9 +286,28 @@ export async function listAgents(db: D1, ownerId: string, filters: AgentListFilt
       WHERE assigned_to IS NOT NULL
       GROUP BY assigned_to
     ) tc ON tc.assigned_to = a.id
+    LEFT JOIN (
+      SELECT
+        agent_id,
+        SUM(input_tokens) AS input_tokens,
+        SUM(output_tokens) AS output_tokens,
+        SUM(cache_read_tokens) AS cache_read_tokens,
+        SUM(cache_creation_tokens) AS cache_creation_tokens,
+        SUM(cost_micro_usd) AS cost_micro_usd
+      FROM (
+        SELECT agent_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_micro_usd
+        FROM agent_sessions
+        WHERE agent_id IN (SELECT id FROM owner_agent_ids)
+        UNION ALL
+        SELECT agent_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_micro_usd
+        FROM ama_agent_sessions
+        WHERE agent_id IN (SELECT id FROM owner_agent_ids)
+      )
+      GROUP BY agent_id
+    ) su ON su.agent_id = a.id
     WHERE a.owner_id = ? AND COALESCE(a.version, 'latest') = 'latest'
   `;
-  const binds: unknown[] = [runtimeCutoff, ownerId];
+  const binds: unknown[] = [ownerId, runtimeCutoff, ownerId];
   if (filters.kind) {
     query += " AND a.kind = ?";
     binds.push(filters.kind);
@@ -304,8 +332,9 @@ export async function listAgents(db: D1, ownerId: string, filters: AgentListFilt
 
 export async function getAgent(db: D1, agentId: string, ownerId: string): Promise<AgentWithActivity | null> {
   const runtimeCutoff = new Date(Date.now() - MACHINE_STALE_TIMEOUT_MS).toISOString();
-  return db
-    .prepare(`
+  const [agentResult, taskCountResult, usageResult] = await db.batch([
+    db
+      .prepare(`
     SELECT a.id, a.owner_id, a.name, a.username, a.gpg_subkey_id, a.bio, a.soul, a.role, a.kind, a.handoff_to, a.runtime, a.model, a.skills, a.subagents, a.taints,
       a.version,
       a.public_key, a.fingerprint, a.builtin, a.ama_agent_id, a.metadata, a.created_at, a.updated_at,
@@ -315,34 +344,48 @@ export async function getAgent(db: D1, agentId: string, ownerId: string): Promis
           AND m.status = 'online'
           AND m.last_heartbeat_at >= ?
           AND ${runtimeReadyPredicateSql("a.runtime")}
-      ) THEN 1 ELSE 0 END as runtime_ready,
-      COALESCE(tc.todo_task_count, 0) as todo_task_count,
-      COALESCE(tc.in_progress_task_count, 0) as in_progress_task_count,
-      COALESCE(tc.in_review_task_count, 0) as in_review_task_count,
-      COALESCE(tc.done_task_count, 0) as done_task_count,
-      COALESCE(tc.cancelled_task_count, 0) as cancelled_task_count,
-      COALESCE((SELECT SUM(s.input_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as input_tokens,
-      COALESCE((SELECT SUM(s.output_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as output_tokens,
-      COALESCE((SELECT SUM(s.cache_read_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cache_read_tokens,
-      COALESCE((SELECT SUM(s.cache_creation_tokens) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cache_creation_tokens,
-      COALESCE((SELECT SUM(s.cost_micro_usd) FROM (${SESSION_UNION_SQL}) s WHERE s.agent_id = a.id), 0) as cost_micro_usd
+      ) THEN 1 ELSE 0 END as runtime_ready
     FROM agents a
-    LEFT JOIN (
-      SELECT assigned_to,
+    WHERE a.id = ? AND a.owner_id = ?
+  `)
+      .bind(runtimeCutoff, agentId, ownerId),
+    db
+      .prepare(`
+      SELECT
         SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) as todo_task_count,
         SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress_task_count,
         SUM(CASE WHEN status = 'in_review' THEN 1 ELSE 0 END) as in_review_task_count,
         SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done_task_count,
         SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_task_count
       FROM tasks
-      WHERE assigned_to IS NOT NULL
-      GROUP BY assigned_to
-    ) tc ON tc.assigned_to = a.id
-    WHERE a.id = ? AND a.owner_id = ?
-  `)
-    .bind(runtimeCutoff, agentId, ownerId)
-    .first<AgentActivityRow>()
-    .then((r) => (r ? parseAgentActivity(r) : null));
+      WHERE assigned_to = ?
+    `)
+      .bind(agentId),
+    db
+      .prepare(`
+      SELECT
+        COALESCE(SUM(input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+        COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
+        COALESCE(SUM(cost_micro_usd), 0) AS cost_micro_usd
+      FROM (
+        SELECT input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_micro_usd
+        FROM agent_sessions
+        WHERE agent_id = ?
+        UNION ALL
+        SELECT input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_micro_usd
+        FROM ama_agent_sessions
+        WHERE agent_id = ?
+      )
+    `)
+      .bind(agentId, agentId),
+  ]);
+  const agent = agentResult.results[0] as AgentBaseRow | undefined;
+  if (!agent) return null;
+  const taskCounts = taskCountResult.results[0] as AgentTaskCounts;
+  const usage = usageResult.results[0] as AgentUsageTotals;
+  return parseAgentActivity({ ...agent, ...taskCounts, ...usage });
 }
 
 export async function updateAgent(

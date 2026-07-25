@@ -3,7 +3,7 @@ import { getAmaProjectId } from "./amaOwnerIntegrationRepo";
 import { type AmaRunner, isAmaTaskDispatchConfigured, listAmaRunners } from "./amaRuntime";
 import type { D1 } from "./db";
 import { legacyRuntimeAvailableOnMachines } from "./legacyRuntime";
-import { listMachines } from "./machineRepo";
+import { listMachinesForRuntimeRouting } from "./machineRepo";
 import type { TaskRuntimeSource } from "./runtimeBinding";
 import type { Env } from "./types";
 
@@ -53,7 +53,7 @@ export async function resolveRuntimeSourceAvailability(
   runtime: AgentRuntime,
   model: string | null = null,
 ): Promise<RuntimeSourceAvailability> {
-  const machines = await listMachines(db, ownerId);
+  const machines = await listMachinesForRuntimeRouting(db, ownerId);
   const legacy = legacyRuntimeAvailableOnMachines(machines, runtime);
   if (!isAmaTaskDispatchConfigured(env)) {
     return { ama: false, legacy };
@@ -80,7 +80,7 @@ export async function resolveRuntimeSourceAvailability(
 }
 
 export async function listAvailableRuntimeSources(db: D1, env: Env, ownerId: string): Promise<Map<AgentRuntime, RuntimeSourceAvailability>> {
-  const machines = await listMachines(db, ownerId);
+  const machines = await listMachinesForRuntimeRouting(db, ownerId);
   const projectId = isAmaTaskDispatchConfigured(env) ? await getAmaProjectId(db, ownerId) : null;
   const environmentIds = [...new Set(machines.map((machine) => machine.ama_environment_id).filter((id): id is string => Boolean(id)))];
   const runnerPages = projectId

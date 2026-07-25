@@ -159,6 +159,11 @@ export async function listMachines(db: D1, ownerId: string): Promise<MachineWith
   return result.results.map(parseMachine);
 }
 
+export async function listMachinesForRuntimeRouting(db: D1, ownerId: string): Promise<MachineRecord[]> {
+  const result = await db.prepare("SELECT * FROM machines WHERE owner_id = ?").bind(ownerId).all<MachineRecord>();
+  return result.results.map(parseMachine);
+}
+
 export async function getMachine(db: D1, machineId: string, ownerId: string): Promise<(MachineWithAgentsRecord & { agents: any[] }) | null> {
   const machine = await db
     .prepare(`

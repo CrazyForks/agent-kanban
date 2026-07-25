@@ -43,6 +43,23 @@ function json(body: unknown): Response {
   return new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
 }
 
+function tracePreparedSql(database: D1Database): { database: D1Database; queries: string[] } {
+  const queries: string[] = [];
+  const traced = new Proxy(database, {
+    get(target, property) {
+      if (property === "prepare") {
+        return (query: string) => {
+          queries.push(query);
+          return target.prepare(query);
+        };
+      }
+      const value = Reflect.get(target, property);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { database: traced, queries };
+}
+
 async function configureOwner(ownerId: string, environmentId: string) {
   const now = new Date().toISOString();
   await db
@@ -200,6 +217,151 @@ describe("runtime source primitives", () => {
 });
 
 describe("routePendingTasks", () => {
+  it("does not persist a runtime source after the listed assignee changes", async () => {
+    const ownerId = `router-race-owner-${randomUUID()}`;
+    await seedUser(db, ownerId, `${ownerId}@test.local`);
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createTask, getTask } = await import("../apps/web/server/taskRepo");
+    const { taskRuntimeSource } = await import("../apps/web/server/runtimeBinding");
+    const { compareAndSetTaskRuntimeSource, listPendingTaskRuntimeBindings } = await import("../apps/web/server/runtimeBindingRepo");
+    const board = await createBoard(db, ownerId, `router-race-${randomUUID()}`, "ops");
+    const originalAgent = await createTestAgent(db, ownerId, {
+      username: `router-race-original-${randomUUID()}`,
+      runtime: "claude",
+    });
+    const replacementAgent = await createTestAgent(db, ownerId, {
+      username: `router-race-replacement-${randomUUID()}`,
+      runtime: "codex",
+    });
+    const task = await createTask(db, ownerId, {
+      title: "reassigned during routing",
+      board_id: board.id,
+      assigned_to: originalAgent.id,
+      skipRuntimeAvailability: true,
+    });
+    const pending = (await listPendingTaskRuntimeBindings(db)).find((row) => row.id === task.id);
+    expect(pending).toMatchObject({ assignedTo: originalAgent.id, current: null });
+
+    try {
+      await db.prepare("UPDATE tasks SET assigned_to = ? WHERE id = ?").bind(replacementAgent.id, task.id).run();
+      const changed = await compareAndSetTaskRuntimeSource(db, pending!.id, pending!.assignedTo, pending!.current, "ama");
+      const persisted = await getTask(db, task.id, ownerId);
+
+      expect(changed).toBe(false);
+      expect(persisted!.assigned_to).toBe(replacementAgent.id);
+      expect(taskRuntimeSource(persisted!)).toBeNull();
+    } finally {
+      await db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").bind(task.id).run();
+    }
+  });
+
+  it("routes tasks with empty or explicit-null historical binding annotations as unbound", async () => {
+    const ownerId = `router-empty-binding-owner-${randomUUID()}`;
+    const environmentId = `router-empty-binding-env-${randomUUID()}`;
+    await seedUser(db, ownerId, `${ownerId}@test.local`);
+    await configureOwner(ownerId, environmentId);
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createTask } = await import("../apps/web/server/taskRepo");
+    const { routePendingTasks } = await import("../apps/web/server/runtimeCoordinator");
+    const { listPendingTaskRuntimeBindings } = await import("../apps/web/server/runtimeBindingRepo");
+    const board = await createBoard(db, ownerId, `router-empty-binding-${randomUUID()}`, "ops");
+    const agent = await createTestAgent(db, ownerId, {
+      username: `router-empty-binding-${randomUUID()}`,
+      runtime: "claude",
+    });
+    const emptyAmaSession = await createTask(db, ownerId, {
+      title: "empty AMA session binding",
+      board_id: board.id,
+      assigned_to: agent.id,
+      metadata: { annotations: { "ama.sessionId": "" } },
+      skipRuntimeAvailability: true,
+    });
+    const emptyHistoricalSession = await createTask(db, ownerId, {
+      title: "empty historical session binding",
+      board_id: board.id,
+      assigned_to: agent.id,
+      metadata: { annotations: { agentSessionId: "" } },
+      skipRuntimeAvailability: true,
+    });
+    const nullSessions = await createTask(db, ownerId, {
+      title: "explicit null session bindings",
+      board_id: board.id,
+      assigned_to: agent.id,
+      metadata: { annotations: { "ama.sessionId": null, agentSessionId: null } },
+      skipRuntimeAvailability: true,
+    });
+    const pending = (await listPendingTaskRuntimeBindings(db)).filter(
+      (row) => row.id === emptyAmaSession.id || row.id === emptyHistoricalSession.id || row.id === nullSessions.id,
+    );
+    expect(pending).toHaveLength(3);
+    expect(pending.every((row) => !row.hasAmaBinding)).toBe(true);
+    const fetchMock = runnerFetch(environmentId, () => true);
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      await routePendingTasks(db, env());
+
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const emptyAmaPersisted = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(emptyAmaSession.id).first<{ metadata: string }>();
+      const emptyHistoricalPersisted = await db
+        .prepare("SELECT metadata FROM tasks WHERE id = ?")
+        .bind(emptyHistoricalSession.id)
+        .first<{ metadata: string }>();
+      const nullSessionsPersisted = await db.prepare("SELECT metadata FROM tasks WHERE id = ?").bind(nullSessions.id).first<{ metadata: string }>();
+      expect(JSON.parse(emptyAmaPersisted!.metadata).annotations["runtime.source"]).toBe("ama");
+      expect(JSON.parse(emptyHistoricalPersisted!.metadata).annotations["runtime.source"]).toBe("ama");
+      expect(JSON.parse(nullSessionsPersisted!.metadata).annotations["runtime.source"]).toBe("ama");
+    } finally {
+      await db.prepare("UPDATE tasks SET status = 'done' WHERE board_id = ?").bind(board.id).run();
+    }
+  });
+
+  it("reuses one lightweight runtime lookup for matching tasks without scanning session history", async () => {
+    const ownerId = `router-query-owner-${randomUUID()}`;
+    const environmentId = `router-query-env-${randomUUID()}`;
+    await seedUser(db, ownerId, `${ownerId}@test.local`);
+    await configureOwner(ownerId, environmentId);
+    const { createBoard } = await import("../apps/web/server/boardRepo");
+    const { createTask, getTask } = await import("../apps/web/server/taskRepo");
+    const { routePendingTasks } = await import("../apps/web/server/runtimeCoordinator");
+    const { taskRuntimeSource } = await import("../apps/web/server/runtimeBinding");
+    const board = await createBoard(db, ownerId, `router-query-${randomUUID()}`, "ops");
+    const agent = await createTestAgent(db, ownerId, {
+      username: `router-query-${randomUUID()}`,
+      runtime: "claude",
+      model: "claude-sonnet-4-6",
+    });
+    const tasks = [];
+    for (let index = 0; index < 3; index++) {
+      tasks.push(
+        await createTask(db, ownerId, {
+          title: `matching task ${index}`,
+          board_id: board.id,
+          assigned_to: agent.id,
+          skipRuntimeAvailability: true,
+        }),
+      );
+    }
+    const fetchMock = runnerFetch(environmentId, () => true);
+    vi.stubGlobal("fetch", fetchMock);
+    const trace = tracePreparedSql(db);
+
+    try {
+      await routePendingTasks(trace.database, env());
+
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(trace.queries.filter((query) => /\bFROM\s+machines\b/i.test(query))).toHaveLength(1);
+      expect(trace.queries.some((query) => /\b(?:agent_sessions|ama_agent_sessions)\b/i.test(query))).toBe(false);
+      expect(trace.queries.some((query) => /\bFROM\s+agents\s+a\b[\s\S]*\bWHERE\s+a\.id\s*=/i.test(query))).toBe(false);
+
+      for (const task of tasks) {
+        expect(taskRuntimeSource((await getTask(db, task.id, ownerId))!)).toBe("ama");
+      }
+    } finally {
+      await db.prepare("UPDATE tasks SET status = 'done' WHERE board_id = ?").bind(board.id).run();
+    }
+  });
+
   it("selects AMA first, preserves a healthy legacy source, and switches only after its source becomes unavailable", async () => {
     const ownerId = `router-owner-${randomUUID()}`;
     const environmentId = `env-${randomUUID()}`;

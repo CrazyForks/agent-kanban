@@ -3,17 +3,10 @@ import { HTTPException } from "hono/http-exception";
 import { getAgent } from "./agentRepo";
 import type { D1 } from "./db";
 import { createLogger } from "./logger";
-import {
-  stringRuntimeAnnotation,
-  TASK_RUNTIME_SOURCE_ANNOTATION,
-  type TaskRuntimeSource,
-  taskRuntimeAnnotations,
-  taskRuntimeSource,
-} from "./runtimeBinding";
+import { type TaskRuntimeSource, taskRuntimeSource } from "./runtimeBinding";
 import { compareAndSetTaskRuntimeSource, listPendingTaskRuntimeBindings, persistInferredAmaTaskRuntimeSource } from "./runtimeBindingRepo";
 import { resolveRuntimeSourceAvailability, selectRuntimeSource } from "./runtimeRouter";
 import { dispatchTaskToAma, releaseTaskRuntimeBinding } from "./taskDispatch";
-import { getTask } from "./taskRepo";
 import type { Env } from "./types";
 
 const logger = createLogger("runtimeCoordinator");
@@ -65,33 +58,32 @@ export async function releaseAssignedTaskRuntime(
 }
 
 export async function routePendingTasks(db: D1, env: Env): Promise<void> {
+  const availabilityByRuntime = new Map<string, Awaited<ReturnType<typeof resolveRuntimeSourceAvailability>>>();
   for (const row of await listPendingTaskRuntimeBindings(db)) {
-    const task = await getTask(db, row.id, row.ownerId);
-    if (!task?.assigned_to) continue;
-    const agent = await getAgent(db, task.assigned_to, row.ownerId);
-    if (!agent || !AGENT_RUNTIMES.includes(agent.runtime as AgentRuntime)) continue;
-
-    const runtime = agent.runtime as AgentRuntime;
-    const availability = await resolveRuntimeSourceAvailability(db, env, row.ownerId, runtime, agent.model);
-    const annotations = taskRuntimeAnnotations(task);
-    const storedSource = stringRuntimeAnnotation(annotations, TASK_RUNTIME_SOURCE_ANNOTATION);
-    const current: TaskRuntimeSource | null = storedSource === "ama" || storedSource === "legacy" ? storedSource : null;
-    const hasAmaBinding = Boolean(stringRuntimeAnnotation(annotations, "ama.sessionId") || stringRuntimeAnnotation(annotations, "agentSessionId"));
-    if (hasAmaBinding) {
-      if (!current) await persistInferredAmaTaskRuntimeSource(db, task.id);
+    if (!AGENT_RUNTIMES.includes(row.runtime as AgentRuntime)) continue;
+    if (row.hasAmaBinding) {
+      if (!row.current) await persistInferredAmaTaskRuntimeSource(db, row.id, row.assignedTo);
       continue;
     }
 
-    let next = current;
-    if (!current) {
+    const runtime = row.runtime as AgentRuntime;
+    const cacheKey = JSON.stringify([row.ownerId, runtime, row.model]);
+    let availability = availabilityByRuntime.get(cacheKey);
+    if (!availability) {
+      availability = await resolveRuntimeSourceAvailability(db, env, row.ownerId, runtime, row.model);
+      availabilityByRuntime.set(cacheKey, availability);
+    }
+
+    let next = row.current;
+    if (!row.current) {
       next = selectRuntimeSource(availability);
-    } else if (current === "legacy" && !availability.legacy && availability.ama) {
+    } else if (row.current === "legacy" && !availability.legacy && availability.ama) {
       next = "ama";
-    } else if (current === "ama" && !availability.ama && availability.legacy) {
+    } else if (row.current === "ama" && !availability.ama && availability.legacy) {
       next = "legacy";
     }
-    if (!next || next === current) continue;
-    if (!(await compareAndSetTaskRuntimeSource(db, task.id, current, next))) continue;
-    logger.info(`task runtime source selected task=${task.id} runtime=${runtime} previous=${current ?? "unrouted"} next=${next}`);
+    if (!next || next === row.current) continue;
+    if (!(await compareAndSetTaskRuntimeSource(db, row.id, row.assignedTo, row.current, next))) continue;
+    logger.info(`task runtime source selected task=${row.id} runtime=${runtime} previous=${row.current ?? "unrouted"} next=${next}`);
   }
 }
