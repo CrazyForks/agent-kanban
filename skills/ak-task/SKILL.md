@@ -1,16 +1,17 @@
 ---
 name: ak-task
 description: |
-  Run the Agent Kanban task lifecycle: create, assign, monitor, review, and
-  reject or complete. Use only when the user explicitly asks for AK Task,
-  Agent Kanban, an AK task, or delegation through an AK board. Do not use for
-  ordinary feature implementation, bug fixing, or generic task creation.
-argument-hint: "<feature or bug description>"
+  Run the Agent Kanban task lifecycle: create, assign, monitor, and either
+  hand review to an active board maintainer or review and finish the task as
+  leader. Use only when the user explicitly asks for AK Task, Agent Kanban,
+  an AK task, or delegation through an AK board. Do not use for ordinary
+  feature implementation, bug fixing, or generic task creation.
 ---
 
 # ak-task — Task Lifecycle
 
-Create a task, assign it, then monitor → review → reject/complete.
+Create a task, assign it, then monitor it to completion. Review ownership
+depends on whether the selected board has an active maintainer.
 
 ## Identity
 
@@ -29,7 +30,7 @@ The leader chooses its own username and optional full name.
 Assume this workflow runs in two explicit modes:
 
 - **Before task creation: human-in-the-loop.** Ask the user only during the initial clarification and task preview phase, before task creation is confirmed.
-- **After task creation: human-not-in-the-loop.** Once the user confirms the task and it is created, do not stop to ask for permission, confirmation, or next steps unless the user interrupts you. Continue through the full work cycle: create, assign, monitor, review, reject or complete, and report the outcome.
+- **After task creation: human-not-in-the-loop.** Once the user confirms the task and it is created, do not stop to ask for permission, confirmation, or next steps unless the user interrupts you. Continue through the full work cycle and report the outcome. On a board with an active maintainer, monitor while the maintainer owns review and completion. Otherwise, review, reject, or merge as leader.
 
 If execution hits a blocker after confirmation, use the available tools and repository context to resolve it. If the blocker cannot be resolved without external authorization or production mutation, fail fast with the exact blocker and the next required action instead of waiting in the middle of the workflow.
 
@@ -46,18 +47,20 @@ The checklist must include the full lifecycle:
 3. Preview the exact task and get human confirmation.
 4. Create labels/workers if needed, then create and assign the task.
 5. Switch to human-not-in-the-loop execution.
-6. Monitor the task until it reaches review.
-7. Review the PR: CI, code, functional acceptance, notes.
-8. Reject or merge according to gates.
-9. Repeat monitor/review after rejection until the task is done.
+6. Monitor the task according to the selected board's review owner.
+7. If a maintainer is active, wait for maintainer-owned review and completion.
+8. Otherwise review the PR: CI, code, functional acceptance, and notes.
+9. In leader-review mode, reject or merge and repeat until the task is done.
 10. Report final outcome.
 
 Keep this checklist current:
 
 - Mark exactly one active step as in progress.
 - Update statuses at every phase transition.
+- When review ownership makes a conditional checklist item inapplicable, mark
+  that item completed as not applicable instead of leaving it pending.
 - After `ak create task`, explicitly mark planning/creation complete and mark
-  monitoring/review as in progress before any final user-facing summary.
+  monitoring/completion as in progress before any final user-facing summary.
 - Do not send a final answer while any post-creation execution step remains
   pending, unless the user explicitly says to stop, cancel, abort, or only
   create the task.
@@ -79,6 +82,7 @@ Before choosing or creating workers, read `references/runtime-delegation.md`. Be
 
 ```bash
 ak get board                   # pick the right board
+ak get maintainer --board <board-id> -o json
 ak get label --board <board>   # existing board label taxonomy
 ak get agent -o json           # agents, status.schedulable, and status.tasks load
 ak get model --runtime <name>  # provider-reported models for a runtime
@@ -86,6 +90,32 @@ ak get repo                    # registered repos
 ```
 
 If there's only one board, use it. Otherwise ask which board.
+
+#### Review Ownership
+
+Resolve review ownership immediately after selecting the board and before
+previewing or creating the task:
+
+```bash
+ak get maintainer --board <board-id> -o json
+```
+
+- If the returned array contains a maintainer whose `status` is `active`, use
+  **maintainer-review mode**. Record its id in the task preview. The leader
+  creates, assigns, and monitors the task, but does not review the PR, reject
+  the task, post verification evidence, merge the PR, or complete the task.
+- If none of the returned maintainers has `status: active`—including an empty
+  array or paused maintainer records—use **leader-review mode** and follow the
+  original review workflow in this skill.
+- Do not use `heartbeat_enabled` to choose the mode. A maintainer can remain
+  active for event-driven review while scheduled heartbeats are disabled.
+- Re-run the command before taking action on a task in `in_review`. Switch to
+  leader-review mode only when no returned maintainer is active. If any
+  maintainer is active, remain in or switch to maintainer-review mode and
+  record an active maintainer id.
+
+The CLI already exposes the required board-level check. Do not infer maintainer
+state from agents, taints, task assignment, or heartbeat history.
 
 ### Step 2: Investigate
 
@@ -200,6 +230,7 @@ Board: <board-name>
 Repo: <repo-name>
 Agent: <agent-name>
 Runtime: <agent-runtime>
+Review owner: <active maintainer id or "leader">
 Labels: <labels>
 Depends on: <task-ids or "none">
 
@@ -236,6 +267,7 @@ Before running `ak create task`, verify:
 - If the user specified runtime, that runtime is schedulable.
 - If runtime was ambiguous, the user chose the runtime.
 - Task Preview includes Runtime and Agent.
+- Task Preview includes the resolved Review owner.
 - Labels exist on the board, are stable taxonomy labels, and exclude one-off implementation details.
 - `--assign-to` uses the selected agent ID.
 
@@ -270,17 +302,34 @@ ak create task \
 
 Report to user: task ID, title, assigned agent.
 
-## Phase 2: Monitor & Review
+## Phase 2: Monitor & Finish
 
 ### Step 5: Monitor
 
-**Block on `ak wait` instead of writing polling loops.** Exit codes: 0 condition met, 2 task cancelled, 124 timeout.
+**Block on `ak wait` instead of writing polling loops.** Exit codes: 0 condition
+met, 2 task cancelled, 124 timeout.
+
+In maintainer-review mode, wait for the terminal outcome:
+
+```bash
+ak wait task <task-id> --until done --timeout 1h
+```
+
+Do not stop at `in_review` to perform review work. On timeout, inspect task and
+runtime state, then re-check review ownership with
+`ak get maintainer --board <board-id> -o json`. If any maintainer is still
+active, inspect that active maintainer's status and recent runs with
+`ak get maintainer <maintainer-id> --board <board-id> --runs`; resolve runtime
+or platform blockers and continue waiting without taking over review. If no
+active maintainer remains, switch to leader-review mode.
+
+In leader-review mode, wait for review:
 
 ```bash
 ak wait task <task-id> --until in_review --timeout 1h
 case $? in
   0)   ;;  # ready for review → Step 6
-  2)   echo "task cancelled — abort" ; exit 1 ;;
+  2)   echo "task cancelled — report unsuccessful terminal outcome" ; exit 1 ;;
   124) echo "timed out — investigate" ;;  # fall through to investigation
 esac
 ```
@@ -297,7 +346,9 @@ board waits.
 3. Check agent session log for what it's doing or where it's stuck
 4. Check child processes: the agent may be stuck on a hook, install, or network call
 
-### Step 6: Review PR
+### Step 6: Review PR — leader-review mode only
+
+Skip this step entirely in maintainer-review mode.
 
 **Pre-check: CI status.** Before reviewing, verify CI has passed on the PR:
 ```bash
@@ -391,6 +442,11 @@ Remove local review artifacts from the repo root after verifying each path belon
 
 ## Phase 3: Exception Handling
 
+In maintainer-review mode, use the following cancellation procedures only for
+an explicit user cancellation or non-review operational teardown. Never close,
+cancel, or recreate a task merely because maintainer review is slow, blocked,
+or disagrees with the leader; investigate maintainer/runtime state instead.
+
 ### Removing a task in todo
 Tasks in `todo` status cannot be cancelled — delete them directly:
 ```bash
@@ -407,11 +463,16 @@ ak task cancel <task-id>
 ### Stuck rejected task
 If a rejected task stays `in_progress` without being picked up:
 1. Check daemon logs — is it detecting the rejection?
-2. If daemon is down or not tracking, close the PR, cancel, recreate with original spec + review feedback + reference the existing PR branch
-3. Always use `--assign-to` on recreate
+2. In leader-review mode, if the runtime is down or not tracking, close the PR, cancel, and recreate with the original spec, review feedback, and existing PR branch reference.
+3. In maintainer-review mode, resolve dispatch/runtime health without replacing the maintainer's rejection or recreating the task on the leader's authority.
+4. Always use `--assign-to` on recreate.
 
 ### CI failure
-Investigate the failure. If it's a source bug, reject with details. If it's flaky CI, re-trigger.
+
+In leader-review mode, investigate the failure. If it is a source bug, reject
+with details. If it is flaky CI, re-trigger. In maintainer-review mode, do not
+make the review decision or reject the task; let the active maintainer handle
+CI evidence while the leader continues operational monitoring.
 
 ### AK command, product, or skill issue
 If the blocker appears to be an `ak` bug, missing capability, confusing UX, documentation gap, or skill workflow problem, file an issue in the official repo after collecting a minimal reproduction.
@@ -461,18 +522,20 @@ Never include API keys, session tokens, private keys, `.env` contents, or privat
 
 ## Rules
 
-- **Workflow completion is mandatory** — once this skill is invoked, the full lifecycle (create → assign → monitor → review → merge/reject) MUST run to completion.
+- **Workflow completion is mandatory** — once this skill is invoked, the full lifecycle (create → assign → monitor → terminal outcome) MUST run to completion. Success requires `done`; `cancelled` is an unsuccessful terminal outcome that must be reported, not left pending or described as completion.
   - **Before task creation: human-in-the-loop.** Discuss scope, resolve ambiguity, preview the exact task, and get explicit user confirmation before creating it.
-  - **After task creation: human-not-in-the-loop.** The user is no longer part of execution control unless they explicitly interrupt with a new instruction. The leader owns execution and must continue monitoring, reviewing, rejecting, merging, and iterating until the work cycle completes.
-  - After `ak create task`, continue immediately into monitoring/review work (`ak wait task ...`) in the same turn whenever possible. Do not send a final answer merely reporting that the task was created unless the user explicitly says to stop, cancel, abort, or only create the task.
-  - If execution hits a blocker after task creation, solve it autonomously: inspect state, fix environment issues, reject blocked PRs with actionable reasons, create follow-up issues when the platform/skill is at fault, or wait for the task/PR. Do not stop and hand the blocker back to the user unless the user is the only possible source of required information or explicitly pauses the workflow.
+  - **After task creation: human-not-in-the-loop.** The user is no longer part of execution control unless they explicitly interrupt with a new instruction. The leader must continue until the work cycle completes. The active board maintainer owns review when present; otherwise the leader owns review.
+  - After `ak create task`, continue immediately into monitoring (`ak wait task ...`) in the same turn whenever possible. Do not send a final answer merely reporting that the task was created unless the user explicitly says to stop, cancel, abort, or only create the task.
+  - If execution hits a blocker after task creation, solve it autonomously: inspect state, fix environment issues, reject blocked PRs with actionable reasons in leader-review mode, create follow-up issues when the platform/skill is at fault, or wait for the task/PR. Do not stop and hand the blocker back to the user unless the user is the only possible source of required information or explicitly pauses the workflow.
   - If you are interrupted mid-workflow (user asks a side question, chat drifts to another topic, tool fails, etc.), handle the interruption and then **immediately resume the workflow from where you left off**. Never ask "should I continue monitoring?" or "do you want me to keep going?" — the answer is always yes. The only way to exit the workflow early is if the user explicitly says to stop, cancel, or abort.
 - **Follow CONTRIBUTING.md** — read the target repo's CONTRIBUTING.md before creating tasks; check PR compliance during review
 - **Investigate before creating** — read the code first, don't create vague tasks
 - **One coherent outcome per invocation** — if the user describes multiple unrelated or low-overlap outcomes, create one and suggest splitting the rest
 - **Detailed descriptions** — agents are autonomous, the description is their only input
 - **Check for duplicates** — look at existing tasks before creating
-- **Review = act** — reject or merge based on your review, don't ask the user for permission
+- **Resolve review ownership first** — use `ak get maintainer --board <board-id> -o json`; only `status: active` delegates review, and `heartbeat_enabled` does not affect ownership
+- **Maintainer review is exclusive** — while an active maintainer owns review, do not duplicate or override its review, rejection, verification, merge, or completion actions
+- **Leader review = act** — when no active maintainer exists, reject or merge based on your review without asking the user for permission
 - **Think about dependencies** — tasks with overlapping files, data model, API contract, or context must use `--depends-on` or be merged
 - **Always `--assign-to` on create** — never create a task without assigning an agent
 - **Close PR before cancel** — never cancel a task without closing its PR first

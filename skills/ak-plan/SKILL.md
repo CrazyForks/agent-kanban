@@ -2,11 +2,11 @@
 name: ak-plan
 description: |
   Plan and execute a project through Agent Kanban boards, tasks, dependencies,
-  and workers. Use only when the user explicitly asks for AK Plan, Agent
-  Kanban planning, an AK project plan, or project execution through an AK
-  board. Do not use for ordinary project planning, product development,
-  version planning, or project scaffolding.
-argument-hint: "<version-or-name> [goals]"
+  and workers, delegating review to an active board maintainer when present
+  and retaining leader review otherwise. Use only when the user explicitly
+  asks for AK Plan, Agent Kanban planning, an AK project plan, or project
+  execution through an AK board. Do not use for ordinary project planning,
+  product development, version planning, or project scaffolding.
 ---
 
 # ak-plan — Project Planning
@@ -18,7 +18,7 @@ Plan and create a board with tasks — for a new version release or a new produc
 Assume this workflow runs in two explicit modes:
 
 - **Before task creation: human-in-the-loop.** Ask the user only during the initial planning, ambiguity resolution, and task-plan preview phase before task creation is confirmed.
-- **After task creation: human-not-in-the-loop.** Once the user confirms the plan and tasks are created, do not stop to ask for permission, confirmation, or next steps unless the user interrupts you. Continue through the full work cycle: create, assign, monitor, review, reject or merge, and report the final outcome.
+- **After task creation: human-not-in-the-loop.** Once the user confirms the plan and tasks are created, do not stop to ask for permission, confirmation, or next steps unless the user interrupts you. Continue through the full work cycle and report the final outcome. On a board with an active maintainer, monitor while the maintainer owns review and completion. Otherwise, review, reject, or merge as leader.
 
 If execution hits a blocker after confirmation, use the available tools and repository context to resolve it. If the blocker cannot be resolved without external authorization or production mutation, fail fast with the exact blocker and the next required action instead of waiting in the middle of the workflow.
 
@@ -54,9 +54,9 @@ The checklist must include the full lifecycle, not just planning:
 4. Preview task plan and get human confirmation.
 5. Create or verify labels, workers, and tasks.
 6. Switch to human-not-in-the-loop execution.
-7. Monitor tasks until PRs reach review.
-8. Review each PR: CI, code, functional acceptance, notes.
-9. Reject or merge each PR according to gates.
+7. Monitor tasks according to the selected board's review owner.
+8. If a maintainer is active, wait for maintainer-owned review and completion.
+9. Otherwise review each PR and reject or merge according to the gates.
 10. Continue until all planned tasks are done.
 11. Report final summary.
 
@@ -64,8 +64,10 @@ Keep this checklist current:
 
 - Mark exactly one active step as in progress.
 - Update statuses at every phase transition.
+- When review ownership makes a conditional checklist item inapplicable, mark
+  that item completed as not applicable instead of leaving it pending.
 - After task creation, explicitly mark the planning/creation steps complete and
-  mark monitoring/review as in progress before doing any final user-facing
+  mark monitoring/completion as in progress before doing any final user-facing
   summary.
 - Do not send a final answer while any post-creation execution step remains
   pending, unless the user explicitly says to stop, cancel, abort, or only
@@ -118,6 +120,7 @@ The scaffold must contain enough structure for agents to start writing code imme
 
 ```bash
 ak get board                   # existing boards
+ak get maintainer --board <board-id> -o json
 ak get agent -o json           # agents, status.schedulable, and status.tasks load
 ak get repo                    # registered repos
 git remote -v                  # repo URL (use this, never guess)
@@ -128,6 +131,34 @@ Read project instruction files, CONTRIBUTING.md, and recent git history to under
 - What patterns/conventions exist
 - What the project architecture looks like
 - Contribution requirements (branch strategy, commit format, code style, test expectations)
+
+### Review Ownership
+
+After selecting or creating the board, resolve review ownership before
+previewing or creating tasks:
+
+```bash
+ak get maintainer --board <board-id> -o json
+```
+
+- If the returned array contains a maintainer whose `status` is `active`, use
+  **maintainer-review mode**. Record its id in the plan preview. The leader
+  plans, creates, assigns, and monitors tasks, but does not review PRs, reject
+  tasks, post verification evidence, merge PRs, or complete tasks.
+- If none of the returned maintainers has `status: active`—including an empty
+  array or paused maintainer records—use **leader-review mode** and follow the
+  original review workflow in this skill.
+- Do not use `heartbeat_enabled` to choose the mode. A maintainer can remain
+  active for event-driven review while scheduled heartbeats are disabled.
+- Re-run the command before taking action on any task in `in_review`. Switch to
+  leader-review mode only when no returned maintainer is active. If any
+  maintainer is active, remain in or switch to maintainer-review mode and
+  record an active maintainer id.
+
+The CLI already exposes the required board-level check. Do not infer maintainer
+state from agents, taints, task assignment, or heartbeat history. A newly
+created board has no maintainer unless one is created separately, so it starts
+in leader-review mode.
 
 ## Phase 2: Analyze Gaps
 
@@ -181,9 +212,9 @@ same abstraction:
 
 Never create a final "acceptance", "QA", "integration review", or "verify all
 previous work" task whose purpose is to re-check the whole plan. End-to-end
-verification is leader-owned during PR review. Create a verification
-infrastructure task only when the project lacks reusable tooling or fixtures
-needed for workers and leaders to validate future work.
+verification belongs to the resolved review owner during PR review. Create a
+verification infrastructure task only when the project lacks reusable tooling
+or fixtures needed for workers and reviewers to validate future work.
 
 Use `AskUserQuestion` to interactively confirm the plan with the user. For each ambiguous point, present options:
 
@@ -235,6 +266,8 @@ Architecture direction:
 
 Shared contracts:
 - <interface/schema/API/event/CLI/UI contract that workers must preserve>
+
+Review owner: <active maintainer id or "leader">
 
 | # | Title | Boundary | Repo | Labels | Depends on | Agent |
 |---|-------|----------|------|--------|------------|-------|
@@ -366,7 +399,7 @@ T2=$(ak create task --board $BOARD --title "..." --repo $REPO --assign-to $AGENT
 - Each task must include the architectural direction and shared contract it must preserve. If there is no shared contract, say so explicitly.
 - Prefer contract-first dependencies when multiple tasks implement the same abstraction. Later adapter/provider tasks should depend on the task that establishes or last changes the shared contract.
 - Do not create tasks that encourage workers to choose separate architectural directions for the same feature. If workers need the same abstraction, merge the work or serialize it through a shared contract task.
-- Do not create standalone final QA or acceptance tasks for the whole plan. The leader performs acceptance during PR review. Only create test/verification tasks for reusable infrastructure that future tasks can run.
+- Do not create standalone final QA or acceptance tasks for the whole plan. The resolved review owner performs acceptance during PR review. Only create test/verification tasks for reusable infrastructure that future tasks can run.
 - Put the exact files, APIs, commands, UI states, and acceptance checks in `--description`.
 - Assign every task at creation with `--assign-to`.
 - Use `--depends-on` for real blockers or overlapping context. Tasks touching the same files, data model, or API contract should be sequential or merged.
@@ -413,11 +446,31 @@ POST /api/items — create item
 
 Vague descriptions produce vague code. Be specific.
 
-## Phase 4: Monitor & Merge
+## Phase 4: Monitor & Finish
 
-**Block on `ak wait board` instead of writing polling loops.** It streams tasks one at a time as they reach the filter status. Exit codes: 0 condition met, 2 task cancelled, 124 timeout.
+**Block on `ak wait` instead of writing polling loops.** Exit codes: 0 condition
+met, 2 task cancelled, 124 timeout.
 
-### React to PRs as workers push them
+### Maintainer-review mode
+
+Wait for every task created by this plan to reach `done`:
+
+```bash
+ak wait task <created-task-ids...> --until done --timeout 1h
+```
+
+Do not stream `in_review` tasks for leader review. On timeout, inspect task and
+runtime state, then re-check review ownership with
+`ak get maintainer --board <board-id> -o json`. If any maintainer is still
+active, inspect that active maintainer's status and recent runs with
+`ak get maintainer <maintainer-id> --board <board-id> --runs`; resolve runtime
+or platform blockers and continue waiting without taking over review. If no
+active maintainer remains, switch to leader-review mode.
+
+### Leader-review mode
+
+React to PRs as workers push them:
+
 ```bash
 # Stream in_review tasks one at a time, handle each, then wait for the next
 while ak wait board <board-id> --filter in_review --timeout 1h; do
@@ -425,8 +478,8 @@ while ak wait board <board-id> --filter in_review --timeout 1h; do
   :
 done
 
-# Or wait until the entire board converges (0 = infinite)
-ak wait board <board-id> --until all-done --timeout 0
+# After reviewing all tasks created by this plan, confirm only those tasks converged
+ak wait task <created-task-ids...> --until done --timeout 1h
 ```
 
 Run `ak wait board --help` for the full flag list.
@@ -435,7 +488,9 @@ Before starting or recovering any wait, follow
 `references/wait-monitoring.md`. The same wait policy applies to board waits
 and task waits.
 
-### When a task reaches `in_review` with a PR:
+### When a task reaches `in_review` with a PR — leader-review mode only
+
+Skip the review gates entirely in maintainer-review mode.
 
 **Pre-check: CI status.** Before reviewing, verify CI has passed on the PR:
 ```bash
@@ -577,13 +632,15 @@ Never include API keys, session tokens, private keys, `.env` contents, or privat
 
 ## Rules
 
-- **Workflow completion is mandatory** — once this skill is invoked, the full lifecycle (plan → create → assign → monitor → review → merge all) MUST run to completion.
+- **Workflow completion is mandatory** — once this skill is invoked, the full lifecycle (plan → create → assign → monitor → terminal outcomes) MUST run to completion. Success requires every planned task to reach `done`; a `cancelled` task is an unsuccessful terminal outcome that must be reported, not left pending or described as plan completion.
   - **Before task creation: human-in-the-loop.** Discuss scope, resolve ambiguity, preview the task plan, and get explicit user confirmation before creating tasks.
-  - **After task creation: human-not-in-the-loop.** The user is no longer part of execution control unless they explicitly interrupt with a new instruction. The leader owns execution and must continue monitoring, reviewing, rejecting, merging, and iterating until the whole work cycle completes.
-  - After `ak create task`, continue immediately into monitoring/review work (`ak wait board ...`) in the same turn whenever possible. Do not send a final answer merely reporting that tasks were created unless the user explicitly says to stop, cancel, abort, or only create tasks.
-  - If execution hits a blocker after task creation, solve it autonomously: inspect state, fix environment issues, reject blocked PRs with actionable reasons, create follow-up issues when the platform/skill is at fault, or wait for the next task/PR. Do not stop and hand the blocker back to the user unless the user is the only possible source of required information or explicitly pauses the workflow.
+  - **After task creation: human-not-in-the-loop.** The user is no longer part of execution control unless they explicitly interrupt with a new instruction. The leader must continue until the whole work cycle completes. The active board maintainer owns review when present; otherwise the leader owns review.
+  - After `ak create task`, continue immediately into monitoring (`ak wait board ...`) in the same turn whenever possible. Do not send a final answer merely reporting that tasks were created unless the user explicitly says to stop, cancel, abort, or only create tasks.
+  - If execution hits a blocker after task creation, solve it autonomously: inspect state, fix environment issues, reject blocked PRs with actionable reasons in leader-review mode, create follow-up issues when the platform/skill is at fault, or wait for the next task/PR. Do not stop and hand the blocker back to the user unless the user is the only possible source of required information or explicitly pauses the workflow.
   - If you are interrupted mid-workflow (user asks a side question, chat drifts to another topic, tool fails, etc.), handle the interruption and then **immediately resume the workflow from where you left off**. Never ask "should I continue monitoring?" or "do you want me to keep going?" — the answer is always yes. The only way to exit the workflow early is if the user explicitly says to stop, cancel, or abort.
 - **Follow CONTRIBUTING.md** — read the target repo's CONTRIBUTING.md before creating tasks; check PR compliance during review
+- **Resolve review ownership first** — use `ak get maintainer --board <board-id> -o json`; only `status: active` delegates review, and `heartbeat_enabled` does not affect ownership
+- **Maintainer review is exclusive** — while an active maintainer owns review, do not duplicate or override its review, rejection, verification, merge, or completion actions
 - **Prefer text output** — only use `-o json | jq` when extracting fields into variables (e.g. task IDs for `--depends-on`). For display, use default text output.
 - **Always get repo URL from `git remote get-url origin`** — never guess, never improvise. If there is no remote, stop and ask the user to push the repo first (see Phase 0). `file://`, local paths, and placeholder URLs will be rejected by the server with 400.
 - **Discuss the plan with the user before creating tasks** — don't just start creating
